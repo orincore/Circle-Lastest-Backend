@@ -31,8 +31,29 @@ function keyPair(a: string, b: string) {
   return a < b ? `${a}|${b}` : `${b}|${a}`
 }
 
+// Helper function to check if user is already in an active proposal
+function isUserInActiveProposal(userId: string): boolean {
+  for (const p of proposals.values()) {
+    if (!p.cancelled && Date.now() <= p.expiresAt && (p.a === userId || p.b === userId)) {
+      return true
+    }
+  }
+  return false
+}
+
 export async function startSearch(userId: string) {
+  // Don't allow users to start searching if they're already in an active proposal
+  if (isUserInActiveProposal(userId)) {
+    console.log(`User ${userId} is already in an active proposal, cannot start new search`)
+    return { searching: false, error: 'Already in an active match proposal' }
+  }
+  
+  // Cancel any existing search for this user first
+  searching.delete(userId)
+  
   searching.set(userId, { userId, startedAt: Date.now() })
+  console.log(`User ${userId} started searching for matches`)
+  
   // attempt immediate pairing
   await tryPair(userId)
   return { searching: true }
@@ -44,7 +65,7 @@ export async function cancelSearch(userId: string) {
 
 export interface StatusResult {
   state: 'idle' | 'searching' | 'proposal' | 'matched' | 'cancelled'
-  proposal?: { id: string; other: Pick<Profile, 'id' | 'first_name' | 'last_name' | 'age' | 'gender' | 'interests' | 'needs'>; acceptedByOther?: boolean; message?: string }
+  proposal?: { id: string; other: Pick<Profile, 'id' | 'first_name' | 'last_name' | 'age' | 'gender' | 'interests' | 'needs' | 'profile_photo_url'>; acceptedByOther?: boolean; message?: string }
   match?: { otherName: string; chatId: string }
   message?: string
 }
@@ -90,6 +111,7 @@ export async function getStatus(userId: string): Promise<StatusResult> {
             gender: other.gender,
             interests: other.interests,
             needs: other.needs,
+            profile_photo_url: other.profile_photo_url,
           },
           acceptedByOther,
           message: acceptedByOther ? `${other.first_name} has accepted to chat. Waiting for you…` : undefined,
@@ -169,12 +191,25 @@ async function tryPair(userId: string) {
   const me = await findById(userId)
   if (!me) return
 
+  // Don't try to pair users who are already in active proposals
+  if (isUserInActiveProposal(userId)) {
+    console.log(`User ${userId} is already in an active proposal, skipping pairing`)
+    return
+  }
+
   // Choose the best candidate among current searchers (excluding self and cooldown)
   let best: { otherId: string; score: number } | null = null
 
   for (const s of searching.values()) {
     const otherId = s.userId
     if (otherId === userId) continue
+    
+    // Skip users who are already in active proposals
+    if (isUserInActiveProposal(otherId)) {
+      console.log(`User ${otherId} is already in an active proposal, skipping`)
+      continue
+    }
+    
     const coolKey = keyPair(userId, otherId)
     const until = cooldown.get(coolKey)
     if (until && Date.now() < until) continue
@@ -200,6 +235,13 @@ async function tryPair(userId: string) {
 
   if (best) {
     const otherId = best.otherId
+    
+    // Double-check that neither user is in an active proposal before creating new one
+    if (isUserInActiveProposal(userId) || isUserInActiveProposal(otherId)) {
+      console.log(`One of the users (${userId}, ${otherId}) is already in an active proposal, aborting pairing`)
+      return
+    }
+    
     const id = `${userId.slice(0, 6)}_${otherId.slice(0, 6)}_${Date.now()}`
     const p: Proposal = {
       id,
@@ -214,6 +256,9 @@ async function tryPair(userId: string) {
     proposals.set(id, p)
     searching.delete(userId)
     searching.delete(otherId)
+    
+    console.log(`Created proposal ${id} between users ${userId} and ${otherId}`)
+    
     // Notify both users a proposal is ready
     try {
       const a = await findById(p.a)
@@ -225,11 +270,11 @@ async function tryPair(userId: string) {
         } catch {}
         emitToUser(p.a, 'matchmaking:proposal', {
           id: p.id,
-          other: { id: b.id, first_name: b.first_name, last_name: b.last_name, age: b.age, gender: b.gender, interests: b.interests, needs: b.needs }
+          other: { id: b.id, first_name: b.first_name, last_name: b.last_name, age: b.age, gender: b.gender, interests: b.interests, needs: b.needs, profile_photo_url: b.profile_photo_url }
         })
         emitToUser(p.b, 'matchmaking:proposal', {
           id: p.id,
-          other: { id: a.id, first_name: a.first_name, last_name: a.last_name, age: a.age, gender: a.gender, interests: a.interests, needs: a.needs }
+          other: { id: a.id, first_name: a.first_name, last_name: a.last_name, age: a.age, gender: a.gender, interests: a.interests, needs: a.needs, profile_photo_url: a.profile_photo_url }
         })
       }
     } catch {}
@@ -240,14 +285,30 @@ export async function heartbeat() {
   // Cleanup expired cooldowns and proposals occasionally (can be called by a timer in server bootstrap)
   const now = Date.now()
   for (const [k, v] of cooldown.entries()) if (v < now) cooldown.delete(k)
-  for (const [id, p] of proposals.entries()) if (p.expiresAt < now) proposals.delete(id)
+  
+  // Clean up expired proposals and put users back in searching if needed
+  for (const [id, p] of proposals.entries()) {
+    if (p.expiresAt < now) {
+      console.log(`Proposal ${id} expired, putting users back in searching`)
+      proposals.delete(id)
+      // Put both users back in searching if they're not already matched
+      if (!p.acceptedA || !p.acceptedB) {
+        searching.set(p.a, { userId: p.a, startedAt: now })
+        searching.set(p.b, { userId: p.b, startedAt: now })
+      }
+    }
+  }
 
-  // Proactively try to pair any searching users
+  // Proactively try to pair any searching users (but only those not in active proposals)
   const ids = Array.from(searching.keys())
   for (const uid of ids) {
     // Searching map may shrink during iteration as we create proposals
-    if (searching.has(uid)) {
-      try { await tryPair(uid) } catch {}
+    if (searching.has(uid) && !isUserInActiveProposal(uid)) {
+      try { 
+        await tryPair(uid) 
+      } catch (error) {
+        console.error(`Error trying to pair user ${uid}:`, error)
+      }
     }
   }
 }

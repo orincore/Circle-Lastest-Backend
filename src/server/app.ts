@@ -11,9 +11,14 @@ import healthRouter from './routes/health.routes.js'
 import authRouter from './routes/auth.routes.js'
 import storageRouter from './routes/storage.routes.js'
 import matchmakingRouter from './routes/matchmaking.routes.js'
-import { heartbeat } from './services/matchmaking.js'
+import { heartbeat } from './services/matchmaking-optimized.js'
+import { monitoringService, performanceMiddleware } from './services/monitoring.js'
 import chatRouter from './routes/chat.routes.js'
 import friendsRouter from './routes/friends.routes.js'
+import monitoringRouter from './routes/monitoring.routes.js'
+import exploreRouter from './routes/explore.routes.js'
+import circleStatsRouter from './routes/circle-stats.routes.js'
+import socialAccountsRouter from './routes/social-accounts.routes.js'
 
 export const app = express()
 
@@ -42,14 +47,24 @@ app.use(express.json({ limit: '2mb' }))
 app.use(express.urlencoded({ extended: true }))
 app.use(rateLimit({ windowMs: 60_000, max: 200 }))
 
+// Performance monitoring middleware
+app.use(performanceMiddleware())
+
 app.use('/health', healthRouter)
 app.use('/auth', authRouter)
 app.use('/storage', storageRouter)
 app.use('/matchmaking', matchmakingRouter)
 app.use('/chat', chatRouter)
 app.use('/api/friends', friendsRouter)
+app.use('/api/monitoring', monitoringRouter)
+app.use('/api/explore', exploreRouter)
+app.use('/api/circle', circleStatsRouter)
+app.use('/api/social', socialAccountsRouter)
 
-// housekeeping for matchmaking
+// Start monitoring service
+monitoringService.startMonitoring(30000) // Every 30 seconds
+
+// Matchmaking heartbeat (reduced frequency since we have a dedicated worker)
 setInterval(() => {
   try { heartbeat() } catch {}
-}, 15_000)
+}, 30_000) // Reduced to 30 seconds since worker handles most processing

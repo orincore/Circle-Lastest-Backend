@@ -14,12 +14,15 @@ const signupSchema = z.object({
   gender: z.string().min(1),
   email: z.string().email(),
   phoneNumber: z.string().min(5).optional(),
+  about: z.string()
+    .min(10, 'About section must be at least 10 characters')
+    .max(500, 'About section must be less than 500 characters')
+    .optional(),
   interests: z.array(z.string()).default([]),
   needs: z.array(z.string()).default([]),
   username: z.string()
     .trim()
-    .transform(s => s.toLowerCase())
-    .refine((s) => s === '' || /^[a-z0-9_.-]{3,30}$/.test(s), {
+    .refine((s) => s === '' || /^[a-zA-Z0-9_.-]{3,30}$/.test(s), {
       message: 'Username must be 3-30 chars, allowed: letters, numbers, _, ., -'
     })
     .optional(),
@@ -50,29 +53,37 @@ router.post('/signup', async (req, res) => {
     } catch {}
     return res.status(400).json({ error: 'Invalid body', details: parse.error.flatten() })
   }
-  let { email, password, firstName, lastName, age, gender, phoneNumber, interests, needs, username } = parse.data
+  let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username } = parse.data
 
   const normalizedEmail = email.trim().toLowerCase()
 
   // If username missing or empty, generate from email/name
-  const baseFrom = (email.split('@')[0] || `${firstName}${lastName}` || 'user').toLowerCase();
-  const sanitized = (username || baseFrom).toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 30);
-  let finalUsername = sanitized.length >= 3 ? sanitized : `${sanitized}user`;
+  let finalUsername = username;
+  if (!finalUsername) {
+    const baseFrom = (email.split('@')[0] || `${firstName}${lastName}` || 'user').toLowerCase();
+    const sanitized = baseFrom.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 30);
+    finalUsername = sanitized.length >= 3 ? sanitized : `${sanitized}user`;
+  }
 
-  // Ensure uniqueness, append random digits if needed
+  // Ensure uniqueness (check case-insensitively but store exact case)
   const [byEmail, existing] = await Promise.all([
     findByEmail(normalizedEmail),
-    findByUsername(finalUsername)
+    findByUsername(finalUsername.toLowerCase()) // Check lowercase for uniqueness
   ])
   if (byEmail) return res.status(409).json({ error: 'Email already in use' })
   if (existing) {
+    // If user provided username conflicts, return error
+    if (username) {
+      return res.status(409).json({ error: 'Username already taken' });
+    }
+    // If auto-generated username conflicts, try variations
     for (let i = 0; i < 5; i++) {
-      const candidate = `${finalUsername.replace(/[^a-z0-9_.-]/g, '').slice(0, 24)}${Math.floor(Math.random()*100000).toString().padStart(3,'0')}`;
-      const hit = await findByUsername(candidate);
+      const candidate = `${finalUsername.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 24)}${Math.floor(Math.random()*100000).toString().padStart(3,'0')}`;
+      const hit = await findByUsername(candidate.toLowerCase());
       if (!hit) { finalUsername = candidate; break; }
     }
-    const again = await findByUsername(finalUsername);
-    if (again) return res.status(409).json({ error: 'Username already taken' });
+    const again = await findByUsername(finalUsername.toLowerCase());
+    if (again) return res.status(409).json({ error: 'Username generation failed' });
   }
 
   const password_hash = await bcrypt.hash(password, 10)
@@ -84,6 +95,7 @@ router.post('/signup', async (req, res) => {
     age,
     gender,
     phone_number: phoneNumber,
+    about: about || 'Hello! I\'m excited to connect with new people and make meaningful friendships.',
     interests,
     needs,
     profile_photo_url: env.DEFAULT_PROFILE_PHOTO_URL,
@@ -102,6 +114,7 @@ router.post('/signup', async (req, res) => {
       age: profile.age,
       gender: profile.gender,
       phoneNumber: profile.phone_number,
+      about: profile.about,
       interests: profile.interests,
       needs: profile.needs,
       profilePhotoUrl: profile.profile_photo_url
@@ -145,6 +158,7 @@ router.post('/login', async (req, res) => {
       age: user.age,
       gender: user.gender,
       phoneNumber: user.phone_number,
+      about: user.about,
       interests: user.interests,
       needs: user.needs,
       profilePhotoUrl: user.profile_photo_url

@@ -1,6 +1,6 @@
 import http from 'http'
 import { app } from './server/app.js'
-import { initSocket } from './server/sockets/index.js'
+import { initOptimizedSocket } from './server/sockets/optimized-socket.js'
 import { env } from './server/config/env.js'
 import { logger } from './server/config/logger.js'
 import { setupGraphQL } from './server/graphql/index.js'
@@ -14,7 +14,7 @@ async function bootstrap() {
   app.use(errorHandler)
 
   const server = http.createServer(app)
-  initSocket(server)
+  initOptimizedSocket(server)
 
   server.listen(env.PORT, () => {
     logger.info({ port: env.PORT, env: env.NODE_ENV }, 'Server started')

@@ -31,6 +31,14 @@ export interface MessageReaction {
   created_at: string
 }
 
+export interface ChatDeletion {
+  id: string
+  chat_id: string
+  user_id: string
+  deleted_at: string
+  created_at: string
+}
+
 export async function ensureChatForUsers(a: string, b: string): Promise<Chat> {
   // Find an existing 1:1 chat for these two users
   const { data: existing, error: findErr } = await supabase
@@ -81,7 +89,7 @@ export async function getUserInbox(userId: string) {
   if (cErr) throw cErr
 
   // For each chat, find the other participant to display name
-  const results = [] as Array<{ chat: Chat; lastMessage: ChatMessage | null; unreadCount: number; otherId?: string; otherName?: string }>
+  const results = [] as Array<{ chat: Chat; lastMessage: ChatMessage | null; unreadCount: number; otherId?: string; otherName?: string; otherProfilePhoto?: string }>
   // Preload members for all chats
   const { data: members, error: memErr } = await supabase
     .from('chat_members')
@@ -89,24 +97,56 @@ export async function getUserInbox(userId: string) {
     .in('chat_id', chatIds)
   if (memErr) throw memErr
   const otherIdsSet = new Set<string>()
+  // Get user's chat deletion records to filter out cleared chats and messages
+  const { data: deletions, error: delErr } = await supabase
+    .from('chat_deletions')
+    .select('chat_id, deleted_at')
+    .eq('user_id', userId)
+  if (delErr) throw delErr
+  
+  const deletionMap = new Map((deletions || []).map(d => [d.chat_id, d.deleted_at]))
 
   for (const chat of chats as Chat[]) {
-    const { data: last, error: lmErr } = await supabase
+    // Check if user has cleared this chat
+    const deletedAt = deletionMap.get(chat.id)
+    
+    let lastMessageQuery = supabase
       .from('messages')
       .select('*')
       .eq('chat_id', chat.id)
+      .eq('is_deleted', false) // Only get non-deleted messages for last message
       .order('created_at', { ascending: false })
       .limit(1)
+    
+    // If user cleared this chat, only get messages after the clear date
+    if (deletedAt) {
+      lastMessageQuery = lastMessageQuery.gt('created_at', deletedAt)
+    }
+    
+    const { data: last, error: lmErr } = await lastMessageQuery.maybeSingle()
     if (lmErr) throw lmErr
 
-    const lastMessage = (last && last[0]) ? (last[0] as ChatMessage) : null
+    const lastMessage = last ? (last as ChatMessage) : null
+    
+    // If user cleared the chat and there are no new messages, skip this chat from inbox
+    if (deletedAt && !lastMessage) {
+      continue
+    }
 
     // Compute unread: messages in chat not sent by user and without a read receipt by user
-    const { data: msgs, error: msgsErr } = await supabase
+    let unreadQuery = supabase
       .from('messages')
       .select('id,sender_id')
       .eq('chat_id', chat.id)
+      .eq('is_deleted', false) // Only count non-deleted messages for unread count
       .not('sender_id', 'eq', userId)
+    
+    // If user cleared this chat, only count messages after the clear date for unread
+    if (deletedAt) {
+      unreadQuery = unreadQuery.gt('created_at', deletedAt)
+    }
+    
+    const { data: msgs, error: msgsErr } = await unreadQuery
     if (msgsErr) throw msgsErr
     const msgIds = (msgs || []).map(m => m.id)
     let readIds: string[] = []
@@ -129,23 +169,81 @@ export async function getUserInbox(userId: string) {
     results.push({ chat, lastMessage, unreadCount, otherId })
   }
 
-  // fetch names for others
+  // fetch names and profile photos for others
   if (otherIdsSet.size) {
     const { data: profiles, error: pErr } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name')
+      .select('id, first_name, last_name, profile_photo_url')
       .in('id', Array.from(otherIdsSet))
     if (!pErr && profiles) {
-      const map = new Map((profiles as any[]).map((p) => [p.id, `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim()]))
+      const nameMap = new Map((profiles as any[]).map((p) => [p.id, `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim()]))
+      const photoMap = new Map((profiles as any[]).map((p) => [p.id, p.profile_photo_url]))
       for (const item of results) {
-        if (item.otherId) item.otherName = map.get(item.otherId)
+        if (item.otherId) {
+          item.otherName = nameMap.get(item.otherId)
+          item.otherProfilePhoto = photoMap.get(item.otherId)
+        }
+      }
+    }
+  }
+
+  // Get message receipt status for user's own messages (optimized single query)
+  const userMessageIds = results
+    .filter(item => item.lastMessage && item.lastMessage.sender_id === userId)
+    .map(item => item.lastMessage!.id);
+
+  if (userMessageIds.length > 0) {
+    try {
+      // Get all receipts for user's messages in a single query
+      const { data: receipts, error: receiptsErr } = await supabase
+        .from('message_receipts')
+        .select('message_id, status')
+        .in('message_id', userMessageIds)
+        .order('created_at', { ascending: false });
+
+      if (!receiptsErr && receipts) {
+        // Create a map of message_id -> highest status
+        const statusMap = new Map<string, string>();
+        
+        for (const receipt of receipts) {
+          const currentStatus = statusMap.get(receipt.message_id);
+          // Priority: read > delivered
+          if (!currentStatus || 
+              (receipt.status === 'read') || 
+              (receipt.status === 'delivered' && currentStatus !== 'read')) {
+            statusMap.set(receipt.message_id, receipt.status);
+          }
+        }
+
+        // Apply status to messages
+        for (const item of results) {
+          if (item.lastMessage && item.lastMessage.sender_id === userId) {
+            const status = statusMap.get(item.lastMessage.id) || 'sent';
+            (item.lastMessage as any).status = status;
+          }
+        }
+      } else {
+        // Default all user messages to 'sent' if query fails
+        for (const item of results) {
+          if (item.lastMessage && item.lastMessage.sender_id === userId) {
+            (item.lastMessage as any).status = 'sent';
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching message receipts:', error);
+      // Default all user messages to 'sent' on error
+      for (const item of results) {
+        if (item.lastMessage && item.lastMessage.sender_id === userId) {
+          (item.lastMessage as any).status = 'sent';
+        }
       }
     }
   }
   return results
 }
 
-export async function getChatMessages(chatId: string, limit = 30, before?: string) {
+export async function getChatMessages(chatId: string, limit = 30, before?: string, userId?: string) {
   let q = supabase
     .from('messages')
     .select(`
@@ -155,15 +253,38 @@ export async function getChatMessages(chatId: string, limit = 30, before?: strin
         user_id,
         emoji,
         created_at
+      ),
+      receipts:message_receipts(
+        user_id,
+        status
       )
     `)
     .eq('chat_id', chatId)
+    .eq('is_deleted', false) // Only return non-deleted messages
     .order('created_at', { ascending: false })
     .limit(limit)
+  
   if (before) q = q.lt('created_at', before)
+  
+  // If userId is provided, filter out messages that were sent before the user cleared the chat
+  if (userId) {
+    // Get the user's chat deletion record to see when they cleared the chat
+    const { data: deletion } = await supabase
+      .from('chat_deletions')
+      .select('deleted_at')
+      .eq('chat_id', chatId)
+      .eq('user_id', userId)
+      .maybeSingle()
+    
+    if (deletion) {
+      // Only show messages created after the user cleared the chat
+      q = q.gt('created_at', deletion.deleted_at)
+    }
+  }
+  
   const { data, error } = await q
   if (error) throw error
-  return (data || []) as (ChatMessage & { reactions: MessageReaction[] })[]
+  return (data || []) as (ChatMessage & { reactions: MessageReaction[]; receipts: { user_id: string; status: string }[] })[]
 }
 
 export async function insertMessage(chatId: string, senderId: string, text: string): Promise<ChatMessage> {
@@ -187,12 +308,56 @@ export async function insertMessage(chatId: string, senderId: string, text: stri
 }
 
 export async function insertReceipt(messageId: string, userId: string, status: 'delivered' | 'read') {
-  const { error } = await supabase
-    .from('message_receipts')
-    .insert({ message_id: messageId, user_id: userId, status })
-    .select('id')
-  // ignore conflicts due to unique index
-  if (error && (error as any).code !== '23505') throw error
+  try {
+    console.log(`📝 Inserting ${status} receipt for message ${messageId} by user ${userId}`);
+    
+    // Use upsert to handle duplicates gracefully without errors
+    const { error } = await supabase
+      .from('message_receipts')
+      .upsert(
+        { message_id: messageId, user_id: userId, status },
+        { 
+          onConflict: 'message_id,user_id,status',
+          ignoreDuplicates: true 
+        }
+      )
+      .select('id')
+    
+    if (error) {
+      console.error(`❌ Receipt insert failed:`, error);
+      
+      // For network errors (fetch failed), don't throw - just log and continue
+      if (error.message?.includes('fetch failed') || error.message?.includes('TypeError: fetch failed')) {
+        console.warn(`🌐 Network error inserting receipt - continuing without throwing`);
+        return; // Don't throw, just return
+      }
+      
+      throw error;
+    } else {
+      console.log(`✅ Receipt processed successfully (inserted or already exists)`);
+    }
+  } catch (error) {
+    // Handle network errors gracefully
+    if (error instanceof TypeError && error.message?.includes('fetch failed')) {
+      console.warn(`🌐 Network connectivity issue inserting ${status} receipt - skipping:`, {
+        messageId,
+        userId,
+        error: error.message
+      });
+      return; // Don't throw for network errors
+    }
+    
+    console.error(`❌ Failed to insert ${status} receipt:`, {
+      messageId,
+      userId,
+      error: error instanceof Error ? {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      } : error
+    });
+    throw error;
+  }
 }
 
 export async function editMessage(messageId: string, userId: string, newText: string): Promise<ChatMessage> {

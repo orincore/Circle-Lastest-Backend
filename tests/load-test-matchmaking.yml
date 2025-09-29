@@ -1,0 +1,193 @@
+# Artillery.js Load Test Configuration for Circle Matchmaking
+# This test simulates thousands of users performing matchmaking operations
+
+config:
+  target: 'http://localhost'
+  phases:
+    # Warm-up phase
+    - duration: 30
+      arrivalRate: 10
+      name: "Warm-up"
+    
+    # Ramp-up phase
+    - duration: 60
+      arrivalRate: 50
+      rampTo: 200
+      name: "Ramp-up to 200 users/sec"
+    
+    # Sustained load phase
+    - duration: 120
+      arrivalRate: 200
+      name: "Sustained load - 200 users/sec"
+    
+    # Peak load phase
+    - duration: 60
+      arrivalRate: 500
+      name: "Peak load - 500 users/sec"
+    
+    # Stress test phase
+    - duration: 30
+      arrivalRate: 1000
+      name: "Stress test - 1000 users/sec"
+
+  defaults:
+    headers:
+      Content-Type: 'application/json'
+  
+  # Performance thresholds
+  ensure:
+    p95: 500  # 95% of requests should complete within 500ms
+    p99: 1000 # 99% of requests should complete within 1000ms
+    maxErrorRate: 5  # Maximum 5% error rate
+
+  # Load test plugins
+  plugins:
+    metrics-by-endpoint: {}
+    
+scenarios:
+  # Scenario 1: User registration and matchmaking flow
+  - name: "Complete Matchmaking Flow"
+    weight: 70
+    flow:
+      # Register/Login user
+      - post:
+          url: "/api/auth/register"
+          json:
+            email: "user{{ $randomString() }}@test.com"
+            password: "testpass123"
+            firstName: "Test"
+            lastName: "User"
+            age: "{{ $randomInt(18, 35) }}"
+            gender: "{{ $pick(['male', 'female', 'non-binary']) }}"
+            interests: ["{{ $pick(['music', 'sports', 'travel', 'food', 'art']) }}", "{{ $pick(['movies', 'books', 'gaming', 'fitness']) }}"]
+            needs: ["{{ $pick(['friendship', 'dating', 'networking']) }}"]
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      # Start matchmaking
+      - post:
+          url: "/api/matchmaking/start"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          json:
+            location:
+              latitude: "{{ $randomFloat(37.7, 37.8) }}"
+              longitude: "{{ $randomFloat(-122.5, -122.4) }}"
+              maxDistance: 25
+      
+      # Check status multiple times (simulating real user behavior)
+      - loop:
+          - get:
+              url: "/api/matchmaking/status"
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+          - think: 2
+        count: 3
+      
+      # Cancel matchmaking (50% chance)
+      - post:
+          url: "/api/matchmaking/cancel"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          ifTrue: "{{ $randomInt(1, 100) <= 50 }}"
+
+  # Scenario 2: Quick matchmaking (existing users)
+  - name: "Quick Matchmaking"
+    weight: 20
+    flow:
+      # Login existing user
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "existing{{ $randomInt(1, 1000) }}@test.com"
+            password: "testpass123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      # Start matchmaking immediately
+      - post:
+          url: "/api/matchmaking/start"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+      
+      # Wait and check status
+      - think: 5
+      - get:
+          url: "/api/matchmaking/status"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+
+  # Scenario 3: Status checking only (simulating app reopening)
+  - name: "Status Check Only"
+    weight: 10
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "user{{ $randomInt(1, 500) }}@test.com"
+            password: "testpass123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      - get:
+          url: "/api/matchmaking/status"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+
+  # Scenario 4: WebSocket connections (matchmaking with real-time events)
+  - name: "WebSocket Matchmaking"
+    weight: 15
+    engine: ws
+    flow:
+      # Connect to WebSocket
+      - connect:
+          url: "ws://localhost/ws"
+          headers:
+            Authorization: "Bearer test-token-{{ $randomString() }}"
+      
+      # Send matchmaking start event
+      - send:
+          payload:
+            event: "matchmaking:start"
+            data:
+              location:
+                latitude: "{{ $randomFloat(37.7, 37.8) }}"
+                longitude: "{{ $randomFloat(-122.5, -122.4) }}"
+      
+      # Wait for events
+      - think: 10
+      
+      # Send cancel event (30% chance)
+      - send:
+          payload:
+            event: "matchmaking:cancel"
+          ifTrue: "{{ $randomInt(1, 100) <= 30 }}"
+
+# Custom functions for realistic data generation
+functions:
+  randomFloat:
+    - "Math.random() * ({{ $2 }} - {{ $1 }}) + {{ $1 }}"
+  
+  randomInt:
+    - "Math.floor(Math.random() * ({{ $2 }} - {{ $1 }} + 1)) + {{ $1 }}"
+  
+  randomString:
+    - "Math.random().toString(36).substring(7)"
+  
+  pick:
+    - "{{ $1 }}[Math.floor(Math.random() * {{ $1 }}.length)]"
+
+# Performance monitoring
+before:
+  flow:
+    - log: "Starting Circle Matchmaking Load Test"
+    - log: "Target: {{ target }}"
+    - log: "Expected to handle 10,000+ concurrent users"
+
+after:
+  flow:
+    - log: "Load test completed"
+    - log: "Check results for performance metrics"

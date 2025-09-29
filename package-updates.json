@@ -1,0 +1,21 @@
+{
+  "dependencies": {
+    "ioredis": "^5.3.2"
+  },
+  "devDependencies": {
+    "@types/ioredis": "^5.0.0"
+  },
+  "scripts": {
+    "start:optimized": "node dist/server/app.js",
+    "start:worker": "node dist/server/workers/matchmaking-worker.js",
+    "start:cluster": "pm2 start ecosystem.config.js",
+    "deploy": "./scripts/deploy.sh",
+    "monitor": "pm2 monit",
+    "logs": "pm2 logs",
+    "redis:start": "docker-compose up -d redis",
+    "redis:stop": "docker-compose stop redis",
+    "redis:cli": "redis-cli",
+    "test:load": "artillery run tests/load-test-matchmaking.yml",
+    "health": "curl http://localhost:3000/health"
+  }
+}

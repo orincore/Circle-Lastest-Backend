@@ -14,21 +14,20 @@ router.get('/status/:userId', requireAuth, async (req: AuthRequest, res) => {
       return res.json({ status: 'self' })
     }
 
-    // Check if they are already friends (manual query)
-    const smallerId = currentUserId < userId ? currentUserId : userId
-    const largerId = currentUserId > userId ? currentUserId : userId
-    
+    // Check if they are already friends in the friendships table
     const { data: friendshipData, error: friendshipError } = await supabase
-      .from('friends')
+      .from('friendships')
       .select('*')
-      .eq('user1_id', smallerId)
-      .eq('user2_id', largerId)
+      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
+      .eq('status', 'active')
       .maybeSingle()
 
+    console.log(`🔍 Checking friendship between ${currentUserId} and ${userId}:`, friendshipData);
+
     if (friendshipError && friendshipError.code !== 'PGRST116' && friendshipError.code !== '42P01') {
-      // Handle missing tables gracefully
-      console.warn('Friends table not found, assuming no friendship exists')
+      console.error('Error checking friendship:', friendshipError);
     } else if (friendshipData) {
+      console.log(`✅ Found active friendship, returning friends status`);
       return res.json({ status: 'friends' })
     }
 
@@ -257,9 +256,10 @@ router.post('/reject/:requestId', requireAuth, async (req: AuthRequest, res) => 
     const { requestId } = req.params
     const userId = req.user!.id
 
+    // Delete the friend request instead of marking as rejected
     const { error } = await supabase
       .from('friend_requests')
-      .update({ status: 'rejected' })
+      .delete()
       .eq('id', requestId)
       .eq('receiver_id', userId)
 
@@ -409,29 +409,72 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
 router.get('/list', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
+    console.log('Getting friends list for user:', userId)
 
+    // First get the friendships without joins
     const { data: friendships, error } = await supabase
-      .from('friends')
-      .select(`
-        *,
-        user1:user1_id(id, name, email),
-        user2:user2_id(id, name, email)
-      `)
+      .from('friendships')
+      .select('*')
       .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+      .eq('status', 'active')
       .order('created_at', { ascending: false })
 
-    if (error) throw error
+    if (error) {
+      console.error('Error fetching friendships:', error)
+      throw error
+    }
 
-    // Transform the data to get friend info
-    const friends = (friendships || []).map((friendship: any) => {
-      const friend = friendship.user1_id === userId ? friendship.user2 : friendship.user1
+    console.log('Found friendships:', friendships?.length || 0)
+
+    if (!friendships || friendships.length === 0) {
+      return res.json({ friends: [] })
+    }
+
+    // Get the friend user IDs
+    const friendUserIds = friendships.map((friendship: any) => {
+      return friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
+    })
+
+    console.log('Friend user IDs:', friendUserIds)
+
+    // Get friend profiles separately
+    const { data: profiles, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, first_name, last_name, email, profile_photo_url')
+      .in('id', friendUserIds)
+
+    if (profilesError) {
+      console.error('Error fetching friend profiles:', profilesError)
+      // Return friendships with basic info if profiles query fails
+      const friends = friendships.map((friendship: any) => {
+        const friendId = friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
+        return {
+          id: friendId,
+          name: `User ${friendId.slice(0, 8)}`,
+          profile_photo_url: null,
+          created_at: friendship.created_at
+        }
+      })
+      return res.json({ friends })
+    }
+
+    console.log('Found profiles:', profiles?.length || 0)
+
+    // Combine friendships with profile data
+    const friends = friendships.map((friendship: any) => {
+      const friendId = friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
+      const profile = profiles?.find((p: any) => p.id === friendId)
+      
       return {
-        id: friendship.id,
-        friend,
+        id: friendId,
+        name: profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown User' : `User ${friendId.slice(0, 8)}`,
+        profile_photo_url: profile?.profile_photo_url || null,
+        email: profile?.email || null,
         created_at: friendship.created_at
       }
     })
 
+    console.log('Returning friends:', friends)
     res.json({ friends })
   } catch (error) {
     console.error('Get friends list error:', error)
@@ -445,15 +488,12 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
     const { friendId } = req.params
     const userId = req.user!.id
 
-    // Determine the correct order for the friendship
-    const smallerId = userId < friendId ? userId : friendId
-    const largerId = userId > friendId ? userId : friendId
-
+    // Mark friendship as inactive instead of deleting
     const { error } = await supabase
-      .from('friends')
-      .delete()
-      .eq('user1_id', smallerId)
-      .eq('user2_id', largerId)
+      .from('friendships')
+      .update({ status: 'inactive', updated_at: new Date().toISOString() })
+      .or(`and(user1_id.eq.${userId},user2_id.eq.${friendId}),and(user1_id.eq.${friendId},user2_id.eq.${userId})`)
+      .eq('status', 'active')
 
     if (error) throw error
 
@@ -885,6 +925,93 @@ router.get('/debug/requests', requireAuth, async (req: AuthRequest, res) => {
     })
   } catch (error: any) {
     res.json({ error: error?.message || 'Unknown error', tableExists: false })
+  }
+});
+
+// Check pending friend request status between current user and another user
+router.get('/pending-status/:userId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { userId } = req.params
+    const currentUserId = req.user!.id
+    
+    // Check for pending friend requests in both directions
+    const { data: sentRequest } = await supabase
+      .from('friend_requests')
+      .select('id')
+      .eq('sender_id', currentUserId)
+      .eq('receiver_id', userId)
+      .eq('status', 'pending')
+      .limit(1)
+      .maybeSingle()
+    
+    if (sentRequest) {
+      return res.json({
+        hasPendingRequest: true,
+        direction: 'sent',
+        requestId: sentRequest.id
+      })
+    }
+    
+    const { data: receivedRequest } = await supabase
+      .from('friend_requests')
+      .select('id')
+      .eq('sender_id', userId)
+      .eq('receiver_id', currentUserId)
+      .eq('status', 'pending')
+      .limit(1)
+      .maybeSingle()
+    
+    if (receivedRequest) {
+      return res.json({
+        hasPendingRequest: true,
+        direction: 'received',
+        requestId: receivedRequest.id
+      })
+    }
+    
+    res.json({
+      hasPendingRequest: false,
+      direction: null,
+      requestId: null
+    })
+    
+  } catch (error) {
+    console.error('Check pending friend request error:', error)
+    res.status(500).json({ error: 'Failed to check pending requests' })
+  }
+})
+
+// Get user profile by ID
+router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { userId } = req.params
+    
+    console.log('🔍 Fetching profile for user:', userId)
+    
+    // Get user profile from profiles table
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('id, first_name, last_name, email, profile_photo_url')
+      .eq('id', userId)
+      .single()
+    
+    if (error) {
+      console.error('Error fetching user profile:', error)
+      return res.status(404).json({ error: 'User profile not found' })
+    }
+    
+    console.log('✅ Found user profile:', profile)
+    
+    res.json({
+      id: profile.id,
+      name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown User',
+      profilePhotoUrl: profile.profile_photo_url,
+      email: profile.email
+    })
+    
+  } catch (error) {
+    console.error('Error in user profile endpoint:', error)
+    res.status(500).json({ error: 'Failed to fetch user profile' })
   }
 })
 
