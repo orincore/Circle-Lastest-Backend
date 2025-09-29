@@ -499,30 +499,36 @@ router.post('/callback/spotify', async (req, res) => {
       return res.status(400).json({ error: 'Missing code or state parameter' })
     }
 
-    // Verify state (allow expo-auth-session default state)
-    let stateData = oauthStates.get(state)
-    let isExpoAuthSession = false
+    // For expo-auth-session, we need to identify the user differently
+    // Since expo-auth-session generates its own state, we'll use the authorization header
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authorization token required' })
+    }
     
-    if (!stateData || stateData.platform !== 'spotify') {
-      // Handle expo-auth-session case where state might be 'expo-auth-session'
-      if (state === 'expo-auth-session') {
-        console.log('⚠️ Using expo-auth-session default state - this should be improved in production');
-        isExpoAuthSession = true
-        // Create temporary state data - in production, implement proper user identification
-        stateData = {
-          userId: 'temp-user-id', // This needs to be properly handled
-          platform: 'spotify',
-          expiresAt: Date.now() + 10 * 60 * 1000
-        }
-      } else {
-        return res.status(400).json({ error: 'Invalid or expired state' })
-      }
+    const token = authHeader.substring(7)
+    
+    // Verify the JWT token to get user ID
+    let userId
+    try {
+      const jwt = await import('jsonwebtoken')
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret') as any
+      userId = decoded.userId || decoded.id
+      console.log('✅ Identified user from token:', userId)
+    } catch (error) {
+      console.error('❌ Invalid token:', error)
+      return res.status(401).json({ error: 'Invalid authorization token' })
     }
-
-    // Clean up state (only if not expo-auth-session)
-    if (!isExpoAuthSession) {
-      oauthStates.delete(state)
+    
+    // Create state data for expo-auth-session
+    const stateData = {
+      userId,
+      platform: 'spotify',
+      requestPlatform: 'ios', // Assume mobile for expo-auth-session
+      expiresAt: Date.now() + 10 * 60 * 1000
     }
+    
+    console.log('🔧 Using expo-auth-session flow for user:', userId)
 
     // Determine redirect URI based on request platform
     let redirectUri = `${FRONTEND_URL}/auth/spotify/callback`; // Default web URI
