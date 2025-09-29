@@ -137,7 +137,80 @@ router.post('/link/spotify', requireAuth, async (req: AuthRequest, res) => {
   }
 })
 
-// Start Instagram OAuth flow
+// Instagram WebView verification (alternative to OAuth)
+router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { username } = req.body
+    const userId = req.user!.id
+
+    if (!username) {
+      return res.status(400).json({ error: 'Instagram username is required' })
+    }
+
+    // Validate username format (Instagram usernames: letters, numbers, periods, underscores)
+    const usernameRegex = /^[a-zA-Z0-9._]+$/
+    if (!usernameRegex.test(username) || username.length > 30) {
+      return res.status(400).json({ error: 'Invalid Instagram username format' })
+    }
+
+    // Check if this Instagram username is already linked to another user
+    const { data: existingAccount } = await supabase
+      .from('linked_social_accounts')
+      .select('user_id')
+      .eq('platform', 'instagram')
+      .eq('platform_username', username)
+      .neq('user_id', userId)
+      .maybeSingle()
+
+    if (existingAccount) {
+      return res.status(400).json({ error: 'This Instagram account is already linked to another user' })
+    }
+
+    // Store Instagram account (verified through WebView login)
+    const { error: dbError } = await supabase
+      .from('linked_social_accounts')
+      .upsert({
+        user_id: userId,
+        platform: 'instagram',
+        platform_user_id: username, // Use username as ID since we don't have API access
+        platform_username: username,
+        platform_display_name: username,
+        platform_profile_url: `https://instagram.com/${username}`,
+        platform_data: {
+          verification_method: 'webview_login',
+          verified_at: new Date().toISOString()
+        },
+        is_verified: true,
+        is_public: true, // Default to public
+        linked_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'user_id,platform'
+      })
+
+    if (dbError) {
+      console.error('Error storing Instagram account:', dbError)
+      return res.status(500).json({ error: 'Failed to link Instagram account' })
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Instagram account verified and linked successfully',
+      account: {
+        platform: 'instagram',
+        username: username,
+        profile_url: `https://instagram.com/${username}`,
+        verification_method: 'webview_login'
+      }
+    })
+
+  } catch (error) {
+    console.error('Error in Instagram verification:', error)
+    res.status(500).json({ error: 'Failed to verify Instagram account' })
+  }
+})
+
+// Start Instagram OAuth flow (legacy - kept for compatibility)
 router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
   try {
     if (!INSTAGRAM_CLIENT_ID) {
