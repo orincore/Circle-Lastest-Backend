@@ -62,6 +62,16 @@ router.post('/signup', async (req, res) => {
   }
   let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username, instagramUsername } = parse.data
 
+  // Debug: Log the parsed data to see what we're receiving
+  console.log('📝 Parsed signup data:', {
+    firstName,
+    lastName,
+    about: about || '(empty)',
+    instagramUsername,
+    interests: interests?.length || 0,
+    needs: needs?.length || 0
+  })
+
   const normalizedEmail = email.trim().toLowerCase()
   const cleanInstagramUsername = instagramUsername.trim().replace('@', '')
 
@@ -100,7 +110,9 @@ router.post('/signup', async (req, res) => {
   }
 
   const password_hash = await bcrypt.hash(password, 10)
-  const profile = await createProfile({
+  
+  // Debug: Log what we're about to save to the database
+  const profileData = {
     email: normalizedEmail,
     username: finalUsername,
     first_name: firstName,
@@ -113,7 +125,15 @@ router.post('/signup', async (req, res) => {
     needs,
     profile_photo_url: env.DEFAULT_PROFILE_PHOTO_URL,
     password_hash
+  }
+  
+  console.log('💾 Creating profile with data:', {
+    ...profileData,
+    password_hash: '[HIDDEN]',
+    about: profileData.about
   })
+  
+  const profile = await createProfile(profileData)
 
   // Automatically create Instagram account for the user
   try {
