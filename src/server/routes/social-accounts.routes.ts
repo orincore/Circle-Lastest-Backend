@@ -51,6 +51,7 @@ router.get('/linked-accounts', requireAuth, async (req: AuthRequest, res) => {
         platform_data
       `)
       .eq('user_id', userId)
+      .is('deleted_at', null) // Only show active accounts
       .order('linked_at', { ascending: false })
 
     if (error) {
@@ -84,6 +85,7 @@ router.get('/user/:userId/linked-accounts', requireAuth, async (req: AuthRequest
       .eq('user_id', userId)
       .eq('is_public', true)
       .eq('is_verified', true)
+      .is('deleted_at', null) // Only show active accounts
       .order('linked_at', { ascending: false })
 
     if (error) {
@@ -162,40 +164,101 @@ router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Invalid Instagram username format' })
     }
 
-    // Check if this Instagram username is already linked to another user
+    // Check if this Instagram username is already linked to another user (only active accounts)
     const { data: existingAccount } = await supabase
       .from('linked_social_accounts')
       .select('user_id')
       .eq('platform', 'instagram')
       .eq('platform_username', username)
       .neq('user_id', userId)
+      .is('deleted_at', null) // Only check active accounts
       .maybeSingle()
 
     if (existingAccount) {
       return res.status(400).json({ error: 'This Instagram account is already linked to another user' })
     }
 
-    // Store Instagram account (verified through WebView login)
-    const { error: dbError } = await supabase
+    // Check if current user has an existing Instagram account (active or soft-deleted)
+    const { data: userExistingAccount } = await supabase
       .from('linked_social_accounts')
-      .upsert({
-        user_id: userId,
-        platform: 'instagram',
-        platform_user_id: username, // Use username as ID since we don't have API access
-        platform_username: username,
-        platform_display_name: username,
-        platform_profile_url: `https://instagram.com/${username}`,
-        platform_data: {
-          verification_method: 'webview_login',
-          verified_at: new Date().toISOString()
-        },
-        is_verified: true,
-        is_public: true, // Default to public
-        linked_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id,platform'
-      })
+      .select('*')
+      .eq('user_id', userId)
+      .eq('platform', 'instagram')
+      .maybeSingle()
+
+    let isReactivation = false
+    if (userExistingAccount) {
+      // If same username, reactivate
+      if (userExistingAccount.platform_username === username && userExistingAccount.deleted_at) {
+        isReactivation = true
+      }
+      // If different username and current is soft-deleted, allow new one
+      // If different username and current is active, this will be an upsert (replace)
+    }
+
+    let dbError
+    
+    if (isReactivation) {
+      // Reactivate existing account with same username
+      console.log('🔄 Reactivating existing Instagram account:', username);
+      const { error } = await supabase
+        .from('linked_social_accounts')
+        .update({
+          deleted_at: null, // Reactivate
+          is_verified: true,
+          is_public: true,
+          platform_data: {
+            ...userExistingAccount.platform_data,
+            verification_method: 'webview_login',
+            verified_at: new Date().toISOString(),
+            reactivated_at: new Date().toISOString()
+          },
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userExistingAccount.id)
+      
+      dbError = error
+    } else {
+      // Create new account or update existing active account
+      console.log('➕ Creating/updating Instagram account:', username);
+      
+      // If user has a different active Instagram account, soft delete it first
+      if (userExistingAccount && !userExistingAccount.deleted_at && userExistingAccount.platform_username !== username) {
+        console.log('🗑️ Soft deleting old Instagram account:', userExistingAccount.platform_username);
+        await supabase
+          .from('linked_social_accounts')
+          .update({
+            deleted_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', userExistingAccount.id)
+      }
+      
+      // Store new Instagram account
+      const { error } = await supabase
+        .from('linked_social_accounts')
+        .upsert({
+          user_id: userId,
+          platform: 'instagram',
+          platform_user_id: username, // Use username as ID since we don't have API access
+          platform_username: username,
+          platform_display_name: username,
+          platform_profile_url: `https://instagram.com/${username}`,
+          platform_data: {
+            verification_method: 'webview_login',
+            verified_at: new Date().toISOString()
+          },
+          is_verified: true,
+          is_public: true, // Default to public
+          linked_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          deleted_at: null // Ensure it's active
+        }, {
+          onConflict: 'user_id,platform'
+        })
+      
+      dbError = error
+    }
 
     if (dbError) {
       console.error('Error storing Instagram account:', dbError)
@@ -204,12 +267,15 @@ router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
 
     res.json({ 
       success: true, 
-      message: 'Instagram account verified and linked successfully',
+      message: isReactivation 
+        ? 'Instagram account reactivated successfully'
+        : 'Instagram account verified and linked successfully',
       account: {
         platform: 'instagram',
         username: username,
         profile_url: `https://instagram.com/${username}`,
-        verification_method: 'webview_login'
+        verification_method: 'webview_login',
+        is_reactivation: isReactivation
       }
     })
 
@@ -442,7 +508,7 @@ router.post('/callback/instagram', async (req, res) => {
   }
 })
 
-// Unlink a social account
+// Unlink a social account (soft delete)
 router.delete('/unlink/:platform', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { platform } = req.params
@@ -452,18 +518,51 @@ router.delete('/unlink/:platform', requireAuth, async (req: AuthRequest, res) =>
       return res.status(400).json({ error: 'Invalid platform' })
     }
 
-    const { error } = await supabase
+    // Check if account exists and is active
+    const { data: existingAccount } = await supabase
       .from('linked_social_accounts')
-      .delete()
+      .select('*')
       .eq('user_id', userId)
       .eq('platform', platform)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (!existingAccount) {
+      return res.status(404).json({ error: `No active ${platform} account found to unlink` })
+    }
+
+    // Soft delete the account
+    const { error } = await supabase
+      .from('linked_social_accounts')
+      .update({
+        deleted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        platform_data: {
+          ...existingAccount.platform_data,
+          unlinked_at: new Date().toISOString(),
+          unlink_reason: 'user_requested'
+        }
+      })
+      .eq('user_id', userId)
+      .eq('platform', platform)
+      .is('deleted_at', null)
 
     if (error) {
       console.error('Error unlinking account:', error)
       return res.status(500).json({ error: 'Failed to unlink account' })
     }
 
-    res.json({ success: true, message: `${platform} account unlinked successfully` })
+    console.log(`🗑️ Soft deleted ${platform} account for user ${userId}:`, existingAccount.platform_username);
+
+    res.json({ 
+      success: true, 
+      message: `${platform} account unlinked successfully`,
+      unlinked_account: {
+        platform: platform,
+        username: existingAccount.platform_username,
+        can_reactivate: true
+      }
+    })
   } catch (error) {
     console.error('Error in unlink account:', error)
     res.status(500).json({ error: 'Internal server error' })
