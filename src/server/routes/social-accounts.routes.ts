@@ -294,7 +294,8 @@ router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, r
   }
 })
 
-// Instagram WebView verification (legacy - manual input)
+
+// Instagram manual verification
 router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
   try {
     console.log('📥 Instagram verification request received');
@@ -852,7 +853,7 @@ router.delete('/unlink/:platform', requireAuth, async (req: AuthRequest, res) =>
     const { platform } = req.params
     const userId = req.user!.id
 
-    if (!['spotify', 'instagram'].includes(platform)) {
+    if (platform !== 'instagram') {
       return res.status(400).json({ error: 'Invalid platform' })
     }
 
