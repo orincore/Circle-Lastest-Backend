@@ -488,8 +488,11 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
 
 // Handle Spotify OAuth callback
 router.post('/callback/spotify', async (req, res) => {
+  console.log('🎵 Spotify callback endpoint hit!');
   try {
     const { code, state, error: oauthError } = req.body
+
+    console.log('🔧 Spotify callback received:', { code: code ? 'present' : 'missing', state, error: oauthError })
 
     if (oauthError) {
       return res.status(400).json({ error: `OAuth error: ${oauthError}` })
@@ -502,7 +505,10 @@ router.post('/callback/spotify', async (req, res) => {
     // For expo-auth-session, we need to identify the user differently
     // Since expo-auth-session generates its own state, we'll use the authorization header
     const authHeader = req.headers.authorization
+    console.log('🔧 Auth header present:', !!authHeader)
+    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log('❌ Missing or invalid authorization header')
       return res.status(401).json({ error: 'Authorization token required' })
     }
     
@@ -512,11 +518,14 @@ router.post('/callback/spotify', async (req, res) => {
     let userId
     try {
       const jwt = await import('jsonwebtoken')
+      console.log('🔧 JWT_SECRET available:', !!process.env.JWT_SECRET)
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret') as any
       userId = decoded.userId || decoded.id
       console.log('✅ Identified user from token:', userId)
-    } catch (error) {
+      console.log('🔧 Decoded token:', { userId: decoded.userId, id: decoded.id })
+    } catch (error: any) {
       console.error('❌ Invalid token:', error)
+      console.error('❌ Token verification failed:', error.message)
       return res.status(401).json({ error: 'Invalid authorization token' })
     }
     
@@ -529,6 +538,7 @@ router.post('/callback/spotify', async (req, res) => {
     }
     
     console.log('🔧 Using expo-auth-session flow for user:', userId)
+    console.log('🔧 State data created:', stateData)
 
     // Determine redirect URI based on request platform
     let redirectUri = `${FRONTEND_URL}/auth/spotify/callback`; // Default web URI
