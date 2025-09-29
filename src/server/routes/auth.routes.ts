@@ -4,6 +4,7 @@ import { env } from '../config/env.js'
 import { findByEmail, findByUsername, createProfile } from '../repos/profiles.repo.js'
 import bcrypt from 'bcryptjs'
 import { signJwt } from '../utils/jwt.js'
+import { supabase } from '../config/supabase.js'
 
 const router = Router()
 
@@ -26,7 +27,13 @@ const signupSchema = z.object({
       message: 'Username must be 3-30 chars, allowed: letters, numbers, _, ., -'
     })
     .optional(),
-  password: z.string().min(6)
+  password: z.string().min(6),
+  instagramUsername: z.string()
+    .min(1, 'Instagram username is required')
+    .max(30, 'Instagram username must be less than 30 characters')
+    .refine((s) => /^[a-zA-Z0-9._]+$/.test(s), {
+      message: 'Instagram username can only contain letters, numbers, periods, and underscores'
+    })
 })
 
 // Username availability
@@ -53,7 +60,7 @@ router.post('/signup', async (req, res) => {
     } catch {}
     return res.status(400).json({ error: 'Invalid body', details: parse.error.flatten() })
   }
-  let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username } = parse.data
+  let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username, instagramUsername } = parse.data
 
   const normalizedEmail = email.trim().toLowerCase()
 
@@ -101,6 +108,41 @@ router.post('/signup', async (req, res) => {
     profile_photo_url: env.DEFAULT_PROFILE_PHOTO_URL,
     password_hash
   })
+
+  // Automatically create Instagram account for the user
+  try {
+    console.log('📸 Creating Instagram account for new user:', instagramUsername);
+    
+    const { error: instagramError } = await supabase
+      .from('linked_social_accounts')
+      .insert({
+        user_id: profile.id,
+        platform: 'instagram',
+        platform_user_id: instagramUsername,
+        platform_username: instagramUsername,
+        platform_display_name: instagramUsername,
+        platform_profile_url: `https://instagram.com/${instagramUsername}`,
+        platform_data: {
+          verification_method: 'signup_verification',
+          verified_at: new Date().toISOString()
+        },
+        is_verified: true,
+        is_public: true,
+        linked_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        deleted_at: null
+      })
+
+    if (instagramError) {
+      console.error('Failed to create Instagram account during signup:', instagramError)
+      // Don't fail signup if Instagram account creation fails
+    } else {
+      console.log('✅ Instagram account created successfully for:', instagramUsername)
+    }
+  } catch (error) {
+    console.error('Error creating Instagram account during signup:', error)
+    // Don't fail signup if Instagram account creation fails
+  }
 
   const access_token = signJwt({ sub: profile.id, email: profile.email, username: profile.username })
   return res.json({
