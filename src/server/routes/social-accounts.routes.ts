@@ -440,16 +440,15 @@ router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
   }
 })
 
-// Start Instagram OAuth flow (legacy - kept for compatibility)
+// Start Instagram OAuth flow via Facebook Login (Instagram API with Instagram Login)
 router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
   try {
     if (!INSTAGRAM_CLIENT_ID) {
       return res.status(500).json({ error: 'Instagram OAuth not configured' })
     }
 
-    console.log('🔍 Instagram OAuth Debug:');
-    console.log('- Client ID exists:', !!INSTAGRAM_CLIENT_ID);
-    console.log('- Client ID length:', INSTAGRAM_CLIENT_ID?.length);
+    console.log('🔍 Instagram (FB Login) OAuth Debug:');
+    console.log('- FB App ID exists:', !!INSTAGRAM_CLIENT_ID);
     console.log('- Frontend URL:', FRONTEND_URL);
     console.log('- Redirect URI:', `${FRONTEND_URL}/auth/instagram/callback`);
 
@@ -463,21 +462,22 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
       expiresAt: Date.now() + 10 * 60 * 1000
     })
 
-    // Use Instagram API with Instagram Login - consumer app scopes
-    const scopes = ['instagram_business_basic'].join(',')
+    // Facebook Login authorization endpoint (Instagram API with Instagram Login)
+    // Scopes to discover pages and the connected Instagram business account
+    // pages_show_list to list pages; instagram_basic to read IG user basic profile
+    const scopes = ['pages_show_list', 'instagram_basic'].join(',')
 
-    // Instagram API authorization URL
-    const authUrl = `https://api.instagram.com/oauth/authorize?` +
-      `client_id=${INSTAGRAM_CLIENT_ID}&` +
+    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?` +
+      `client_id=${encodeURIComponent(INSTAGRAM_CLIENT_ID)}&` +
       `redirect_uri=${encodeURIComponent(`${FRONTEND_URL}/auth/instagram/callback`)}&` +
-      `scope=${scopes}&` +
+      `scope=${encodeURIComponent(scopes)}&` +
       `response_type=code&` +
-      `state=${state}`
+      `state=${encodeURIComponent(state)}`
 
-    console.log('✅ Generated Instagram OAuth URL:', authUrl);
+    console.log('✅ Generated Facebook Login URL for Instagram linking:', authUrl);
     res.json({ authUrl, state })
   } catch (error: any) {
-    console.error('❌ Error starting Instagram OAuth:', error)
+    console.error('❌ Error starting Instagram OAuth (FB Login):', error)
     console.error('Error details:', error.response?.data || error.message)
     res.status(500).json({ 
       error: 'Failed to start Instagram OAuth',
@@ -678,7 +678,7 @@ router.post('/callback/spotify', async (req, res) => {
   }
 })
 
-// Handle Instagram OAuth callback
+// Handle Instagram OAuth callback (Facebook Login -> Graph API)
 router.post('/callback/instagram', async (req, res) => {
   try {
     const { code, state, error: oauthError } = req.body
@@ -700,28 +700,78 @@ router.post('/callback/instagram', async (req, res) => {
     // Clean up state
     oauthStates.delete(state)
 
-    // Exchange code for access token using Instagram API with Instagram Login
-    const tokenResponse = await axios.post('https://api.instagram.com/oauth/access_token', {
-      client_id: INSTAGRAM_CLIENT_ID,
-      client_secret: INSTAGRAM_CLIENT_SECRET,
-      grant_type: 'authorization_code',
-      redirect_uri: `${FRONTEND_URL}/auth/instagram/callback`,
-      code
-    }, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    // Exchange code for a Facebook User Access Token
+    const tokenExchangeUrl = 'https://graph.facebook.com/v19.0/oauth/access_token'
+    const tokenResponse = await axios.get(tokenExchangeUrl, {
+      params: {
+        client_id: INSTAGRAM_CLIENT_ID,
+        client_secret: INSTAGRAM_CLIENT_SECRET,
+        redirect_uri: `${FRONTEND_URL}/auth/instagram/callback`,
+        code
+      }
     })
 
-    const { access_token, user_id } = tokenResponse.data
+    const { access_token } = tokenResponse.data
 
-    // Get user profile from Instagram API
-    const profileResponse = await axios.get(`https://graph.instagram.com/me?fields=id,username,account_type&access_token=${access_token}`)
-    const instagramProfile = profileResponse.data
+    // 1) Fetch pages this user manages
+    const pagesResponse = await axios.get('https://graph.facebook.com/v19.0/me/accounts', {
+      params: { access_token }
+    })
 
-    console.log('📥 Instagram profile data:', instagramProfile);
+    const pages: Array<{ id: string; name?: string; access_token?: string }> = pagesResponse.data?.data || []
+    if (!pages.length) {
+      return res.status(400).json({
+        error: 'No Facebook Pages found on this account',
+        details: 'Your Facebook account must manage a Page that is connected to an Instagram Professional account.'
+      })
+    }
+
+    // 2) Find a page with an attached instagram_business_account
+    let igUserId: string | null = null
+    let pageAccessToken: string | null = null
+    for (const page of pages) {
+      try {
+        const tokenToUse = page.access_token || access_token
+        const pageDetailResp = await axios.get(`https://graph.facebook.com/v19.0/${page.id}`, {
+          params: {
+            fields: 'instagram_business_account',
+            access_token: tokenToUse
+          }
+        })
+        const ig = pageDetailResp.data?.instagram_business_account
+        if (ig?.id) {
+          igUserId = ig.id
+          pageAccessToken = tokenToUse
+          break
+        }
+      } catch (e) {
+        // ignore and try next page
+      }
+    }
+
+    if (!igUserId) {
+      return res.status(400).json({
+        error: 'No connected Instagram Business account found',
+        details: 'Connect your Instagram Professional account to a Facebook Page and try again.'
+      })
+    }
+
+    // 3) Fetch Instagram user profile
+    const igProfileResp = await axios.get(`https://graph.facebook.com/v19.0/${igUserId}`, {
+      params: {
+        fields: 'username,ig_id,account_type',
+        access_token: pageAccessToken || access_token
+      }
+    })
+
+    const igProfile = igProfileResp.data || {}
+    if (!igProfile?.username) {
+      return res.status(500).json({ error: 'Failed to fetch Instagram profile username' })
+    }
 
     const platformData = {
-      account_type: instagramProfile.account_type || 'PERSONAL',
-      verification_method: 'instagram_api_consumer',
+      account_type: igProfile.account_type || 'BUSINESS',
+      verification_method: 'instagram_api_business',
       api_version: 'instagram_api_with_instagram_login',
       verified_at: new Date().toISOString()
     }
@@ -732,10 +782,10 @@ router.post('/callback/instagram', async (req, res) => {
       .upsert({
         user_id: stateData.userId,
         platform: 'instagram',
-        platform_user_id: instagramProfile.id,
-        platform_username: instagramProfile.username,
-        platform_display_name: instagramProfile.username,
-        platform_profile_url: `https://instagram.com/${instagramProfile.username}`,
+        platform_user_id: igProfile.ig_id || igUserId,
+        platform_username: igProfile.username,
+        platform_display_name: igProfile.username,
+        platform_profile_url: `https://instagram.com/${igProfile.username}`,
         access_token, // In production, encrypt this
         platform_data: platformData,
         is_verified: true,
@@ -754,14 +804,14 @@ router.post('/callback/instagram', async (req, res) => {
       message: 'Instagram account linked successfully',
       account: {
         platform: 'instagram',
-        username: instagramProfile.username,
-        profile_url: `https://instagram.com/${instagramProfile.username}`
+        username: igProfile.username,
+        profile_url: `https://instagram.com/${igProfile.username}`
       }
     })
 
   } catch (error: any) {
-    console.error('❌ Error in Instagram callback:', error)
-    console.error('Instagram API error details:', error.response?.data || error.message)
+    console.error('❌ Error in Instagram callback (FB Login flow):', error)
+    console.error('Graph API error details:', error.response?.data || error.message)
     
     let errorMessage = 'Failed to complete Instagram OAuth'
     if (error.response?.data?.error_description) {
