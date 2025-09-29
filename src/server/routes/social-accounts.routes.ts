@@ -3,7 +3,6 @@ import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { supabase } from '../config/supabase.js'
 import axios from 'axios'
 import crypto from 'crypto'
-
 const router = Router()
 
 // OAuth configuration
@@ -11,6 +10,7 @@ const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET
 const INSTAGRAM_CLIENT_ID = process.env.INSTAGRAM_CLIENT_ID
 const INSTAGRAM_CLIENT_SECRET = process.env.INSTAGRAM_CLIENT_SECRET
+const INSTAGRAM_VERIFY_TOKEN = process.env.INSTAGRAM_VERIFY_TOKEN
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8081'
 
 // Generate OAuth state for security
@@ -432,6 +432,12 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
       return res.status(500).json({ error: 'Instagram OAuth not configured' })
     }
 
+    console.log('🔍 Instagram OAuth Debug:');
+    console.log('- Client ID exists:', !!INSTAGRAM_CLIENT_ID);
+    console.log('- Client ID length:', INSTAGRAM_CLIENT_ID?.length);
+    console.log('- Frontend URL:', FRONTEND_URL);
+    console.log('- Redirect URI:', `${FRONTEND_URL}/auth/instagram/callback`);
+
     const userId = req.user!.id
     const state = generateOAuthState()
     
@@ -442,8 +448,10 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
       expiresAt: Date.now() + 10 * 60 * 1000
     })
 
-    const scopes = ['user_profile', 'user_media'].join(',')
+    // Use Instagram API with Instagram Login scopes
+    const scopes = ['instagram_business_basic'].join(',')
 
+    // Instagram API with Instagram Login uses different authorization URL
     const authUrl = `https://api.instagram.com/oauth/authorize?` +
       `client_id=${INSTAGRAM_CLIENT_ID}&` +
       `redirect_uri=${encodeURIComponent(`${FRONTEND_URL}/auth/instagram/callback`)}&` +
@@ -451,10 +459,15 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
       `response_type=code&` +
       `state=${state}`
 
+    console.log('✅ Generated Instagram OAuth URL:', authUrl);
     res.json({ authUrl, state })
-  } catch (error) {
-    console.error('Error starting Instagram OAuth:', error)
-    res.status(500).json({ error: 'Failed to start Instagram OAuth' })
+  } catch (error: any) {
+    console.error('❌ Error starting Instagram OAuth:', error)
+    console.error('Error details:', error.response?.data || error.message)
+    res.status(500).json({ 
+      error: 'Failed to start Instagram OAuth',
+      details: error.response?.data || error.message
+    })
   }
 })
 
@@ -587,7 +600,7 @@ router.post('/callback/instagram', async (req, res) => {
     // Clean up state
     oauthStates.delete(state)
 
-    // Exchange code for access token
+    // Exchange code for access token using Instagram API with Instagram Login
     const tokenResponse = await axios.post('https://api.instagram.com/oauth/access_token', {
       client_id: INSTAGRAM_CLIENT_ID,
       client_secret: INSTAGRAM_CLIENT_SECRET,
@@ -600,13 +613,18 @@ router.post('/callback/instagram', async (req, res) => {
 
     const { access_token, user_id } = tokenResponse.data
 
-    // Get user profile from Instagram
+    // Get user profile from Instagram API with Instagram Login (uses graph.instagram.com)
     const profileResponse = await axios.get(`https://graph.instagram.com/me?fields=id,username,account_type,media_count&access_token=${access_token}`)
     const instagramProfile = profileResponse.data
 
+    console.log('📥 Instagram profile data:', instagramProfile);
+
     const platformData = {
       account_type: instagramProfile.account_type,
-      media_count: instagramProfile.media_count || 0
+      media_count: instagramProfile.media_count || 0,
+      verification_method: 'instagram_api_login',
+      api_version: 'instagram_api_with_instagram_login',
+      verified_at: new Date().toISOString()
     }
 
     // Store in database
@@ -642,9 +660,21 @@ router.post('/callback/instagram', async (req, res) => {
       }
     })
 
-  } catch (error) {
-    console.error('Error in Instagram callback:', error)
-    res.status(500).json({ error: 'Failed to complete Instagram OAuth' })
+  } catch (error: any) {
+    console.error('❌ Error in Instagram callback:', error)
+    console.error('Instagram API error details:', error.response?.data || error.message)
+    
+    let errorMessage = 'Failed to complete Instagram OAuth'
+    if (error.response?.data?.error_description) {
+      errorMessage = error.response.data.error_description
+    } else if (error.response?.data?.error?.message) {
+      errorMessage = error.response.data.error.message
+    }
+    
+    res.status(500).json({ 
+      error: errorMessage,
+      details: error.response?.data || error.message
+    })
   }
 })
 
@@ -732,6 +762,36 @@ router.patch('/account/:accountId/visibility', requireAuth, async (req: AuthRequ
     console.error('Error in update account visibility:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
+})
+
+// Instagram webhook verification endpoint (optional - only if Instagram requires it)
+router.get('/webhook/instagram', (req, res) => {
+  const mode = req.query['hub.mode']
+  const token = req.query['hub.verify_token']
+  const challenge = req.query['hub.challenge']
+
+  // Check if a token and mode were sent
+  if (mode && token) {
+    // Check the mode and token sent are correct
+    if (mode === 'subscribe' && token === INSTAGRAM_VERIFY_TOKEN) {
+      // Respond with 200 OK and challenge token from the request
+      console.log('✅ Instagram webhook verified')
+      res.status(200).send(challenge)
+    } else {
+      // Responds with '403 Forbidden' if verify tokens do not match
+      console.log('❌ Instagram webhook verification failed')
+      res.sendStatus(403)
+    }
+  } else {
+    res.sendStatus(400)
+  }
+})
+
+// Instagram webhook endpoint (optional - for receiving webhook events)
+router.post('/webhook/instagram', (req, res) => {
+  console.log('📥 Instagram webhook received:', req.body)
+  // Handle Instagram webhook events here if needed
+  res.status(200).send('EVENT_RECEIVED')
 })
 
 export default router
