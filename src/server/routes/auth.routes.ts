@@ -63,6 +63,12 @@ router.post('/signup', async (req, res) => {
   let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username, instagramUsername } = parse.data
 
   const normalizedEmail = email.trim().toLowerCase()
+  const cleanInstagramUsername = instagramUsername.trim().replace('@', '')
+
+  // Validate Instagram username format
+  if (!cleanInstagramUsername || !/^[a-zA-Z0-9._]+$/.test(cleanInstagramUsername)) {
+    return res.status(400).json({ error: 'Invalid Instagram username format' })
+  }
 
   // If username missing or empty, generate from email/name
   let finalUsername = username;
@@ -111,36 +117,50 @@ router.post('/signup', async (req, res) => {
 
   // Automatically create Instagram account for the user
   try {
-    console.log('📸 Creating Instagram account for new user:', instagramUsername);
+    console.log('📸 Creating Instagram account for new user:', cleanInstagramUsername);
     
-    const { error: instagramError } = await supabase
+    // Check if Instagram username is already taken by another user
+    const { data: existingInstagram } = await supabase
       .from('linked_social_accounts')
-      .insert({
-        user_id: profile.id,
-        platform: 'instagram',
-        platform_user_id: instagramUsername,
-        platform_username: instagramUsername,
-        platform_display_name: instagramUsername,
-        platform_profile_url: `https://instagram.com/${instagramUsername}`,
-        platform_data: {
-          verification_method: 'signup_verification',
-          verified_at: new Date().toISOString()
-        },
-        is_verified: true,
-        is_public: true,
-        linked_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        deleted_at: null
-      })
+      .select('user_id')
+      .eq('platform', 'instagram')
+      .eq('platform_username', cleanInstagramUsername)
+      .is('deleted_at', null)
+      .maybeSingle()
 
-    if (instagramError) {
-      console.error('Failed to create Instagram account during signup:', instagramError)
-      // Don't fail signup if Instagram account creation fails
+    if (existingInstagram && existingInstagram.user_id !== profile.id) {
+      console.warn('⚠️ Instagram username already taken:', cleanInstagramUsername)
+      // Don't fail signup, but log the issue
     } else {
-      console.log('✅ Instagram account created successfully for:', instagramUsername)
+      const { error: instagramError } = await supabase
+        .from('linked_social_accounts')
+        .insert({
+          user_id: profile.id,
+          platform: 'instagram',
+          platform_user_id: cleanInstagramUsername,
+          platform_username: cleanInstagramUsername,
+          platform_display_name: cleanInstagramUsername,
+          platform_profile_url: `https://instagram.com/${cleanInstagramUsername}`,
+          platform_data: {
+            verification_method: 'signup_verification',
+            verified_at: new Date().toISOString()
+          },
+          is_verified: true,
+          is_public: true,
+          linked_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          deleted_at: null
+        })
+
+      if (instagramError) {
+        console.error('❌ Failed to create Instagram account during signup:', instagramError)
+        // Don't fail signup if Instagram account creation fails
+      } else {
+        console.log('✅ Instagram account created successfully for:', cleanInstagramUsername)
+      }
     }
   } catch (error) {
-    console.error('Error creating Instagram account during signup:', error)
+    console.error('❌ Error creating Instagram account during signup:', error)
     // Don't fail signup if Instagram account creation fails
   }
 
