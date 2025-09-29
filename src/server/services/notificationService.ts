@@ -27,19 +27,23 @@ export class NotificationService {
    */
   static async createNotification(notificationData: NotificationData): Promise<any> {
     try {
-      console.log('📬 Creating notification:', notificationData);
+      console.log('📬 Creating notification:', JSON.stringify(notificationData, null, 2));
+
+      const insertData = {
+        recipient_id: notificationData.recipient_id,
+        sender_id: notificationData.sender_id,
+        type: notificationData.type,
+        title: notificationData.title,
+        message: notificationData.message,
+        data: notificationData.data || {},
+        read: false
+      };
+      
+      console.log('📝 Inserting notification data:', JSON.stringify(insertData, null, 2));
 
       const { data: notification, error } = await supabase
         .from('notifications')
-        .insert({
-          recipient_id: notificationData.recipient_id,
-          sender_id: notificationData.sender_id,
-          type: notificationData.type,
-          title: notificationData.title,
-          message: notificationData.message,
-          data: notificationData.data || {},
-          read: false
-        })
+        .insert(insertData)
         .select(`
           *,
           sender:sender_id(
@@ -53,21 +57,30 @@ export class NotificationService {
 
       if (error) {
         console.error('❌ Error creating notification:', error);
+        console.error('❌ Error details:', JSON.stringify(error, null, 2));
         return null;
       }
 
+      console.log('✅ Notification inserted successfully:', JSON.stringify(notification, null, 2));
+
       // Emit real-time notification to user
-      emitToUser(notificationData.recipient_id, 'notification:new', {
-        notification: {
-          ...notification,
-          timestamp: new Date(notification.created_at)
-        }
-      });
+      try {
+        emitToUser(notificationData.recipient_id, 'notification:new', {
+          notification: {
+            ...notification,
+            timestamp: new Date(notification.created_at)
+          }
+        });
+        console.log('✅ Real-time notification emitted to user:', notificationData.recipient_id);
+      } catch (emitError) {
+        console.error('❌ Failed to emit real-time notification:', emitError);
+      }
 
       console.log('✅ Notification created successfully:', notification.id);
       return notification;
     } catch (error) {
       console.error('❌ Failed to create notification:', error);
+      console.error('❌ Stack trace:', (error as Error).stack);
       return null;
     }
   }
@@ -191,14 +204,27 @@ export class NotificationService {
    * Create notification for profile visit
    */
   static async notifyProfileVisit(profileOwnerId: string, visitorId: string, visitorName: string): Promise<void> {
-    await this.createNotification({
-      recipient_id: profileOwnerId,
-      sender_id: visitorId,
-      type: 'profile_visit',
-      title: 'Profile Visit',
-      message: `${visitorName} visited your profile`,
-      data: { action: 'profile_visit' }
-    });
+    console.log('👁️ Creating profile visit notification...');
+    console.log('📝 Profile visit data:', JSON.stringify({
+      profileOwnerId,
+      visitorId,
+      visitorName
+    }, null, 2));
+    
+    try {
+      await this.createNotification({
+        recipient_id: profileOwnerId,
+        sender_id: visitorId,
+        type: 'profile_visit',
+        title: 'Profile Visit',
+        message: `${visitorName} visited your profile`,
+        data: { action: 'profile_visit' }
+      });
+      console.log('✅ Profile visit notification created successfully');
+    } catch (error) {
+      console.error('❌ Failed to create profile visit notification:', error);
+      throw error;
+    }
   }
 
   /**

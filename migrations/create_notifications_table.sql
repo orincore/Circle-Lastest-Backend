@@ -1,8 +1,8 @@
 -- Create notifications table for in-app notifications
 CREATE TABLE IF NOT EXISTS notifications (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    recipient_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    sender_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    recipient_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+    sender_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
     type VARCHAR(50) NOT NULL,
     title VARCHAR(255) NOT NULL,
     message TEXT NOT NULL,

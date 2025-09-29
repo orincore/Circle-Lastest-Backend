@@ -110,7 +110,7 @@ router.post('/signup', async (req, res) => {
     if (again) return res.status(409).json({ error: 'Username generation failed' });
   }
 
-  const password_hash = await bcrypt.hash(password, 10)
+  const password_hash = await hashPassword(password)
   
   // Debug: Log what we're about to save to the database
   const profileData = {
@@ -252,7 +252,7 @@ router.post('/login', async (req, res) => {
     user = await findByUsername(raw.toLowerCase())
   }
   if (!user) return res.status(400).json({ error: 'Invalid credentials' })
-  const ok = await bcrypt.compare(password, user.password_hash)
+  const ok = await verifyPassword(password, user.password_hash)
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' })
 
   const access_token = signJwt({ sub: user.id, email: user.email, username: user.username })

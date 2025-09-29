@@ -688,11 +688,26 @@ export function initOptimizedSocket(server: Server) {
         }
         
         // Create notification for sender (request was accepted)
-        await NotificationService.notifyFriendRequestAccepted(
-          request.sender_id,
-          request.receiver_id,
-          `${request.recipient?.first_name || ''} ${request.recipient?.last_name || ''}`.trim() || 'Someone'
-        )
+        console.log('🔔 Creating friend request accepted notification...');
+        console.log('📝 Request data:', JSON.stringify({
+          sender_id: request.sender_id,
+          receiver_id: request.receiver_id,
+          recipient: request.recipient
+        }, null, 2));
+        
+        const acceptedByName = `${request.recipient?.first_name || ''} ${request.recipient?.last_name || ''}`.trim() || 'Someone';
+        console.log('📝 Accepted by name:', acceptedByName);
+        
+        try {
+          await NotificationService.notifyFriendRequestAccepted(
+            request.sender_id,
+            request.receiver_id,
+            acceptedByName
+          );
+          console.log('✅ Friend request accepted notification created successfully');
+        } catch (notificationError) {
+          console.error('❌ Failed to create friend request accepted notification:', notificationError);
+        }
         
         // Notify sender
         io.to(request.sender_id).emit('friend:request:accepted', acceptedData)
