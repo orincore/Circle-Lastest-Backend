@@ -2,9 +2,10 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { env } from '../config/env.js'
 import { findByEmail, findByUsername, createProfile } from '../repos/profiles.repo.js'
-import bcrypt from 'bcryptjs'
-import { signJwt } from '../utils/jwt.js'
 import { supabase } from '../config/supabase.js'
+import { signJwt, verifyJwt } from '../utils/jwt.js'
+import { hashPassword, verifyPassword } from '../utils/password.js'
+import { NotificationService } from '../services/notificationService.js'
 
 const router = Router()
 
@@ -182,6 +183,32 @@ router.post('/signup', async (req, res) => {
   } catch (error) {
     console.error('❌ Error creating Instagram account during signup:', error)
     // Don't fail signup if Instagram account creation fails
+  }
+
+  // Send notifications to potential matches about new user
+  try {
+    const newUserName = `${profile.first_name} ${profile.last_name}`.trim();
+    
+    // Find potential matches for the new user
+    // This is a simplified version - you could use the matchmaking algorithm for better matching
+    const { data: potentialMatches } = await supabase
+      .from('profiles')
+      .select('id')
+      .neq('id', profile.id)
+      .limit(50); // Limit to prevent spam
+    
+    if (potentialMatches && potentialMatches.length > 0) {
+      const matchIds = potentialMatches.map(m => m.id);
+      await NotificationService.notifyNewUserSignup(
+        profile.id,
+        newUserName,
+        matchIds
+      );
+      console.log(`✅ Sent new user notifications to ${matchIds.length} potential matches`);
+    }
+  } catch (error) {
+    console.error('❌ Failed to send new user notifications:', error);
+    // Don't fail signup if notifications fail
   }
 
   const access_token = signJwt({ sub: profile.id, email: profile.email, username: profile.username })

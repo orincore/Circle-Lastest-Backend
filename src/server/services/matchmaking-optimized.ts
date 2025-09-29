@@ -5,6 +5,7 @@ import { supabase } from '../config/supabase.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 import { logger } from '../config/logger.js'
 import { CirclePointsService } from './circle-points.service.js'
+import { NotificationService } from './notificationService.js'
 
 // Redis client for distributed state management
 const redis = new Redis({
@@ -1238,6 +1239,13 @@ async function tryPairUser(userId: string): Promise<void> {
         })
       } catch {}
       
+      // Create notifications for both users about the match
+      const userAName = `${userA.first_name || ''} ${userA.last_name || ''}`.trim() || 'Someone';
+      const userBName = `${userB.first_name || ''} ${userB.last_name || ''}`.trim() || 'Someone';
+      
+      await NotificationService.notifyNewMatch(proposal.a, proposal.b, userBName);
+      await NotificationService.notifyNewMatch(proposal.b, proposal.a, userAName);
+      
       // Notify both users with matchmaking proposals
       emitToUser(proposal.a, 'matchmaking:proposal', {
         id: proposal.id,
@@ -1248,20 +1256,11 @@ async function tryPairUser(userId: string): Promise<void> {
           age: userB.age, 
           gender: userB.gender, 
           interests: userB.interests, 
-          needs: userB.needs,
+          needs: userB.needs, 
           profile_photo_url: userB.profile_photo_url
-        }
-      })
-
-      // Also send notification for user A
-      emitToUser(proposal.a, 'notification:new', {
-        type: 'message_request',
-        id: proposal.id,
-        title: 'Message Request',
-        message: `${userB.first_name || 'Someone'} wants to connect with you`,
-        avatar: userB.profile_photo_url,
-        senderName: `${userB.first_name || ''} ${userB.last_name || ''}`.trim(),
-        timestamp: new Date(),
+        },
+        type: 'match',
+        expiresAt: proposal.expiresAt,
         data: { id: proposal.id, other: userB }
       })
       
@@ -1274,23 +1273,13 @@ async function tryPairUser(userId: string): Promise<void> {
           age: userA.age, 
           gender: userA.gender, 
           interests: userA.interests, 
-          needs: userA.needs,
+          needs: userA.needs, 
           profile_photo_url: userA.profile_photo_url
-        }
-      })
-
-      // Also send notification for user B
-      emitToUser(proposal.b, 'notification:new', {
-        type: 'message_request',
-        id: proposal.id,
-        title: 'Message Request',
-        message: `${userA.first_name || 'Someone'} wants to connect with you`,
-        avatar: userA.profile_photo_url,
-        senderName: `${userA.first_name || ''} ${userA.last_name || ''}`.trim(),
-        timestamp: new Date(),
+        },
+        type: 'match',
+        expiresAt: proposal.expiresAt,
         data: { id: proposal.id, other: userA }
       })
-      
       // Update metrics
       await redis.incr(`${KEYS.METRICS}:proposals_created`)
     }

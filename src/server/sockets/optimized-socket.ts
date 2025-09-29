@@ -6,6 +6,7 @@ import { setTyping, getTyping } from '../services/chat.js'
 import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction } from '../repos/chat.repo.js'
 import { supabase } from '../config/supabase.js'
 import { getStatus } from '../services/matchmaking-optimized.js'
+import { NotificationService } from '../services/notificationService.js'
 import Redis from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
@@ -685,6 +686,13 @@ export function initOptimizedSocket(server: Server) {
           request,
           acceptedBy: request.recipient
         }
+        
+        // Create notification for sender (request was accepted)
+        await NotificationService.notifyFriendRequestAccepted(
+          request.sender_id,
+          request.receiver_id,
+          `${request.recipient?.first_name || ''} ${request.recipient?.last_name || ''}`.trim() || 'Someone'
+        )
         
         // Notify sender
         io.to(request.sender_id).emit('friend:request:accepted', acceptedData)
@@ -1597,6 +1605,30 @@ export function initOptimizedSocket(server: Server) {
       }
     })
 
+    // Profile Visit: Handle profile visit notifications
+    socket.on('profile:visit', async ({ profileOwnerId, visitorId, visitorName }: { profileOwnerId: string, visitorId: string, visitorName: string }) => {
+      resetTimeout()
+      console.log(`👁️ Profile visit: ${visitorName} (${visitorId}) visited ${profileOwnerId}'s profile`)
+      
+      if (!profileOwnerId || !visitorId || !visitorName) {
+        console.log('❌ Missing required parameters for profile visit')
+        return
+      }
+
+      if (profileOwnerId === visitorId) {
+        console.log('❌ User cannot visit their own profile')
+        return
+      }
+
+      try {
+        // Create notification for profile owner
+        await NotificationService.notifyProfileVisit(profileOwnerId, visitorId, visitorName)
+        console.log(`✅ Profile visit notification created for ${profileOwnerId}`)
+      } catch (error) {
+        console.error('❌ Error creating profile visit notification:', error)
+      }
+    })
+
     socket.on('disconnect', (reason) => {
       const user = (socket.data as any).user
       const userId = (socket.data as any).userId
@@ -1646,35 +1678,6 @@ export function initOptimizedSocket(server: Server) {
       logger.error({ error, socketId: socket.id, userId }, 'Socket error occurred')
     })
   })
-
-  // Periodic cleanup of stale connections and metrics
-  setInterval(() => {
-    try {
-      // Log connection metrics
-      logger.info({
-        totalConnections,
-        uniqueUsers: connectionCounts.size,
-        averageConnectionsPerUser: connectionCounts.size > 0 ? totalConnections / connectionCounts.size : 0
-      }, 'Socket connection metrics')
-      
-      // Clean up any inconsistencies in connection tracking
-      let actualTotal = 0
-      for (const count of connectionCounts.values()) {
-        actualTotal += count
-      }
-      
-      if (Math.abs(actualTotal - totalConnections) > 5) {
-        logger.warn({
-          trackedTotal: totalConnections,
-          calculatedTotal: actualTotal,
-          difference: Math.abs(actualTotal - totalConnections)
-        }, 'Connection count inconsistency detected, correcting')
-        totalConnections = actualTotal
-      }
-    } catch (error) {
-      logger.error({ error }, 'Error in socket cleanup interval')
-    }
-  }, 60000) // Every minute
 
   return io
 }
