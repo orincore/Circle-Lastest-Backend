@@ -31,7 +31,7 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000) // Clean up every 5 minutes
 
-// Get user's linked social accounts
+// Get user's linked social accounts (for own profile)
 router.get('/linked-accounts', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
@@ -513,26 +513,69 @@ router.post('/callback/spotify', async (req, res) => {
 
     const spotifyProfile = profileResponse.data
 
-    // Get additional data (top artists, playlists)
-    const [topArtistsResponse, playlistsResponse] = await Promise.all([
-      axios.get('https://api.spotify.com/v1/me/top/artists?limit=5', {
+    // Get comprehensive Spotify data
+    const [topArtistsResponse, topTracksResponse, playlistsResponse, recentlyPlayedResponse] = await Promise.all([
+      axios.get('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term', {
         headers: { Authorization: `Bearer ${access_token}` }
       }).catch(() => ({ data: { items: [] } })),
-      axios.get('https://api.spotify.com/v1/me/playlists?limit=10', {
+      axios.get('https://api.spotify.com/v1/me/top/tracks?limit=10&time_range=medium_term', {
+        headers: { Authorization: `Bearer ${access_token}` }
+      }).catch(() => ({ data: { items: [] } })),
+      axios.get('https://api.spotify.com/v1/me/playlists?limit=20', {
+        headers: { Authorization: `Bearer ${access_token}` }
+      }).catch(() => ({ data: { items: [] } })),
+      axios.get('https://api.spotify.com/v1/me/player/recently-played?limit=10', {
         headers: { Authorization: `Bearer ${access_token}` }
       }).catch(() => ({ data: { items: [] } }))
     ])
 
+    // Extract music genres from top artists
+    const allGenres = topArtistsResponse.data.items?.flatMap((artist: any) => artist.genres) || []
+    const genreCounts = allGenres.reduce((acc: any, genre: string) => {
+      acc[genre] = (acc[genre] || 0) + 1
+      return acc
+    }, {})
+    const topGenres = Object.entries(genreCounts)
+      .sort(([,a]: any, [,b]: any) => b - a)
+      .slice(0, 5)
+      .map(([genre]) => genre)
+
     const platformData = {
       followers: spotifyProfile.followers?.total || 0,
       country: spotifyProfile.country,
-      top_artists: topArtistsResponse.data.items?.slice(0, 3).map((artist: any) => ({
+      subscription: spotifyProfile.product || 'free',
+      top_artists: topArtistsResponse.data.items?.slice(0, 5).map((artist: any) => ({
         name: artist.name,
         genres: artist.genres,
-        image: artist.images?.[0]?.url
+        popularity: artist.popularity,
+        image: artist.images?.[0]?.url,
+        external_url: artist.external_urls?.spotify
       })) || [],
+      top_tracks: topTracksResponse.data.items?.slice(0, 5).map((track: any) => ({
+        name: track.name,
+        artist: track.artists?.[0]?.name,
+        album: track.album?.name,
+        popularity: track.popularity,
+        preview_url: track.preview_url,
+        image: track.album?.images?.[0]?.url,
+        external_url: track.external_urls?.spotify
+      })) || [],
+      top_genres: topGenres,
       playlists_count: playlistsResponse.data.total || 0,
-      public_playlists: playlistsResponse.data.items?.filter((p: any) => p.public).length || 0
+      public_playlists: playlistsResponse.data.items?.filter((p: any) => p.public).slice(0, 5).map((playlist: any) => ({
+        name: playlist.name,
+        description: playlist.description,
+        tracks: playlist.tracks?.total || 0,
+        image: playlist.images?.[0]?.url,
+        external_url: playlist.external_urls?.spotify
+      })) || [],
+      recently_played: recentlyPlayedResponse.data.items?.slice(0, 5).map((item: any) => ({
+        track: item.track?.name,
+        artist: item.track?.artists?.[0]?.name,
+        played_at: item.played_at,
+        image: item.track?.album?.images?.[0]?.url
+      })) || [],
+      last_updated: new Date().toISOString()
     }
 
     // Store in database
