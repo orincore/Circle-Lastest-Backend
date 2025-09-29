@@ -962,4 +962,68 @@ router.post('/webhook/instagram', (req, res) => {
   res.status(200).send('EVENT_RECEIVED')
 })
 
+// Instagram deauthorize callback (required for Facebook App)
+router.post('/webhook/instagram/deauth', (req, res) => {
+  try {
+    console.log('📥 Instagram deauthorize callback received:', req.body)
+    
+    const { signed_request } = req.body
+    
+    if (signed_request) {
+      // Parse the signed request to get user ID
+      // In production, you should verify the signature
+      const payload = signed_request.split('.')[1]
+      const decoded = JSON.parse(Buffer.from(payload, 'base64').toString())
+      
+      console.log('User deauthorized Instagram access:', decoded.user_id)
+      
+      // Optional: Mark the user's Instagram account as deauthorized in your database
+      // This is useful for compliance and user privacy
+    }
+    
+    res.status(200).json({ success: true })
+  } catch (error) {
+    console.error('Error handling Instagram deauthorize:', error)
+    res.status(200).json({ success: true }) // Always return 200 for webhooks
+  }
+})
+
+// Instagram data deletion request callback (required for Facebook App)
+router.post('/webhook/instagram/deletion', (req, res) => {
+  try {
+    console.log('📥 Instagram data deletion request received:', req.body)
+    
+    const { signed_request } = req.body
+    
+    if (signed_request) {
+      // Parse the signed request to get user ID
+      const payload = signed_request.split('.')[1]
+      const decoded = JSON.parse(Buffer.from(payload, 'base64').toString())
+      
+      console.log('User requested data deletion for Instagram:', decoded.user_id)
+      
+      // Generate a confirmation code for the deletion request
+      const confirmationCode = `DEL_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      
+      // In production, you should:
+      // 1. Queue the user's data for deletion
+      // 2. Store the confirmation code
+      // 3. Actually delete the data within the required timeframe
+      
+      console.log('Generated deletion confirmation code:', confirmationCode)
+      
+      // Return the confirmation code and deletion URL
+      res.status(200).json({
+        url: `${process.env.FRONTEND_URL || 'https://circle.orincore.com'}/data-deletion/${confirmationCode}`,
+        confirmation_code: confirmationCode
+      })
+    } else {
+      res.status(200).json({ success: true })
+    }
+  } catch (error) {
+    console.error('Error handling Instagram data deletion request:', error)
+    res.status(200).json({ success: true }) // Always return 200 for webhooks
+  }
+})
+
 export default router
