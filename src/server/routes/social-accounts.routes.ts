@@ -464,8 +464,11 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
 
     // Facebook Login authorization endpoint (Instagram API with Instagram Login)
     // Scopes to discover pages and the connected Instagram business account
-    // pages_show_list to list pages; instagram_basic to read IG user basic profile
-    const scopes = ['pages_show_list', 'instagram_basic'].join(',')
+    // pages_show_list: list pages
+    // pages_manage_metadata: allows reading page access_token
+    // pages_read_engagement: safer read of page fields
+    // instagram_basic: basic IG profile once IG user is discovered
+    const scopes = ['pages_show_list', 'pages_manage_metadata', 'pages_read_engagement', 'instagram_basic'].join(',')
 
     const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?` +
       `client_id=${encodeURIComponent(INSTAGRAM_CLIENT_ID)}&` +
@@ -731,7 +734,23 @@ router.post('/callback/instagram', async (req, res) => {
     let pageAccessToken: string | null = null
     for (const page of pages) {
       try {
-        const tokenToUse = page.access_token || access_token
+        let tokenToUse = page.access_token || access_token
+        // If page access token is missing, try to fetch it explicitly
+        if (!page.access_token) {
+          try {
+            const pageTokenResp = await axios.get(`https://graph.facebook.com/v19.0/${page.id}`, {
+              params: {
+                fields: 'access_token',
+                access_token
+              }
+            })
+            if (pageTokenResp.data?.access_token) {
+              tokenToUse = pageTokenResp.data.access_token
+            }
+          } catch (e) {
+            // ignore and continue with user token (may still work if permissions allow)
+          }
+        }
         const pageDetailResp = await axios.get(`https://graph.facebook.com/v19.0/${page.id}`, {
           params: {
             fields: 'instagram_business_account',
