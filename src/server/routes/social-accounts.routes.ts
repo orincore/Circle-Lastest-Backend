@@ -448,10 +448,10 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
       expiresAt: Date.now() + 10 * 60 * 1000
     })
 
-    // Use Instagram API with Instagram Login scopes
+    // Use Instagram API with Instagram Login - consumer app scopes
     const scopes = ['instagram_business_basic'].join(',')
 
-    // Instagram API with Instagram Login uses different authorization URL
+    // Instagram API authorization URL
     const authUrl = `https://api.instagram.com/oauth/authorize?` +
       `client_id=${INSTAGRAM_CLIENT_ID}&` +
       `redirect_uri=${encodeURIComponent(`${FRONTEND_URL}/auth/instagram/callback`)}&` +
@@ -613,16 +613,15 @@ router.post('/callback/instagram', async (req, res) => {
 
     const { access_token, user_id } = tokenResponse.data
 
-    // Get user profile from Instagram API with Instagram Login (uses graph.instagram.com)
-    const profileResponse = await axios.get(`https://graph.instagram.com/me?fields=id,username,account_type,media_count&access_token=${access_token}`)
+    // Get user profile from Instagram API
+    const profileResponse = await axios.get(`https://graph.instagram.com/me?fields=id,username,account_type&access_token=${access_token}`)
     const instagramProfile = profileResponse.data
 
     console.log('📥 Instagram profile data:', instagramProfile);
 
     const platformData = {
-      account_type: instagramProfile.account_type,
-      media_count: instagramProfile.media_count || 0,
-      verification_method: 'instagram_api_login',
+      account_type: instagramProfile.account_type || 'PERSONAL',
+      verification_method: 'instagram_api_consumer',
       api_version: 'instagram_api_with_instagram_login',
       verified_at: new Date().toISOString()
     }
