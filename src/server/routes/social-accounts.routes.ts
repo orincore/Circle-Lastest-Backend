@@ -524,11 +524,21 @@ router.post('/callback/spotify', async (req, res) => {
       oauthStates.delete(state)
     }
 
+    // Determine redirect URI based on request platform
+    let redirectUri = `${FRONTEND_URL}/auth/spotify/callback`; // Default web URI
+    
+    if (stateData?.requestPlatform === 'ios' || stateData?.requestPlatform === 'android') {
+      // For mobile, use the expo redirect URI
+      redirectUri = 'exp://127.0.0.1:8081/--/auth/spotify/callback';
+    }
+    
+    console.log('🔧 Using redirect URI for token exchange:', redirectUri);
+
     // Exchange code for access token
     const tokenResponse = await axios.post('https://accounts.spotify.com/api/token', {
       grant_type: 'authorization_code',
       code,
-      redirect_uri: `${FRONTEND_URL}/auth/spotify/callback`,
+      redirect_uri: redirectUri,
       client_id: SPOTIFY_CLIENT_ID,
       client_secret: SPOTIFY_CLIENT_SECRET
     }, {
