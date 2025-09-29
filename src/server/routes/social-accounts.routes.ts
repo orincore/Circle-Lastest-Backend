@@ -140,10 +140,19 @@ router.post('/link/spotify', requireAuth, async (req: AuthRequest, res) => {
 // Instagram WebView verification (alternative to OAuth)
 router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
   try {
+    console.log('📥 Instagram verification request received');
+    console.log('📥 Request body:', JSON.stringify(req.body));
+    console.log('📥 Content-Type:', req.headers['content-type']);
+    
     const { username } = req.body
     const userId = req.user!.id
 
+    console.log('📥 Extracted username:', JSON.stringify(username));
+    console.log('📥 Username type:', typeof username);
+    console.log('📥 User ID:', userId);
+
     if (!username) {
+      console.log('❌ Username validation failed: empty username');
       return res.status(400).json({ error: 'Instagram username is required' })
     }
 
