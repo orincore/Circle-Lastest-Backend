@@ -528,8 +528,8 @@ router.post('/callback/spotify', async (req, res) => {
     let redirectUri = `${FRONTEND_URL}/auth/spotify/callback`; // Default web URI
     
     if (stateData?.requestPlatform === 'ios' || stateData?.requestPlatform === 'android') {
-      // For mobile, use the expo redirect URI
-      redirectUri = 'exp://127.0.0.1:8081/--/auth/spotify/callback';
+      // For mobile, use the custom circle scheme
+      redirectUri = 'circle://auth/spotify/callback';
     }
     
     console.log('🔧 Using redirect URI for token exchange:', redirectUri);
