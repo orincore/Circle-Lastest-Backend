@@ -11,6 +11,7 @@
     "build": "tsc -p .",
     "start": "node dist/index.js",
     "vercel-build": "npm run build",
+    "render-build": "npm install && npm run build",
     "start:optimized": "node dist/server/app.js",
     "start:worker": "node dist/server/workers/matchmaking-worker.js",
     "start:cluster": "pm2 start ecosystem.config.js",
