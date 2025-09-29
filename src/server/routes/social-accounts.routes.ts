@@ -19,7 +19,7 @@ function generateOAuthState(): string {
 }
 
 // Store OAuth states temporarily (in production, use Redis)
-const oauthStates = new Map<string, { userId: string, platform: string, expiresAt: number }>()
+const oauthStates = new Map<string, { userId: string, platform: string, requestPlatform?: string, expiresAt: number }>()
 
 // Clean up expired states
 setInterval(() => {
@@ -109,11 +109,13 @@ router.post('/link/spotify', requireAuth, async (req: AuthRequest, res) => {
 
     const userId = req.user!.id
     const state = generateOAuthState()
+    const { platform } = req.body // Get platform info from request
     
     // Store state with expiration (10 minutes)
     oauthStates.set(state, {
       userId,
       platform: 'spotify',
+      requestPlatform: platform || 'web',
       expiresAt: Date.now() + 10 * 60 * 1000
     })
 
@@ -125,13 +127,26 @@ router.post('/link/spotify', requireAuth, async (req: AuthRequest, res) => {
       'playlist-read-private'
     ].join(' ')
 
+    // Use different redirect URIs for different platforms
+    let redirectUri
+    if (platform === 'ios' || platform === 'android') {
+      // For mobile apps, use a custom scheme or universal link
+      redirectUri = `${FRONTEND_URL}/auth/spotify/callback`
+    } else {
+      // For web
+      redirectUri = `${FRONTEND_URL}/auth/spotify/callback`
+    }
+
     const authUrl = `https://accounts.spotify.com/authorize?` +
       `response_type=code&` +
       `client_id=${SPOTIFY_CLIENT_ID}&` +
       `scope=${encodeURIComponent(scopes)}&` +
-      `redirect_uri=${encodeURIComponent(`${FRONTEND_URL}/auth/spotify/callback`)}&` +
-      `state=${state}`
+      `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+      `state=${state}&` +
+      `show_dialog=true` // Force login dialog for better mobile UX
 
+    console.log('✅ Generated Spotify OAuth URL for platform:', platform);
+    console.log('Redirect URI:', redirectUri);
     res.json({ authUrl, state })
   } catch (error) {
     console.error('Error starting Spotify OAuth:', error)
