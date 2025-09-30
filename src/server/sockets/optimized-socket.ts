@@ -8,6 +8,7 @@ import { supabase } from '../config/supabase.js'
 import { getStatus } from '../services/matchmaking-optimized.js'
 import { NotificationService } from '../services/notificationService.js'
 import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, trackProfileVisited } from '../services/activityService.js'
+import { setupVoiceCallHandlers } from '../handlers/voiceCallHandler.js'
 import Redis from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
@@ -1851,6 +1852,14 @@ export function initOptimizedSocket(server: Server) {
         socket.emit('activity:recent_list', { activities: [] })
       }
     })
+
+    // Voice call handlers are now handled by the dedicated VoiceCallHandler
+    // Removed duplicate handlers to prevent conflicts
+
+    // Set up voice call handlers
+    if (userId) {
+      setupVoiceCallHandlers(io, socket, userId);
+    }
 
     socket.on('disconnect', (reason) => {
       const user = (socket.data as any).user

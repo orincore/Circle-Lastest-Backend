@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
 import { emitToAll, emitToUser } from '../sockets/optimized-socket.js'
+import { NotificationService } from './notificationService.js'
 
 export interface ActivityData {
   type: string
@@ -72,6 +73,117 @@ function checkActivityRateLimit(userId: string): boolean {
   return true
 }
 
+// Send notifications for activity events
+async function sendActivityNotifications(activity: ActivityEvent): Promise<void> {
+  try {
+    const { type, data } = activity
+
+    switch (type) {
+      case ACTIVITY_TYPES.USER_JOINED:
+        // Notify nearby users about new user
+        await NotificationService.createNotification({
+          recipient_id: 'broadcast', // Special case for broadcast notifications
+          sender_id: data.user_id,
+          type: 'new_user_suggestion',
+          title: '🎉 New User Joined',
+          message: `${data.user_name} from ${data.location} just joined Circle!`,
+          data: { 
+            action: 'new_user_joined',
+            userId: data.user_id,
+            location: data.location
+          }
+        })
+        break
+
+      case ACTIVITY_TYPES.USER_MATCHED:
+        // Notify both users about the match
+        await NotificationService.createNotification({
+          recipient_id: data.user1_id,
+          sender_id: data.user2_id,
+          type: 'new_match',
+          title: '💕 New Match!',
+          message: `You matched with ${data.user2_name}!`,
+          data: { 
+            action: 'new_match',
+            matchedUserId: data.user2_id
+          }
+        })
+        
+        await NotificationService.createNotification({
+          recipient_id: data.user2_id,
+          sender_id: data.user1_id,
+          type: 'new_match',
+          title: '💕 New Match!',
+          message: `You matched with ${data.user1_name}!`,
+          data: { 
+            action: 'new_match',
+            matchedUserId: data.user1_id
+          }
+        })
+        break
+
+      case ACTIVITY_TYPES.FRIENDS_CONNECTED:
+        // Notify mutual friends about new connection
+        await NotificationService.createNotification({
+          recipient_id: 'broadcast', // Broadcast to mutual friends
+          sender_id: data.user1_id,
+          type: 'friend_request_accepted',
+          title: '🤝 New Connection',
+          message: `${data.user1_name} and ${data.user2_name} are now friends!`,
+          data: { 
+            action: 'friends_connected',
+            user1Id: data.user1_id,
+            user2Id: data.user2_id
+          }
+        })
+        break
+
+      case ACTIVITY_TYPES.PROFILE_VISITED:
+        // Don't send notification for profile visits (too spammy)
+        // Profile visit notifications are handled separately
+        break
+
+      case ACTIVITY_TYPES.LOCATION_UPDATED:
+        // Notify nearby users about location update
+        await NotificationService.createNotification({
+          recipient_id: 'broadcast',
+          sender_id: data.user_id,
+          type: 'profile_suggestion',
+          title: '📍 Someone Nearby',
+          message: `${data.user_name} is now in ${data.location}`,
+          data: { 
+            action: 'location_updated',
+            userId: data.user_id,
+            location: data.location
+          }
+        })
+        break
+
+      case ACTIVITY_TYPES.INTEREST_UPDATED:
+        // Notify users with similar interests
+        await NotificationService.createNotification({
+          recipient_id: 'broadcast',
+          sender_id: data.user_id,
+          type: 'profile_suggestion',
+          title: '🎯 Similar Interests',
+          message: `${data.user_name} updated their interests and might be a great match!`,
+          data: { 
+            action: 'interest_updated',
+            userId: data.user_id,
+            interests: data.interests
+          }
+        })
+        break
+
+      default:
+        // No notification for other activity types
+        break
+    }
+  } catch (error) {
+    logger.error({ error, activity }, 'Failed to send activity notifications')
+  }
+}
+
 // Create and broadcast activity
 export async function createActivity(activityData: ActivityData): Promise<void> {
   try {
@@ -138,6 +250,9 @@ export async function createActivity(activityData: ActivityData): Promise<void> 
 
     // Broadcast to all connected users
     emitToAll(`activity:${activity.type}`, activity)
+    
+    // Send notifications for specific activity types
+    await sendActivityNotifications(activity)
     
     logger.info({ 
       activityId: activity.id, 
