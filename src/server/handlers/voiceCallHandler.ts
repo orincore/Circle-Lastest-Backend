@@ -193,6 +193,9 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   socket.on('voice:accept-call', async (data: { callId: string; callType?: string }) => {
     try {
       console.log('✅ Voice call accepted:', data.callId, 'by:', userId);
+      console.log('🔍 BACKEND DEBUG: Received voice:accept-call event');
+      console.log('🔍 BACKEND DEBUG: Event data:', data);
+      console.log('🔍 BACKEND DEBUG: Socket user ID:', userId);
 
       // Get call from database
       console.log('🔍 Looking for call in database:', data.callId);
@@ -252,9 +255,12 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       });
 
       console.log('✅ Voice call connected:', data.callId);
+      console.log('🔍 BACKEND DEBUG: Call acceptance completed successfully');
 
     } catch (error) {
       console.error('❌ Error accepting voice call:', error);
+      console.error('🔍 BACKEND DEBUG: Call acceptance failed with error:', (error as Error).message);
+      console.error('🔍 BACKEND DEBUG: Error stack:', (error as Error).stack);
       socket.emit('voice:error', { error: 'Failed to accept call' });
     }
   });
@@ -605,5 +611,15 @@ export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
     } else {
       console.error('❌ DEBUG: No authenticated user ID found on socket');
     }
+  });
+  
+  // Test handler to verify events are reaching backend
+  socket.on('test:backend-connection', (data) => {
+    console.log('🧪 TEST: Backend received test event from:', userId, 'data:', data);
+    socket.emit('test:backend-response', {
+      message: 'Backend received your test event',
+      userId: userId,
+      timestamp: Date.now()
+    });
   });
 }
