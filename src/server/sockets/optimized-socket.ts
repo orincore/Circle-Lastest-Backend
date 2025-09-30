@@ -7,6 +7,7 @@ import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessa
 import { supabase } from '../config/supabase.js'
 import { getStatus } from '../services/matchmaking-optimized.js'
 import { NotificationService } from '../services/notificationService.js'
+import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, trackProfileVisited } from '../services/activityService.js'
 import Redis from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
@@ -181,6 +182,25 @@ export function emitToUser(userId: string, event: string, payload: any) {
     }
   } catch (error) {
     logger.error({ error, userId, event }, 'Failed to emit to user')
+  }
+}
+
+export function emitToAll(event: string, payload: any) {
+  try {
+    if (!ioRef) {
+      logger.warn({ event }, 'Socket.IO not initialized - cannot emit to all')
+      return
+    }
+    
+    logger.info({ 
+      event, 
+      connectedSockets: ioRef.sockets.sockets.size,
+      payloadKeys: Object.keys(payload || {})
+    }, '📡 Broadcasting to all users')
+    
+    ioRef.emit(event, payload)
+  } catch (error) {
+    logger.error({ error, event }, 'Failed to emit to all users')
   }
 }
 
@@ -584,6 +604,37 @@ export function initOptimizedSocket(server: Server) {
           .eq('id', senderId)
           .single()
 
+        // Create notification in database
+        const { NotificationService } = await import('../services/notificationService.js')
+        await NotificationService.createNotification({
+          recipient_id: receiverId,
+          sender_id: senderId,
+          type: 'friend_request',
+          title: 'Friend Request',
+          message: `${senderInfo?.first_name || 'Someone'} sent you a friend request`,
+          data: {
+            requestId: newRequest.id,
+            userId: senderId,
+            userName: senderInfo?.first_name || 'Someone',
+            userAvatar: senderInfo?.profile_photo_url
+          }
+        })
+
+        // Track friend request activity for live feed
+        try {
+          const { data: receiverInfo } = await supabase
+            .from('profiles')
+            .select('id, first_name, last_name')
+            .eq('id', receiverId)
+            .single()
+          
+          if (senderInfo && receiverInfo) {
+            await trackFriendRequestSent(senderInfo, receiverInfo)
+          }
+        } catch (error) {
+          console.error('❌ Failed to track friend request activity:', error)
+        }
+
         // Notify receiver with correct data structure
         io.to(receiverId).emit('friend:request:received', {
           sender_id: senderId,
@@ -677,6 +728,15 @@ export function initOptimizedSocket(server: Server) {
         }
 
         console.log(`✅ Friend request accepted, friendship created`)
+
+        // Track friends connected activity for live feed
+        try {
+          if (request.sender && request.recipient) {
+            await trackFriendsConnected(request.sender, request.recipient)
+          }
+        } catch (error) {
+          console.error('❌ Failed to track friends connected activity:', error)
+        }
 
         // Notify both users that the friend request was accepted
         const acceptedData = {
@@ -858,6 +918,20 @@ export function initOptimizedSocket(server: Server) {
 
         console.log(`✅ Friendship marked as inactive successfully`)
 
+        // Clean up any related friend requests
+        console.log(`🧹 Cleaning up friend requests between ${currentUserId} and ${targetUserId}`)
+        const { error: requestCleanupError } = await supabase
+          .from('friend_requests')
+          .delete()
+          .or(`and(sender_id.eq.${currentUserId},receiver_id.eq.${targetUserId}),and(sender_id.eq.${targetUserId},receiver_id.eq.${currentUserId})`)
+
+        if (requestCleanupError) {
+          console.error('❌ Error cleaning up friend requests:', requestCleanupError)
+          // Don't fail the unfriend operation for this, just log it
+        } else {
+          console.log(`✅ Friend requests cleaned up successfully`)
+        }
+
         // Notify the other user that they were unfriended
         io.to(targetUserId).emit('friend:unfriended', {
           unfriendedBy: currentUserId,
@@ -918,11 +992,38 @@ export function initOptimizedSocket(server: Server) {
 
         console.log(`✅ Friend request cancelled`)
 
-        // Notify receiver that request was cancelled
+        // Delete the corresponding notification
+        try {
+          console.log(`🗑️ Deleting friend request notification for receiver: ${receiverId}`);
+          const { error: notificationDeleteError } = await supabase
+            .from('notifications')
+            .delete()
+            .eq('recipient_id', receiverId)
+            .eq('sender_id', senderId)
+            .eq('type', 'friend_request')
+            .contains('data', { requestId: request.id });
+
+          if (notificationDeleteError) {
+            console.error('❌ Error deleting friend request notification:', notificationDeleteError);
+          } else {
+            console.log('✅ Friend request notification deleted successfully');
+          }
+        } catch (notificationError) {
+          console.error('❌ Failed to delete friend request notification:', notificationError);
+        }
+
+        // Notify receiver that request was cancelled and remove notification
         io.to(receiverId).emit('friend:request:cancelled', {
           request,
           cancelledBy: senderId
-        })
+        });
+        
+        // Emit notification removal event to receiver
+        io.to(receiverId).emit('notification:removed', {
+          type: 'friend_request',
+          sender_id: senderId,
+          requestId: request.id
+        });
 
         // Confirm to sender
         socket.emit('friend:request:cancel:confirmed', {
@@ -1494,6 +1595,76 @@ export function initOptimizedSocket(server: Server) {
       }
     })
 
+    // Chat: mark all messages as read
+    socket.on('chat:mark-all-read', async ({ chatId }: { chatId: string }) => {
+      resetTimeout()
+      const userId: string | undefined = user?.id
+      if (!chatId || !userId) return
+      
+      if (!(await checkEventRateLimit(userId, 'chat:mark-all-read'))) {
+        return
+      }
+      
+      try {
+        // Ultra-efficient: Use a single SQL query to mark all messages as read
+        // This avoids fetching messages first, then inserting receipts
+        const { error: directInsertError } = await supabase.rpc('mark_chat_messages_read', {
+          p_chat_id: chatId,
+          p_user_id: userId
+        })
+        
+        if (directInsertError) {
+          console.log('🔄 Direct SQL failed, using fallback batch method...')
+          
+          // Fallback: Get only unread messages to minimize operations
+          const { data: unreadMessages, error: messagesError } = await supabase
+            .from('messages')
+            .select('id')
+            .eq('chat_id', chatId)
+            .not('id', 'in', `(
+              SELECT message_id FROM message_receipts 
+              WHERE user_id = '${userId}' AND status = 'read'
+            )`)
+            .order('created_at', { ascending: false })
+            .limit(50) // Reduced limit for efficiency
+          
+          if (messagesError || !unreadMessages?.length) {
+            socket.emit('chat:mark-all-read:confirmed', { chatId, success: true, markedCount: 0 })
+            return
+          }
+          
+          // Batch upsert only unread messages
+          const receiptsToInsert = unreadMessages.map(msg => ({
+            message_id: msg.id,
+            user_id: userId,
+            status: 'read' as const
+          }))
+          
+          const { error: batchError } = await supabase
+            .from('message_receipts')
+            .upsert(receiptsToInsert, { onConflict: 'message_id,user_id,status' })
+          
+          if (batchError) {
+            console.error('❌ Batch fallback failed:', batchError)
+            socket.emit('chat:mark-all-read:confirmed', { chatId, success: false })
+            return
+          }
+          
+          console.log(`✅ Fallback: Marked ${unreadMessages.length} unread messages`)
+        } else {
+          console.log('✅ Direct SQL: All messages marked as read efficiently')
+        }
+        
+        // Emit minimal events for real-time updates
+        io.to(`chat:${chatId}`).emit('chat:all-read', { chatId, by: userId })
+        socket.emit('chat:mark-all-read:confirmed', { chatId, success: true })
+        
+      } catch (error) {
+        console.error('❌ Error in chat:mark-all-read:', error)
+        socket.emit('chat:mark-all-read:confirmed', { chatId, success: false })
+      }
+    })
+
     // Chat: toggle reaction (WhatsApp style) with rate limiting
     socket.on('chat:reaction:toggle', async ({ chatId, messageId, emoji }: { chatId: string; messageId: string; emoji: string }) => {
       resetTimeout()
@@ -1639,8 +1810,45 @@ export function initOptimizedSocket(server: Server) {
         // Create notification for profile owner
         await NotificationService.notifyProfileVisit(profileOwnerId, visitorId, visitorName)
         console.log(`✅ Profile visit notification created for ${profileOwnerId}`)
+        
+        // Track profile visit activity for live feed
+        const { data: visitor } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name')
+          .eq('id', visitorId)
+          .single()
+        
+        const { data: profileOwner } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name')
+          .eq('id', profileOwnerId)
+          .single()
+        
+        if (visitor && profileOwner) {
+          await trackProfileVisited(visitor, profileOwner)
+        }
       } catch (error) {
         console.error('❌ Error creating profile visit notification:', error)
+      }
+    })
+
+    // Activity Feed: Get recent activities
+    socket.on('activity:get_recent', async ({ limit }: { limit?: number }) => {
+      resetTimeout()
+      const userId: string | undefined = user?.id
+      if (!userId) return
+      
+      if (!(await checkEventRateLimit(userId, 'activity:get_recent'))) {
+        return
+      }
+      
+      try {
+        const activities = getRecentActivities(limit || 20)
+        socket.emit('activity:recent_list', { activities })
+        logger.info({ userId, count: activities.length }, 'Recent activities sent')
+      } catch (error) {
+        logger.error({ error, userId }, 'Failed to get recent activities')
+        socket.emit('activity:recent_list', { activities: [] })
       }
     })
 

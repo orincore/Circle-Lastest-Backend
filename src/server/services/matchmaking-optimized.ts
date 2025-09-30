@@ -6,6 +6,7 @@ import { ensureChatForUsers } from '../repos/chat.repo.js'
 import { logger } from '../config/logger.js'
 import { CirclePointsService } from './circle-points.service.js'
 import { NotificationService } from './notificationService.js'
+import { trackUserMatched, trackChatStarted } from './activityService.js'
 
 // Redis client for distributed state management
 const redis = new Redis({
@@ -1029,6 +1030,19 @@ export async function decide(userId: string, decision: 'accept' | 'pass'): Promi
             .update({ accepted_a: true, accepted_b: true, matched_at: new Date().toISOString() })
             .eq('proposal_id', proposal.id)
         } catch {}
+        
+        // Track match activity for live feed
+        try {
+          const userA = await findById(proposal.a)
+          const userB = await findById(proposal.b)
+          
+          if (userA && userB) {
+            await trackUserMatched(userA, userB)
+            await trackChatStarted(userA, userB)
+          }
+        } catch (error) {
+          logger.error({ error, proposal }, 'Failed to track match activity')
+        }
         
         // Notify both users about match and automatic friendship
         try {

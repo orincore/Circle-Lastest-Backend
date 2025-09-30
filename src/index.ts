@@ -5,9 +5,13 @@ import { env } from './server/config/env.js'
 import { logger } from './server/config/logger.js'
 import { setupGraphQL } from './server/graphql/index.js'
 import { notFound, errorHandler } from './server/middleware/errorHandler.js'
+import { loadActivitiesFromDatabase } from './server/services/activityService.js'
 
 async function bootstrap() {
   await setupGraphQL(app)
+
+  // Load existing activities from database
+  await loadActivitiesFromDatabase()
 
   // Register 404 and error handlers AFTER GraphQL and routes
   app.use(notFound)

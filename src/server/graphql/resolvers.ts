@@ -1,6 +1,7 @@
 import type { Profile } from '../repos/profiles.repo.js'
 import { findById, updateLocation, updatePreferences, findNearbyUsers, findUsersInArea } from '../repos/profiles.repo.js'
 import { supabase } from '../config/supabase.js'
+import { trackLocationUpdated, trackInterestUpdated } from '../services/activityService.js'
 
 function toUser(u: Profile | null) {
   if (!u) return null
@@ -130,6 +131,16 @@ export const resolvers = {
         .select('*')
         .single()
       if (error) throw error
+      
+      // Track interests update activity for live feed if interests were updated
+      if (Array.isArray(input.interests)) {
+        try {
+          await trackInterestUpdated(data as Profile, input.interests)
+        } catch (error) {
+          console.error('❌ Failed to track interests update activity:', error)
+        }
+      }
+      
       return toUser(data as Profile)
     },
     updateLocation: async (_: any, { input }: any, ctx: any) => {
@@ -142,6 +153,15 @@ export const resolvers = {
         city: input.city,
         country: input.country
       })
+      
+      // Track location update activity for live feed
+      try {
+        const locationName = input.city && input.country ? `${input.city}, ${input.country}` : 
+                           input.city || input.country || 'Unknown Location'
+        await trackLocationUpdated(updatedProfile, locationName)
+      } catch (error) {
+        console.error('❌ Failed to track location update activity:', error)
+      }
       
       return toUser(updatedProfile)
     },

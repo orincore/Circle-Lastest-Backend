@@ -6,6 +6,7 @@ import { supabase } from '../config/supabase.js'
 import { signJwt, verifyJwt } from '../utils/jwt.js'
 import { hashPassword, verifyPassword } from '../utils/password.js'
 import { NotificationService } from '../services/notificationService.js'
+import { trackUserJoined } from '../services/activityService.js'
 
 const router = Router()
 
@@ -183,6 +184,14 @@ router.post('/signup', async (req, res) => {
   } catch (error) {
     console.error('❌ Error creating Instagram account during signup:', error)
     // Don't fail signup if Instagram account creation fails
+  }
+
+  // Track user joined activity for live feed
+  try {
+    await trackUserJoined(profile)
+    console.log('✅ Tracked user joined activity for live feed')
+  } catch (error) {
+    console.error('❌ Failed to track user joined activity:', error)
   }
 
   // Send notifications to potential matches about new user

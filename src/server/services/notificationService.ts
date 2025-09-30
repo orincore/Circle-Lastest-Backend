@@ -11,10 +11,12 @@ export interface NotificationData {
 }
 
 export type NotificationType = 
+  | 'friend_request'
   | 'friend_request_accepted'
   | 'profile_visit'
   | 'new_match'
   | 'profile_suggestion'
+  | 'message_request'
   | 'message_request_accepted'
   | 'friend_unfriended'
   | 'new_message'
@@ -44,16 +46,19 @@ export class NotificationService {
       const { data: notification, error } = await supabase
         .from('notifications')
         .insert(insertData)
-        .select(`
-          *,
-          sender:sender_id(
-            id,
-            first_name,
-            last_name,
-            profile_photo_url
-          )
-        `)
+        .select('*')
         .single();
+        
+      // Get sender information separately to avoid schema cache issues
+      let senderInfo = null;
+      if (notification && notification.sender_id) {
+        const { data: sender } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name, profile_photo_url')
+          .eq('id', notification.sender_id)
+          .single();
+        senderInfo = sender;
+      }
 
       if (error) {
         console.error('❌ Error creating notification:', error);
@@ -68,6 +73,7 @@ export class NotificationService {
         emitToUser(notificationData.recipient_id, 'notification:new', {
           notification: {
             ...notification,
+            sender: senderInfo,
             timestamp: new Date(notification.created_at)
           }
         });
@@ -77,7 +83,7 @@ export class NotificationService {
       }
 
       console.log('✅ Notification created successfully:', notification.id);
-      return notification;
+      return { ...notification, sender: senderInfo };
     } catch (error) {
       console.error('❌ Failed to create notification:', error);
       console.error('❌ Stack trace:', (error as Error).stack);
@@ -92,18 +98,24 @@ export class NotificationService {
     try {
       const { data: notifications, error } = await supabase
         .from('notifications')
-        .select(`
-          *,
-          sender:sender_id(
-            id,
-            first_name,
-            last_name,
-            profile_photo_url
-          )
-        `)
+        .select('*')
         .eq('recipient_id', userId)
         .order('created_at', { ascending: false })
         .limit(limit);
+        
+      // Get sender information separately for each notification
+      if (notifications && notifications.length > 0) {
+        for (const notification of notifications) {
+          if (notification.sender_id) {
+            const { data: sender } = await supabase
+              .from('profiles')
+              .select('id, first_name, last_name, profile_photo_url')
+              .eq('id', notification.sender_id)
+              .single();
+            notification.sender = sender;
+          }
+        }
+      }
 
       if (error) {
         console.error('❌ Error fetching notifications:', error);

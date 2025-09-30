@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { AuthRequest, requireAuth } from '../middleware/auth.js';
 import { NotificationService } from '../services/notificationService.js';
+import { supabase } from '../config/supabase.js';
 
 const router = Router();
 
@@ -128,7 +129,7 @@ router.patch('/mark-all-read', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
 
-    const { error } = await require('../config/database').supabase
+    const { error } = await supabase
       .from('notifications')
       .update({ read: true })
       .eq('recipient_id', userId)

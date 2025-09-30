@@ -95,7 +95,7 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
     const largerId = senderId > receiverId ? senderId : receiverId
     
     const { data: friendshipData, error: friendshipError } = await supabase
-      .from('friends')
+      .from('friendships')
       .select('*')
       .eq('user1_id', smallerId)
       .eq('user2_id', largerId)
@@ -189,10 +189,11 @@ router.post('/accept/:requestId', requireAuth, async (req: AuthRequest, res) => 
     const largerId = request.sender_id > request.receiver_id ? request.sender_id : request.receiver_id
 
     const { error: friendshipError } = await supabase
-      .from('friends')
+      .from('friendships')
       .insert({
         user1_id: smallerId,
-        user2_id: largerId
+        user2_id: largerId,
+        status: 'active'
       })
 
     if (friendshipError && friendshipError.code !== '23505') { // Ignore duplicate key error
@@ -497,6 +498,20 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
 
     if (error) throw error
 
+    // Clean up any related friend requests
+    console.log(`🧹 Cleaning up friend requests between ${userId} and ${friendId}`)
+    const { error: requestCleanupError } = await supabase
+      .from('friend_requests')
+      .delete()
+      .or(`and(sender_id.eq.${userId},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${userId})`)
+
+    if (requestCleanupError) {
+      console.error('❌ Error cleaning up friend requests:', requestCleanupError)
+      // Don't fail the unfriend operation for this, just log it
+    } else {
+      console.log(`✅ Friend requests cleaned up successfully`)
+    }
+
     res.json({ success: true })
   } catch (error) {
     console.error('Remove friend error:', error)
@@ -688,7 +703,7 @@ router.get('/can-message/:userId', requireAuth, async (req: AuthRequest, res) =>
     const largerId = currentUserId > userId ? currentUserId : userId
     
     const { data: friendshipData, error: friendshipError } = await supabase
-      .from('friends')
+      .from('friendships')
       .select('*')
       .eq('user1_id', smallerId)
       .eq('user2_id', largerId)
