@@ -521,3 +521,35 @@ export async function cleanupOldCalls(): Promise<number> {
 
 // Run cleanup every 30 minutes
 setInterval(cleanupOldCalls, 30 * 60 * 1000);
+
+// Test handler to debug user room subscription
+export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
+  const userId = (socket.data as any).user?.id;
+  
+  // Test user room subscription
+  socket.on('test:user-room', async (data) => {
+    console.log('🧪 Test user room event from:', userId, 'data:', data);
+    
+    if (userId) {
+      // Check if user is in their own room
+      const userSockets = await io.in(userId).fetchSockets();
+      console.log('🧪 User sockets in room', userId, ':', userSockets.length);
+      console.log('🧪 Socket IDs:', userSockets.map((s: any) => s.id));
+      console.log('🧪 Current socket ID:', socket.id);
+      
+      // Test emitting to the user's room
+      io.to(userId).emit('voice:test', {
+        message: 'Test voice event',
+        timestamp: Date.now(),
+        fromUserId: userId
+      });
+      
+      // Also emit test user event
+      io.to(userId).emit('test:user:event', {
+        message: 'User room test successful',
+        userId: userId,
+        socketId: socket.id
+      });
+    }
+  });
+}
