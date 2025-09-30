@@ -1926,6 +1926,26 @@ export function initOptimizedSocket(server: Server) {
           });
         }
       });
+      
+      // Handle connection state refresh for voice calls
+      socket.on('refresh-connection-state', () => {
+        if (user?.id) {
+          console.log(`🔄 Refreshing connection state for ${user.id}`);
+          
+          // Ensure user is in their room
+          if (!socket.rooms.has(user.id)) {
+            socket.join(user.id);
+          }
+          
+          // Send connection state confirmation
+          socket.emit('connection-state-refreshed', {
+            userId: user.id,
+            socketId: socket.id,
+            isInRoom: socket.rooms.has(user.id),
+            timestamp: Date.now()
+          });
+        }
+      });
     }
 
     socket.on('disconnect', (reason) => {
