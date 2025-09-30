@@ -552,4 +552,46 @@ export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
       });
     }
   });
+  
+  // Debug handler to check socket authentication and room membership
+  socket.on('debug:socket-info', async (data) => {
+    console.log('🔍 DEBUG: Socket info request from:', userId, 'data:', data);
+    
+    // Check socket authentication
+    const socketUserId = (socket.data as any).user?.id;
+    const socketAuth = (socket.data as any).user;
+    
+    console.log('🔍 DEBUG: Socket authentication details:', {
+      socketId: socket.id,
+      authenticatedUserId: socketUserId,
+      requestedUserId: data.requestedUserId,
+      userIdMatch: socketUserId === data.requestedUserId,
+      hasUserData: !!socketAuth,
+      userDataKeys: socketAuth ? Object.keys(socketAuth) : []
+    });
+    
+    // Check room membership
+    if (socketUserId) {
+      const userSockets = await io.in(socketUserId).fetchSockets();
+      console.log('🔍 DEBUG: Room membership check:', {
+        userId: socketUserId,
+        socketsInRoom: userSockets.length,
+        socketIds: userSockets.map((s: any) => s.id),
+        currentSocketInRoom: userSockets.some((s: any) => s.id === socket.id)
+      });
+      
+      // Try to manually join the room if not already joined
+      if (!userSockets.some((s: any) => s.id === socket.id)) {
+        console.log('🔍 DEBUG: Socket not in user room, attempting to join...');
+        try {
+          socket.join(socketUserId);
+          console.log('✅ DEBUG: Successfully joined user room:', socketUserId);
+        } catch (error) {
+          console.error('❌ DEBUG: Failed to join user room:', error);
+        }
+      }
+    } else {
+      console.error('❌ DEBUG: No authenticated user ID found on socket');
+    }
+  });
 }
