@@ -227,6 +227,18 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       }
 
       // Notify both parties that call is accepted
+      console.log('🔍 BACKEND DEBUG: Emitting voice:call-accepted to caller:', call.caller_id);
+      console.log('🔍 BACKEND DEBUG: Call acceptance data:', {
+        callId: data.callId,
+        acceptedBy: userId,
+        callType: call.call_type
+      });
+      
+      // Check if caller is connected
+      const callerSockets = await io.in(call.caller_id).fetchSockets();
+      console.log('🔍 BACKEND DEBUG: Caller sockets found:', callerSockets.length);
+      console.log('🔍 BACKEND DEBUG: Caller socket IDs:', callerSockets.map((s: any) => s.id));
+      
       io.to(call.caller_id).emit('voice:call-accepted', {
         callId: data.callId,
         acceptedBy: userId,
