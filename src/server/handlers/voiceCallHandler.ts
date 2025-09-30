@@ -622,4 +622,14 @@ export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
       timestamp: Date.now()
     });
   });
+  
+  // Keep-alive handler during voice calls
+  socket.on('voice:keep-alive', (data) => {
+    console.log('💓 KEEP-ALIVE: Voice call ping from:', userId, 'duration:', data.duration + 's');
+    // Respond with pong to confirm connection
+    socket.emit('voice:keep-alive-pong', {
+      callId: data.callId,
+      timestamp: Date.now()
+    });
+  });
 }
