@@ -11,3 +11,12 @@ services:
         value: production
       - key: PORT
         value: 10000
+      - key: CORS_ORIGIN
+        value: https://circle-frontend.onrender.com
+      # Add your other environment variables here:
+      # - key: SUPABASE_URL
+      #   value: your_supabase_url
+      # - key: SUPABASE_ANON_KEY
+      #   value: your_supabase_key
+      # - key: JWT_SECRET
+      #   value: your_jwt_secret

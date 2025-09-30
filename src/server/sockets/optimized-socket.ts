@@ -208,16 +208,22 @@ export function emitToAll(event: string, payload: any) {
 export function initOptimizedSocket(server: Server) {
   const io = new IOServer(server, {
     path: '/ws',
-    cors: { origin: '*', credentials: true },
-    // Connection optimization
+    cors: { 
+      origin: process.env.NODE_ENV === 'production' 
+        ? ['https://circle.orincore.com', 'https://api.circle.orincore.com']
+        : '*', 
+      credentials: true 
+    },
+    // Optimized for EC2 backend (no serverless limitations)
     pingTimeout: 60000,
     pingInterval: 25000,
     upgradeTimeout: 10000,
     maxHttpBufferSize: 1e6, // 1MB
-    // Note: compression option removed as it's not available in this Socket.IO version
-    // Transport optimization
+    // Standard transport configuration (WebSocket first for EC2)
     transports: ['websocket', 'polling'],
-    allowEIO3: true
+    allowEIO3: true,
+    // Standard production settings
+    serveClient: false,
   })
   
   ioRef = io
