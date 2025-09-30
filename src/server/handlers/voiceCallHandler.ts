@@ -114,9 +114,13 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   socket.on('voice:start-call', async (data: { receiverId: string; callType?: string }) => {
     try {
       console.log('📞 Voice call started by:', userId, 'to:', data.receiverId);
+      console.log('📞 BACKEND DEBUG: Received voice:start-call event');
+      console.log('📞 BACKEND DEBUG: Event data:', data);
+      console.log('📞 BACKEND DEBUG: Socket user ID:', userId);
 
       // Check if users are friends (optional - you might want to allow calls to non-friends)
-      const { data: friendship } = await supabase
+      console.log('🔍 Checking friendship between:', userId, 'and', data.receiverId);
+      const { data: friendship, error: friendshipError } = await supabase
         .from('friendships')
         .select('id')
         .or(`and(user1_id.eq.${userId},user2_id.eq.${data.receiverId}),and(user1_id.eq.${data.receiverId},user2_id.eq.${userId})`)
@@ -124,10 +128,15 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         .limit(1)
         .maybeSingle();
 
+      console.log('🔍 Friendship query result:', { friendship, friendshipError });
+
       if (!friendship) {
+        console.warn('⚠️ No active friendship found between users');
         socket.emit('voice:error', { error: 'You can only call friends' });
         return;
       }
+
+      console.log('✅ Friendship verified, proceeding with call');
 
       // Get caller info from profiles table
       const { data: callerInfo } = await supabase
@@ -173,13 +182,35 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       // Check if receiver is connected
       const receiverSockets = await io.in(data.receiverId).fetchSockets();
       console.log('📞 Receiver sockets found:', receiverSockets.length);
+      
       if (receiverSockets.length === 0) {
         console.warn('⚠️ Receiver is not connected to socket');
+        
+        // Update call status to missed since receiver is offline
+        await updateCallStatus(callId, 'missed', 'receiver_offline');
+        
+        // Notify caller that receiver is offline
+        socket.emit('voice:error', { 
+          error: 'User is currently offline and cannot receive calls',
+          reason: 'receiver_offline',
+          callId 
+        });
+        
+        console.log('❌ Call failed - receiver offline:', callId);
+        return;
       } else {
         console.log('📞 Receiver socket IDs:', receiverSockets.map(s => s.id));
       }
       
+      // Send incoming call to receiver
       io.to(data.receiverId).emit('voice:incoming-call', callData);
+      
+      // Confirm to caller that call was sent
+      socket.emit('voice:call-sent', { 
+        callId, 
+        message: 'Call sent to receiver',
+        receiverOnline: true 
+      });
 
       console.log('✅ Voice call initiated and notification sent:', callId);
 
