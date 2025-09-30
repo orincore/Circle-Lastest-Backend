@@ -297,10 +297,29 @@ export function initOptimizedSocket(server: Server) {
       userConnections: userId ? connectionCounts.get(userId) : 0
     }, 'socket connected')
 
-    // Join user room for direct messaging
+    // Join user room for direct messaging with enhanced verification
     if (user?.id) {
       try { 
+        // Join user room
         socket.join(user.id)
+        
+        // Verify room membership
+        const isInRoom = socket.rooms.has(user.id);
+        console.log(`🏠 User ${user.id} room membership:`, {
+          socketId: socket.id,
+          userId: user.id,
+          isInRoom,
+          allRooms: Array.from(socket.rooms)
+        });
+        
+        if (!isInRoom) {
+          console.warn(`⚠️ Failed to join room ${user.id}, retrying...`);
+          socket.join(user.id);
+          
+          // Final verification
+          const retrySuccess = socket.rooms.has(user.id);
+          console.log(`🔄 Retry result for ${user.id}:`, retrySuccess);
+        }
         
         // Check for pending matchmaking proposals when user connects
         checkPendingProposals(user.id)
@@ -1867,15 +1886,60 @@ export function initOptimizedSocket(server: Server) {
       setupVoiceCallHandlers(io, socket, userId);
       // Register test handlers for debugging
       registerTestHandlers(io, socket);
+      
+      // Periodic room verification to ensure user stays in their room
+      const roomVerificationInterval = setInterval(() => {
+        if (socket.connected && user?.id) {
+          const isInRoom = socket.rooms.has(user.id);
+          if (!isInRoom) {
+            console.warn(`🔧 User ${user.id} not in room, rejoining...`);
+            socket.join(user.id);
+          }
+        } else {
+          clearInterval(roomVerificationInterval);
+        }
+      }, 30000); // Check every 30 seconds
+      
+      // Store interval for cleanup
+      (socket.data as any).roomVerificationInterval = roomVerificationInterval;
+      
+      // Handle room membership verification requests from frontend
+      socket.on('verify-room-membership', () => {
+        if (user?.id) {
+          const isInRoom = socket.rooms.has(user.id);
+          console.log(`🏠 Room membership verification for ${user.id}:`, {
+            socketId: socket.id,
+            isInRoom,
+            allRooms: Array.from(socket.rooms)
+          });
+          
+          if (!isInRoom) {
+            console.log(`🔧 Fixing room membership for ${user.id}`);
+            socket.join(user.id);
+          }
+          
+          // Send confirmation back to frontend
+          socket.emit('room-membership-verified', {
+            userId: user.id,
+            isInRoom: socket.rooms.has(user.id),
+            rooms: Array.from(socket.rooms)
+          });
+        }
+      });
     }
 
     socket.on('disconnect', (reason) => {
       const user = (socket.data as any).user
       const userId = (socket.data as any).userId
       const timeout = (socket.data as any).timeout
+      const roomVerificationInterval = (socket.data as any).roomVerificationInterval
       
       if (timeout) {
         clearTimeout(timeout)
+      }
+      
+      if (roomVerificationInterval) {
+        clearInterval(roomVerificationInterval)
       }
       
       untrackConnection(userId)

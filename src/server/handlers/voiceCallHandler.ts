@@ -179,12 +179,33 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       console.log('📞 Emitting voice:incoming-call to receiver:', data.receiverId);
       console.log('📞 Call data being sent:', callData);
       
-      // Check if receiver is connected
-      const receiverSockets = await io.in(data.receiverId).fetchSockets();
-      console.log('📞 Receiver sockets found:', receiverSockets.length);
+      // Enhanced receiver connection check with multiple verification methods
+      console.log('🔍 COMPREHENSIVE RECEIVER CHECK for:', data.receiverId);
       
-      if (receiverSockets.length === 0) {
-        console.warn('⚠️ Receiver is not connected to socket');
+      // Method 1: Check sockets in user room
+      const receiverSockets = await io.in(data.receiverId).fetchSockets();
+      console.log('📞 Method 1 - Receiver sockets in room:', receiverSockets.length);
+      
+      // Method 2: Check all connected sockets for this user
+      const allSockets = await io.fetchSockets();
+      const userSockets = allSockets.filter(s => {
+        const socketUserId = (s.data as any)?.userId || (s.data as any)?.user?.id;
+        return socketUserId === data.receiverId;
+      });
+      console.log('📞 Method 2 - All user sockets found:', userSockets.length);
+      
+      // Method 3: Check socket rooms for debugging
+      if (userSockets.length > 0) {
+        const socketRooms = Array.from(userSockets[0].rooms);
+        console.log('📞 Method 3 - Socket rooms:', socketRooms);
+        console.log('📞 Method 3 - Is in user room:', socketRooms.includes(data.receiverId));
+      }
+      
+      // Use the more comprehensive check
+      const effectiveReceiverSockets = userSockets.length > 0 ? userSockets : receiverSockets;
+      
+      if (effectiveReceiverSockets.length === 0) {
+        console.warn('⚠️ Receiver is not connected to socket (verified by all methods)');
         
         // Update call status to missed since receiver is offline
         await updateCallStatus(callId, 'missed', 'receiver_offline');
@@ -199,7 +220,20 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         console.log('❌ Call failed - receiver offline:', callId);
         return;
       } else {
-        console.log('📞 Receiver socket IDs:', receiverSockets.map(s => s.id));
+        console.log('✅ Receiver is online! Socket details:', {
+          roomSockets: receiverSockets.length,
+          userSockets: userSockets.length,
+          socketIds: effectiveReceiverSockets.map(s => s.id),
+          rooms: effectiveReceiverSockets[0] ? Array.from(effectiveReceiverSockets[0].rooms) : []
+        });
+        
+        // Ensure receiver is in their user room (fix any room issues)
+        for (const receiverSocket of userSockets) {
+          if (!receiverSocket.rooms.has(data.receiverId)) {
+            console.log('🔧 Fixing missing room membership for socket:', receiverSocket.id);
+            receiverSocket.join(data.receiverId);
+          }
+        }
       }
       
       // Send incoming call to receiver
