@@ -6,14 +6,7 @@ import multer from 'multer'
 
 // Extend AuthRequest to include multer file
 interface UploadRequest extends AuthRequest {
-  file?: {
-    fieldname: string
-    originalname: string
-    encoding: string
-    mimetype: string
-    size: number
-    buffer: Buffer
-  }
+  file?: Express.Multer.File
 }
 
 const router = Router()
