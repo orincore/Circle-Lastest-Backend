@@ -339,7 +339,11 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
           sender: {
             id: request.sender_id,
             name: senderName,
-            profile_photo_url: senderProfile?.profile_photo_url || null
+            first_name: senderProfile?.first_name || null,
+            last_name: senderProfile?.last_name || null,
+            username: senderProfile?.username || null,
+            profile_photo_url: senderProfile?.profile_photo_url || null,
+            instagram_username: senderProfile?.instagram_username || null
           }
         }
       })

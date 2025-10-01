@@ -471,4 +471,69 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       socket.emit('friend:unfriend:error', { error: 'Failed to unfriend' });
     }
   });
+
+  // ==========================================
+  // GET PENDING FRIEND REQUESTS
+  // ==========================================
+  socket.on('friend:requests:get_pending', async () => {
+    try {
+      console.log('📋 Getting pending friend requests for user:', userId);
+
+      // Query friendships table for pending requests where user is the receiver
+      const { data: friendships, error } = await supabase
+        .from('friendships')
+        .select('*')
+        .eq('status', 'pending')
+        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Friend requests query error:', error);
+        socket.emit('friend:requests:pending_list', { requests: [] });
+        return;
+      }
+
+      // Filter to only show requests where current user is the receiver (not the sender)
+      const requests = friendships?.filter(f => f.sender_id !== userId) || [];
+
+      // If we have requests, get sender information from profiles
+      if (requests && requests.length > 0) {
+        const senderIds = requests.map(r => r.sender_id);
+        
+        // Get sender profiles
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name, username, profile_photo_url')
+          .in('id', senderIds);
+
+        // Combine requests with sender information
+        const requestsWithSenders = requests.map(request => {
+          const senderProfile = profiles?.find(p => p.id === request.sender_id);
+          
+          return {
+            id: request.id,
+            sender_id: request.sender_id,
+            status: request.status,
+            created_at: request.created_at,
+            sender: {
+              id: request.sender_id,
+              first_name: senderProfile?.first_name || null,
+              last_name: senderProfile?.last_name || null,
+              username: senderProfile?.username || null,
+              profile_photo_url: senderProfile?.profile_photo_url || null
+            }
+          };
+        });
+
+        socket.emit('friend:requests:pending_list', { requests: requestsWithSenders });
+        console.log('✅ Sent pending requests:', requestsWithSenders.length);
+      } else {
+        socket.emit('friend:requests:pending_list', { requests: [] });
+      }
+
+    } catch (error) {
+      console.error('❌ Error getting pending requests:', error);
+      socket.emit('friend:requests:pending_list', { requests: [] });
+    }
+  });
 }
