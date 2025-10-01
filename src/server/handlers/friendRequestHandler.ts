@@ -92,7 +92,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
           .single();
 
         if (updateError) {
-          console.error('Error updating friendship:', updateError);
           socket.emit('friend:request:error', { error: 'Failed to send request' });
           return;
         }
@@ -103,6 +102,21 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
           .select('id, first_name, last_name, profile_photo_url')
           .eq('id', senderId)
           .single();
+
+        // Create notification
+        await NotificationService.createNotification({
+          recipient_id: receiverId,
+          sender_id: senderId,
+          type: 'friend_request',
+          title: 'Friend Request',
+          message: `${senderProfile?.first_name || 'Someone'} sent you a friend request`,
+          data: {
+            requestId: updated.id,
+            userId: senderId,
+            userName: senderProfile?.first_name || 'Someone',
+            userAvatar: senderProfile?.profile_photo_url
+          }
+        });
 
         // Notify receiver
         io.to(receiverId).emit('friend:request:received', {
@@ -140,6 +154,21 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         .select('id, first_name, last_name, profile_photo_url')
         .eq('id', senderId)
         .single();
+
+      // Create notification
+      await NotificationService.createNotification({
+        recipient_id: receiverId,
+        sender_id: senderId,
+        type: 'friend_request',
+        title: 'Friend Request',
+        message: `${senderProfile?.first_name || 'Someone'} sent you a friend request`,
+        data: {
+          requestId: newRequest.id,
+          userId: senderId,
+          userName: senderProfile?.first_name || 'Someone',
+          userAvatar: senderProfile?.profile_photo_url
+        }
+      });
 
       // Notify receiver
       io.to(receiverId).emit('friend:request:received', {
