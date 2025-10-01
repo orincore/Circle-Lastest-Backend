@@ -154,7 +154,7 @@ router.post('/link/spotify', requireAuth, async (req: AuthRequest, res) => {
   }
 })
 
-// Verify Instagram login status and fetch username from session
+// Verify Instagram login status and fetch username from session - Updated to use profiles.instagram_username
 router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, res) => {
   try {
     console.log('📥 Instagram session verification request received');
@@ -177,114 +177,40 @@ router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, r
       return res.status(400).json({ error: 'Invalid Instagram username format' })
     }
 
-    // Check if this Instagram username is already linked to another user (only active accounts)
-    const { data: existingAccount } = await supabase
-      .from('linked_social_accounts')
-      .select('user_id')
-      .eq('platform', 'instagram')
-      .eq('platform_username', username)
-      .neq('user_id', userId)
-      .is('deleted_at', null)
+    // Check if this Instagram username is already used by another user
+    const { data: existingUser } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('instagram_username', username)
+      .neq('id', userId)
       .maybeSingle()
 
-    if (existingAccount) {
+    if (existingUser) {
       return res.status(400).json({ error: 'This Instagram account is already linked to another user' })
     }
 
-    // Check if current user has an existing Instagram account
-    const { data: userExistingAccount } = await supabase
-      .from('linked_social_accounts')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('platform', 'instagram')
-      .maybeSingle()
+    // Update the user's profile with the Instagram username
+    console.log('💾 Updating profile with Instagram username:', username);
+    const { error: updateError } = await supabase
+      .from('profiles')
+      .update({
+        instagram_username: username
+      })
+      .eq('id', userId)
 
-    let isReactivation = false
-    if (userExistingAccount) {
-      if (userExistingAccount.platform_username === username && userExistingAccount.deleted_at) {
-        isReactivation = true
-      }
-    }
-
-    let dbError
-    
-    if (isReactivation) {
-      // Reactivate existing account
-      console.log('🔄 Reactivating existing Instagram account:', username);
-      const { error } = await supabase
-        .from('linked_social_accounts')
-        .update({
-          deleted_at: null,
-          is_verified: true,
-          is_public: true,
-          platform_data: {
-            ...userExistingAccount.platform_data,
-            verification_method: 'session_verification',
-            verified_at: new Date().toISOString(),
-            reactivated_at: new Date().toISOString()
-          },
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userExistingAccount.id)
-      
-      dbError = error
-    } else {
-      // Create new account or update existing
-      console.log('➕ Creating/updating Instagram account:', username);
-      
-      if (userExistingAccount && !userExistingAccount.deleted_at && userExistingAccount.platform_username !== username) {
-        console.log('🗑️ Soft deleting old Instagram account:', userExistingAccount.platform_username);
-        await supabase
-          .from('linked_social_accounts')
-          .update({
-            deleted_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', userExistingAccount.id)
-      }
-      
-      const { error } = await supabase
-        .from('linked_social_accounts')
-        .upsert({
-          user_id: userId,
-          platform: 'instagram',
-          platform_user_id: username,
-          platform_username: username,
-          platform_display_name: username,
-          platform_profile_url: `https://instagram.com/${username}`,
-          platform_data: {
-            verification_method: 'session_verification',
-            verified_at: new Date().toISOString(),
-            session_verified: true
-          },
-          is_verified: true,
-          is_public: true,
-          linked_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          deleted_at: null
-        }, {
-          onConflict: 'user_id,platform'
-        })
-      
-      dbError = error
-    }
-
-    if (dbError) {
-      console.error('Error storing Instagram account:', dbError)
+    if (updateError) {
+      console.error('Error updating Instagram username:', updateError)
       return res.status(500).json({ error: 'Failed to link Instagram account' })
     }
 
     res.json({ 
       success: true, 
-      message: isReactivation 
-        ? 'Instagram account reactivated successfully'
-        : 'Instagram account verified and linked successfully',
+      message: 'Instagram account verified and linked successfully',
       account: {
         platform: 'instagram',
         username: username,
         profile_url: `https://instagram.com/${username}`,
-        verification_method: 'session_verification',
-        is_reactivation: isReactivation
+        verification_method: 'session_verification'
       }
     })
 
@@ -295,18 +221,17 @@ router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, r
 })
 
 
-// Instagram manual verification
+// Instagram manual verification - Updated to use profiles.instagram_username
 router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
   try {
     console.log('📥 Instagram verification request received');
     console.log('📥 Request body:', JSON.stringify(req.body));
-    console.log('📥 Content-Type:', req.headers['content-type']);
     
-    const { username } = req.body
+    const { username: rawUsername } = req.body
     const userId = req.user!.id
+    const username = (rawUsername || '').trim().replace('@', '')
 
-    console.log('📥 Extracted username:', JSON.stringify(username));
-    console.log('📥 Username type:', typeof username);
+    console.log('📥 Extracted username:', username);
     console.log('📥 User ID:', userId);
 
     if (!username) {
@@ -320,118 +245,40 @@ router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Invalid Instagram username format' })
     }
 
-    // Check if this Instagram username is already linked to another user (only active accounts)
-    const { data: existingAccount } = await supabase
-      .from('linked_social_accounts')
-      .select('user_id')
-      .eq('platform', 'instagram')
-      .eq('platform_username', username)
-      .neq('user_id', userId)
-      .is('deleted_at', null) // Only check active accounts
+    // Check if this Instagram username is already used by another user
+    const { data: existingUser } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('instagram_username', username)
+      .neq('id', userId)
       .maybeSingle()
 
-    if (existingAccount) {
-      return res.status(400).json({ error: 'This Instagram account is already linked to another user' })
+    if (existingUser) {
+      return res.status(400).json({ error: 'This Instagram username is already linked to another user' })
     }
 
-    // Check if current user has an existing Instagram account (active or soft-deleted)
-    const { data: userExistingAccount } = await supabase
-      .from('linked_social_accounts')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('platform', 'instagram')
-      .maybeSingle()
+    // Update the user's profile with the Instagram username
+    console.log('💾 Updating profile with Instagram username:', username);
+    const { error: updateError } = await supabase
+      .from('profiles')
+      .update({
+        instagram_username: username
+      })
+      .eq('id', userId)
 
-    let isReactivation = false
-    if (userExistingAccount) {
-      // If same username, reactivate
-      if (userExistingAccount.platform_username === username && userExistingAccount.deleted_at) {
-        isReactivation = true
-      }
-      // If different username and current is soft-deleted, allow new one
-      // If different username and current is active, this will be an upsert (replace)
-    }
-
-    let dbError
-    
-    if (isReactivation) {
-      // Reactivate existing account with same username
-      console.log('🔄 Reactivating existing Instagram account:', username);
-      const { error } = await supabase
-        .from('linked_social_accounts')
-        .update({
-          deleted_at: null, // Reactivate
-          is_verified: true,
-          is_public: true,
-          platform_data: {
-            ...userExistingAccount.platform_data,
-            verification_method: 'webview_login',
-            verified_at: new Date().toISOString(),
-            reactivated_at: new Date().toISOString()
-          },
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userExistingAccount.id)
-      
-      dbError = error
-    } else {
-      // Create new account or update existing active account
-      console.log('➕ Creating/updating Instagram account:', username);
-      
-      // If user has a different active Instagram account, soft delete it first
-      if (userExistingAccount && !userExistingAccount.deleted_at && userExistingAccount.platform_username !== username) {
-        console.log('🗑️ Soft deleting old Instagram account:', userExistingAccount.platform_username);
-        await supabase
-          .from('linked_social_accounts')
-          .update({
-            deleted_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', userExistingAccount.id)
-      }
-      
-      // Store new Instagram account
-      const { error } = await supabase
-        .from('linked_social_accounts')
-        .upsert({
-          user_id: userId,
-          platform: 'instagram',
-          platform_user_id: username, // Use username as ID since we don't have API access
-          platform_username: username,
-          platform_display_name: username,
-          platform_profile_url: `https://instagram.com/${username}`,
-          platform_data: {
-            verification_method: 'webview_login',
-            verified_at: new Date().toISOString()
-          },
-          is_verified: true,
-          is_public: true, // Default to public
-          linked_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          deleted_at: null // Ensure it's active
-        }, {
-          onConflict: 'user_id,platform'
-        })
-      
-      dbError = error
-    }
-
-    if (dbError) {
-      console.error('Error storing Instagram account:', dbError)
+    if (updateError) {
+      console.error('Error updating Instagram username:', updateError)
       return res.status(500).json({ error: 'Failed to link Instagram account' })
     }
 
     res.json({ 
       success: true, 
-      message: isReactivation 
-        ? 'Instagram account reactivated successfully'
-        : 'Instagram account verified and linked successfully',
+      message: 'Instagram account verified and linked successfully',
       account: {
         platform: 'instagram',
         username: username,
         profile_url: `https://instagram.com/${username}`,
-        verification_method: 'webview_login',
-        is_reactivation: isReactivation
+        verification_method: 'manual_verification'
       }
     })
 
