@@ -31,11 +31,12 @@ const signupSchema = z.object({
     .optional(),
   password: z.string().min(6),
   instagramUsername: z.string()
-    .min(1, 'Instagram username is required')
+    .min(1, 'Instagram username must be at least 1 character')
     .max(30, 'Instagram username must be less than 30 characters')
     .refine((s) => /^[a-zA-Z0-9._]+$/.test(s), {
       message: 'Instagram username can only contain letters, numbers, periods, and underscores'
     })
+    .optional()
 })
 
 // Username availability
