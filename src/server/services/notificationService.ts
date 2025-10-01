@@ -168,9 +168,52 @@ export class NotificationService {
         return false;
       }
 
+      // Emit real-time notification deletion
+      emitToUser(userId, 'notification:deleted', { notificationId });
+
       return true;
     } catch (error) {
       console.error('❌ Failed to delete notification:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Delete friend request notifications between two users
+   */
+  static async deleteFriendRequestNotifications(userId1: string, userId2: string): Promise<boolean> {
+    try {
+      console.log(`🗑️ Deleting friend request notifications between ${userId1} and ${userId2}`);
+      
+      // Delete notifications where userId1 is recipient and userId2 is sender
+      const { error: error1 } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('recipient_id', userId1)
+        .eq('sender_id', userId2)
+        .eq('type', 'friend_request');
+
+      // Delete notifications where userId2 is recipient and userId1 is sender
+      const { error: error2 } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('recipient_id', userId2)
+        .eq('sender_id', userId1)
+        .eq('type', 'friend_request');
+
+      if (error1 || error2) {
+        console.error('❌ Error deleting friend request notifications:', error1 || error2);
+        return false;
+      }
+
+      // Emit real-time notification deletion to both users
+      emitToUser(userId1, 'notification:friend_request_removed', { otherUserId: userId2 });
+      emitToUser(userId2, 'notification:friend_request_removed', { otherUserId: userId1 });
+
+      console.log('✅ Friend request notifications deleted successfully');
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to delete friend request notifications:', error);
       return false;
     }
   }

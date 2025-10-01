@@ -1,5 +1,6 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { supabase } from '../config/supabase.js';
+import { NotificationService } from '../services/notificationService.js';
 
 /**
  * SIMPLIFIED FRIEND REQUEST HANDLER
@@ -218,6 +219,9 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const senderProfile = profiles?.find(p => p.id === senderId);
       const receiverProfile = profiles?.find(p => p.id === receiverId);
 
+      // Delete friend request notifications
+      await NotificationService.deleteFriendRequestNotifications(senderId, receiverId);
+
       // Notify both users
       io.to(senderId).emit('friend:request:accepted', {
         friendship: updated,
@@ -278,6 +282,9 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const senderId = friendship.sender_id;
       const receiverId = getOtherUserId(friendship, senderId);
 
+      // Delete friend request notifications
+      await NotificationService.deleteFriendRequestNotifications(senderId, receiverId);
+
       // Notify sender that request was declined
       io.to(senderId).emit('friend:request:declined', {
         requestId,
@@ -331,6 +338,9 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         socket.emit('friend:request:error', { error: 'Failed to cancel request' });
         return;
       }
+
+      // Delete friend request notifications
+      await NotificationService.deleteFriendRequestNotifications(senderId, receiverId);
 
       // Notify receiver
       io.to(receiverId).emit('friend:request:cancelled', {
