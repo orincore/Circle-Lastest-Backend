@@ -57,13 +57,15 @@ export class S3Service {
       Body: buffer,
       ContentType: contentType,
       Metadata: metadata,
-      ACL: isPublic ? 'public-read' : 'private',
+      // ACL removed - bucket has ACLs disabled, using bucket policy instead
     })
 
     await s3Client.send(command)
 
+    // Use custom domain for public URLs (media.orincore.com)
+    // For private files, use presigned URLs
     const url = isPublic
-      ? `https://${S3_CONFIG.BUCKET_NAME}.s3.${S3_CONFIG.REGION}.amazonaws.com/${key}`
+      ? `https://${S3_CONFIG.BUCKET_NAME}/${key}`
       : await this.getPresignedUrl(key)
 
     return {
@@ -257,6 +259,8 @@ export class S3Service {
     try {
       // Handle S3 URLs in different formats
       const patterns = [
+        // Custom domain: https://media.orincore.com/key
+        new RegExp(`https://${S3_CONFIG.BUCKET_NAME}/(.+)`),
         // https://bucket.s3.region.amazonaws.com/key
         /https:\/\/[^.]+\.s3\.[^.]+\.amazonaws\.com\/(.+)/,
         // https://s3.region.amazonaws.com/bucket/key
