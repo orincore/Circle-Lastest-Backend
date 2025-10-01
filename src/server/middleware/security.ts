@@ -206,11 +206,19 @@ export function auditLog(action: string) {
 
 // Detect and prevent common attack patterns
 export function detectAttackPatterns(req: Request, res: Response, next: NextFunction) {
+  // Skip detection for safe methods and health checks
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || req.path === '/health') {
+    return next()
+  }
+
   const suspiciousPatterns = [
-    /(\%27)|(\')|(\-\-)|(\%23)|(#)/i, // SQL injection
-    /<script|javascript:|onerror=/i, // XSS
-    /\.\.\//g, // Path traversal
-    /(\%00)|(null)/i, // Null byte injection
+    { pattern: /<script[\s\S]*?>[\s\S]*?<\/script>/gi, name: 'XSS Script Tag' },
+    { pattern: /javascript:/gi, name: 'XSS JavaScript Protocol' },
+    { pattern: /on\w+\s*=\s*["'][^"']*["']/gi, name: 'XSS Event Handler' },
+    { pattern: /\.\.\//g, name: 'Path Traversal' },
+    { pattern: /(\%00)/i, name: 'Null Byte Injection' },
+    // More lenient SQL injection detection - only block obvious attacks
+    { pattern: /(\bunion\b.*\bselect\b)|(\bselect\b.*\bfrom\b.*\bwhere\b.*\bor\b.*=.*)/gi, name: 'SQL Injection' },
   ]
 
   const checkString = JSON.stringify({
@@ -219,12 +227,13 @@ export function detectAttackPatterns(req: Request, res: Response, next: NextFunc
     params: req.params,
   })
 
-  for (const pattern of suspiciousPatterns) {
+  for (const { pattern, name } of suspiciousPatterns) {
     if (pattern.test(checkString)) {
       logger.warn({
         ip: req.ip,
         path: req.path,
-        pattern: pattern.toString(),
+        method: req.method,
+        pattern: name,
       }, 'Suspicious pattern detected')
       
       return res.status(400).json({ 
@@ -262,11 +271,18 @@ export function validateCSRF(req: Request, res: Response, next: NextFunction) {
 
 // Content type validation
 export function validateContentType(req: Request, res: Response, next: NextFunction) {
+  // Only validate content-type for requests with body
   if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
     const contentType = req.headers['content-type']
     
+    // Allow requests without content-type if body is empty
+    const contentLength = req.headers['content-length']
+    if (!contentLength || contentLength === '0') {
+      return next()
+    }
+    
     if (!contentType || (!contentType.includes('application/json') && !contentType.includes('multipart/form-data'))) {
-      logger.warn(`Invalid content type: ${contentType}`)
+      logger.warn(`Invalid content type: ${contentType} for ${req.method} ${req.path}`)
       return res.status(415).json({ 
         error: 'Unsupported Media Type', 
         message: 'Content-Type must be application/json or multipart/form-data' 
