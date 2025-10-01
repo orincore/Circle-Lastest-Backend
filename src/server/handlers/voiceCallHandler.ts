@@ -330,10 +330,10 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
     }
   });
 
-  // Decline a voice call
+  // Decline a voice call (receiver declines OR caller cancels)
   socket.on('voice:decline-call', async (data: { callId: string }) => {
     try {
-      console.log('❌ Voice call declined:', data.callId, 'by:', userId);
+      console.log('❌ Voice call declined/cancelled:', data.callId, 'by:', userId);
 
       // Get call from database
       const { data: call, error } = await supabase
@@ -347,25 +347,43 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         return;
       }
 
-      if (call.receiver_id !== userId) {
+      // Allow both caller (to cancel) and receiver (to decline)
+      const isCaller = call.caller_id === userId;
+      const isReceiver = call.receiver_id === userId;
+      
+      if (!isCaller && !isReceiver) {
         socket.emit('voice:error', { error: 'Unauthorized to decline this call' });
         return;
       }
 
       // Update call status to declined
-      const updated = await updateCallStatus(data.callId, 'declined', 'declined');
+      const endReason = isCaller ? 'cancelled' : 'declined';
+      const updated = await updateCallStatus(data.callId, 'declined', endReason);
       if (!updated) {
         socket.emit('voice:error', { error: 'Failed to update call status' });
         return;
       }
 
-      // Notify caller that call was declined
-      io.to(call.caller_id).emit('voice:call-declined', {
-        callId: data.callId,
-        declinedBy: userId
-      });
+      // Notify the other party
+      if (isCaller) {
+        // Caller cancelled - notify receiver
+        console.log('📞 Caller cancelled call, notifying receiver:', call.receiver_id);
+        io.to(call.receiver_id).emit('voice:call-declined', {
+          callId: data.callId,
+          declinedBy: userId,
+          reason: 'cancelled'
+        });
+      } else {
+        // Receiver declined - notify caller
+        console.log('📞 Receiver declined call, notifying caller:', call.caller_id);
+        io.to(call.caller_id).emit('voice:call-declined', {
+          callId: data.callId,
+          declinedBy: userId,
+          reason: 'declined'
+        });
+      }
 
-      console.log('❌ Voice call declined:', data.callId);
+      console.log('❌ Voice call declined/cancelled:', data.callId, 'reason:', endReason);
 
     } catch (error) {
       console.error('❌ Error declining voice call:', error);
