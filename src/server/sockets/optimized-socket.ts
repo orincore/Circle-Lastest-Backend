@@ -9,6 +9,7 @@ import { getStatus } from '../services/matchmaking-optimized.js'
 import { NotificationService } from '../services/notificationService.js'
 import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, trackProfileVisited } from '../services/activityService.js'
 import { setupVoiceCallHandlers, registerTestHandlers } from '../handlers/voiceCallHandler.js'
+import { setupFriendRequestHandlers } from '../handlers/friendRequestHandler.js'
 import Redis from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
@@ -564,6 +565,13 @@ export function initOptimizedSocket(server: Server) {
       }
     })
 
+    // ========================================
+    // OLD FRIEND REQUEST HANDLERS - REPLACED BY friendRequestHandler.ts
+    // These are kept commented for reference but should not be used
+    // The new simplified handlers use the friendships table directly
+    // ========================================
+    
+    /* OLD HANDLER - DISABLED
     // Friend Request: Send friend request
     socket.on('friend:request:send', async ({ receiverId }: { receiverId: string }) => {
       resetTimeout()
@@ -1062,6 +1070,11 @@ export function initOptimizedSocket(server: Server) {
         socket.emit('friend:request:error', { error: 'Failed to cancel friend request' })
       }
     })
+    END OF OLD HANDLER COMMENT */
+
+    // ========================================
+    // NEW SIMPLIFIED FRIEND REQUEST HANDLERS ARE IN friendRequestHandler.ts
+    // ========================================
 
     // Message Request: Cancel message request
     socket.on('message:request:cancel', async ({ receiverId }: { receiverId: string }) => {
@@ -1884,6 +1897,8 @@ export function initOptimizedSocket(server: Server) {
     // Set up voice call handlers
     if (userId) {
       setupVoiceCallHandlers(io, socket, userId);
+      // Set up simplified friend request handlers
+      setupFriendRequestHandlers(io, socket, userId);
       // Register test handlers for debugging
       registerTestHandlers(io, socket);
       

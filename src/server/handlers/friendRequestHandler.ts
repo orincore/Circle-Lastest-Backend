@@ -1,0 +1,435 @@
+import { Server as SocketIOServer, Socket } from 'socket.io';
+import { supabase } from '../config/supabase.js';
+
+/**
+ * SIMPLIFIED FRIEND REQUEST HANDLER
+ * Uses single friendships table with status field
+ * Status values: 'pending', 'accepted', 'blocked', 'inactive'
+ */
+
+interface FriendshipRecord {
+  id: string;
+  user1_id: string;
+  user2_id: string;
+  sender_id: string;
+  status: 'pending' | 'accepted' | 'blocked' | 'inactive';
+  created_at: string;
+  updated_at: string;
+}
+
+// Helper function to get ordered user IDs (smaller ID first)
+function getOrderedUserIds(userId1: string, userId2: string) {
+  return userId1 < userId2 
+    ? { user1_id: userId1, user2_id: userId2 }
+    : { user1_id: userId2, user2_id: userId1 };
+}
+
+// Helper function to get the other user ID
+function getOtherUserId(friendship: FriendshipRecord, currentUserId: string): string {
+  return friendship.user1_id === currentUserId ? friendship.user2_id : friendship.user1_id;
+}
+
+export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, userId: string) {
+  console.log('👥 Setting up simplified friend request handlers for user:', userId);
+
+  // ==========================================
+  // SEND FRIEND REQUEST
+  // ==========================================
+  socket.on('friend:request:send', async (data: { receiverId: string }) => {
+    try {
+      const senderId = userId;
+      const { receiverId } = data;
+
+      console.log('📤 Friend request:', senderId, '→', receiverId);
+
+      // Validate
+      if (!receiverId || senderId === receiverId) {
+        socket.emit('friend:request:error', { error: 'Invalid request' });
+        return;
+      }
+
+      const { user1_id, user2_id } = getOrderedUserIds(senderId, receiverId);
+
+      // Check if friendship record already exists
+      const { data: existing, error: checkError } = await supabase
+        .from('friendships')
+        .select('*')
+        .eq('user1_id', user1_id)
+        .eq('user2_id', user2_id)
+        .maybeSingle();
+
+      if (checkError) {
+        console.error('Error checking friendship:', checkError);
+        socket.emit('friend:request:error', { error: 'Database error' });
+        return;
+      }
+
+      // Handle existing friendship
+      if (existing) {
+        if (existing.status === 'accepted') {
+          socket.emit('friend:request:error', { error: 'Already friends' });
+          return;
+        }
+        if (existing.status === 'pending') {
+          socket.emit('friend:request:error', { error: 'Request already sent' });
+          return;
+        }
+        if (existing.status === 'blocked') {
+          socket.emit('friend:request:error', { error: 'Cannot send request' });
+          return;
+        }
+        // If inactive, update to pending with new sender
+        const { data: updated, error: updateError } = await supabase
+          .from('friendships')
+          .update({ 
+            status: 'pending', 
+            sender_id: senderId,
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', existing.id)
+          .select()
+          .single();
+
+        if (updateError) {
+          console.error('Error updating friendship:', updateError);
+          socket.emit('friend:request:error', { error: 'Failed to send request' });
+          return;
+        }
+
+        // Get sender profile
+        const { data: senderProfile } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name, profile_photo_url')
+          .eq('id', senderId)
+          .single();
+
+        // Notify receiver
+        io.to(receiverId).emit('friend:request:received', {
+          request: updated,
+          sender: senderProfile
+        });
+
+        // Confirm to sender
+        socket.emit('friend:request:sent', { request: updated });
+        console.log('✅ Friend request reactivated:', updated.id);
+        return;
+      }
+
+      // Create new friend request
+      const { data: newRequest, error: createError } = await supabase
+        .from('friendships')
+        .insert({
+          user1_id,
+          user2_id,
+          sender_id: senderId,
+          status: 'pending'
+        })
+        .select()
+        .single();
+
+      if (createError) {
+        console.error('Error creating friend request:', createError);
+        socket.emit('friend:request:error', { error: 'Failed to send request' });
+        return;
+      }
+
+      // Get sender profile
+      const { data: senderProfile } = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, profile_photo_url')
+        .eq('id', senderId)
+        .single();
+
+      // Notify receiver
+      io.to(receiverId).emit('friend:request:received', {
+        request: newRequest,
+        sender: senderProfile
+      });
+
+      // Confirm to sender
+      socket.emit('friend:request:sent', { request: newRequest });
+      console.log('✅ Friend request sent:', newRequest.id);
+
+    } catch (error) {
+      console.error('❌ Error sending friend request:', error);
+      socket.emit('friend:request:error', { error: 'Failed to send request' });
+    }
+  });
+
+  // ==========================================
+  // ACCEPT FRIEND REQUEST
+  // ==========================================
+  socket.on('friend:request:accept', async (data: { requestId: string }) => {
+    try {
+      const { requestId } = data;
+      console.log('✅ Accepting friend request:', requestId);
+
+      // Get the friendship record
+      const { data: friendship, error: fetchError } = await supabase
+        .from('friendships')
+        .select('*')
+        .eq('id', requestId)
+        .single();
+
+      if (fetchError || !friendship) {
+        console.error('Friend request not found:', fetchError);
+        socket.emit('friend:request:error', { error: 'Request not found' });
+        return;
+      }
+
+      // Verify user is the receiver (not the sender)
+      if (friendship.sender_id === userId) {
+        socket.emit('friend:request:error', { error: 'Cannot accept your own request' });
+        return;
+      }
+
+      // Verify status is pending
+      if (friendship.status !== 'pending') {
+        socket.emit('friend:request:error', { error: 'Request is not pending' });
+        return;
+      }
+
+      // Update status to accepted
+      const { data: updated, error: updateError } = await supabase
+        .from('friendships')
+        .update({ 
+          status: 'accepted',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', requestId)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error('Error accepting request:', updateError);
+        socket.emit('friend:request:error', { error: 'Failed to accept request' });
+        return;
+      }
+
+      // Get both user profiles
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, profile_photo_url')
+        .in('id', [friendship.user1_id, friendship.user2_id]);
+
+      const senderId = friendship.sender_id;
+      const receiverId = getOtherUserId(friendship, senderId);
+
+      const senderProfile = profiles?.find(p => p.id === senderId);
+      const receiverProfile = profiles?.find(p => p.id === receiverId);
+
+      // Notify both users
+      io.to(senderId).emit('friend:request:accepted', {
+        friendship: updated,
+        friend: receiverProfile
+      });
+
+      io.to(receiverId).emit('friend:request:accepted', {
+        friendship: updated,
+        friend: senderProfile
+      });
+
+      console.log('✅ Friend request accepted:', requestId);
+
+    } catch (error) {
+      console.error('❌ Error accepting friend request:', error);
+      socket.emit('friend:request:error', { error: 'Failed to accept request' });
+    }
+  });
+
+  // ==========================================
+  // DECLINE FRIEND REQUEST
+  // ==========================================
+  socket.on('friend:request:decline', async (data: { requestId: string }) => {
+    try {
+      const { requestId } = data;
+      console.log('❌ Declining friend request:', requestId);
+
+      // Get the friendship record
+      const { data: friendship, error: fetchError } = await supabase
+        .from('friendships')
+        .select('*')
+        .eq('id', requestId)
+        .single();
+
+      if (fetchError || !friendship) {
+        socket.emit('friend:request:error', { error: 'Request not found' });
+        return;
+      }
+
+      // Verify user is the receiver
+      if (friendship.sender_id === userId) {
+        socket.emit('friend:request:error', { error: 'Cannot decline your own request' });
+        return;
+      }
+
+      // Delete the request (clean approach)
+      const { error: deleteError } = await supabase
+        .from('friendships')
+        .delete()
+        .eq('id', requestId);
+
+      if (deleteError) {
+        console.error('Error declining request:', deleteError);
+        socket.emit('friend:request:error', { error: 'Failed to decline request' });
+        return;
+      }
+
+      const senderId = friendship.sender_id;
+      const receiverId = getOtherUserId(friendship, senderId);
+
+      // Notify sender that request was declined
+      io.to(senderId).emit('friend:request:declined', {
+        requestId,
+        declinedBy: receiverId
+      });
+
+      // Confirm to receiver
+      socket.emit('friend:request:declined', { requestId });
+      console.log('✅ Friend request declined:', requestId);
+
+    } catch (error) {
+      console.error('❌ Error declining friend request:', error);
+      socket.emit('friend:request:error', { error: 'Failed to decline request' });
+    }
+  });
+
+  // ==========================================
+  // CANCEL FRIEND REQUEST
+  // ==========================================
+  socket.on('friend:request:cancel', async (data: { receiverId: string }) => {
+    try {
+      const senderId = userId;
+      const { receiverId } = data;
+
+      console.log('🚫 Cancelling friend request:', senderId, '→', receiverId);
+
+      const { user1_id, user2_id } = getOrderedUserIds(senderId, receiverId);
+
+      // Find and delete the pending request
+      const { data: friendship, error: fetchError } = await supabase
+        .from('friendships')
+        .select('*')
+        .eq('user1_id', user1_id)
+        .eq('user2_id', user2_id)
+        .eq('sender_id', senderId)
+        .eq('status', 'pending')
+        .maybeSingle();
+
+      if (!friendship) {
+        socket.emit('friend:request:error', { error: 'No pending request found' });
+        return;
+      }
+
+      const { error: deleteError } = await supabase
+        .from('friendships')
+        .delete()
+        .eq('id', friendship.id);
+
+      if (deleteError) {
+        console.error('Error cancelling request:', deleteError);
+        socket.emit('friend:request:error', { error: 'Failed to cancel request' });
+        return;
+      }
+
+      // Notify receiver
+      io.to(receiverId).emit('friend:request:cancelled', {
+        requestId: friendship.id,
+        cancelledBy: senderId
+      });
+
+      // Confirm to sender
+      socket.emit('friend:request:cancel:confirmed', { 
+        requestId: friendship.id,
+        success: true 
+      });
+
+      console.log('✅ Friend request cancelled:', friendship.id);
+
+    } catch (error) {
+      console.error('❌ Error cancelling friend request:', error);
+      socket.emit('friend:request:error', { error: 'Failed to cancel request' });
+    }
+  });
+
+  // ==========================================
+  // GET PENDING REQUESTS
+  // ==========================================
+  socket.on('friend:requests:get', async () => {
+    try {
+      console.log('📋 Getting pending friend requests for:', userId);
+
+      // Get all pending requests where user is the receiver
+      const { data: requests, error } = await supabase
+        .from('friendships')
+        .select(`
+          *,
+          sender:profiles!sender_id(id, first_name, last_name, profile_photo_url)
+        `)
+        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+        .eq('status', 'pending')
+        .neq('sender_id', userId); // Only requests where user is receiver
+
+      if (error) {
+        console.error('Error fetching requests:', error);
+        socket.emit('friend:requests:error', { error: 'Failed to fetch requests' });
+        return;
+      }
+
+      socket.emit('friend:requests:list', { requests: requests || [] });
+      console.log(`✅ Sent ${requests?.length || 0} pending requests`);
+
+    } catch (error) {
+      console.error('❌ Error getting friend requests:', error);
+      socket.emit('friend:requests:error', { error: 'Failed to fetch requests' });
+    }
+  });
+
+  // ==========================================
+  // UNFRIEND
+  // ==========================================
+  socket.on('friend:unfriend', async (data: { friendId: string }) => {
+    try {
+      const { friendId } = data;
+      console.log('💔 Unfriending:', userId, '↔', friendId);
+
+      const { user1_id, user2_id } = getOrderedUserIds(userId, friendId);
+
+      // Update status to inactive
+      const { data: updated, error: updateError } = await supabase
+        .from('friendships')
+        .update({ 
+          status: 'inactive',
+          updated_at: new Date().toISOString()
+        })
+        .eq('user1_id', user1_id)
+        .eq('user2_id', user2_id)
+        .eq('status', 'accepted')
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error('Error unfriending:', updateError);
+        socket.emit('friend:unfriend:error', { error: 'Failed to unfriend' });
+        return;
+      }
+
+      // Notify both users
+      io.to(friendId).emit('friend:unfriended', {
+        friendshipId: updated.id,
+        unfriendedBy: userId
+      });
+
+      socket.emit('friend:unfriend:confirmed', {
+        friendshipId: updated.id,
+        success: true
+      });
+
+      console.log('✅ Unfriended:', updated.id);
+
+    } catch (error) {
+      console.error('❌ Error unfriending:', error);
+      socket.emit('friend:unfriend:error', { error: 'Failed to unfriend' });
+    }
+  });
+}
