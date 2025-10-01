@@ -19,7 +19,7 @@ router.get('/status/:userId', requireAuth, async (req: AuthRequest, res) => {
       .from('friendships')
       .select('*')
       .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
-      .eq('status', 'active')
+      .eq('status', 'accepted')
       .maybeSingle()
 
     console.log(`🔍 Checking friendship between ${currentUserId} and ${userId}:`, friendshipData);
@@ -193,7 +193,7 @@ router.post('/accept/:requestId', requireAuth, async (req: AuthRequest, res) => 
       .insert({
         user1_id: smallerId,
         user2_id: largerId,
-        status: 'active'
+        status: 'accepted'
       })
 
     if (friendshipError && friendshipError.code !== '23505') { // Ignore duplicate key error
@@ -369,7 +369,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
       .from('friendships')
       .select('*')
       .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .eq('status', 'active')
+      .eq('status', 'accepted')
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -446,7 +446,7 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
       .from('friendships')
       .update({ status: 'inactive', updated_at: new Date().toISOString() })
       .or(`and(user1_id.eq.${userId},user2_id.eq.${friendId}),and(user1_id.eq.${friendId},user2_id.eq.${userId})`)
-      .eq('status', 'active')
+      .eq('status', 'accepted')
 
     if (error) throw error
 
