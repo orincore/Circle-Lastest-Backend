@@ -309,8 +309,10 @@ export async function trackUserMatched(user1: any, user2: any): Promise<void> {
       data: {
         user1_id: user1.id,
         user1_name: user1.first_name,
+        user1_avatar: user1.profile_photo_url,
         user2_id: user2.id,
         user2_name: user2.first_name,
+        user2_avatar: user2.profile_photo_url,
       },
       user_id: user1.id,
     })
@@ -326,6 +328,7 @@ export async function trackUserJoined(user: any): Promise<void> {
       data: {
         user_id: user.id,
         user_name: user.first_name,
+        user_avatar: user.profile_photo_url,
         age: user.age,
         location: user.location_city || 'Unknown',
       },
@@ -346,8 +349,10 @@ export async function trackProfileVisited(visitor: any, profileOwner: any): Prom
       data: {
         visitor_id: visitor.id,
         visitor_name: visitor.first_name,
+        visitor_avatar: visitor.profile_photo_url,
         profile_id: profileOwner.id,
         profile_name: profileOwner.first_name,
+        profile_avatar: profileOwner.profile_photo_url,
       },
       user_id: visitor.id,
     })
@@ -363,8 +368,10 @@ export async function trackFriendRequestSent(sender: any, receiver: any): Promis
       data: {
         sender_id: sender.id,
         sender_name: sender.first_name,
+        sender_avatar: sender.profile_photo_url,
         receiver_id: receiver.id,
         receiver_name: receiver.first_name,
+        receiver_avatar: receiver.profile_photo_url,
       },
       user_id: sender.id,
     })
@@ -380,8 +387,10 @@ export async function trackFriendsConnected(user1: any, user2: any): Promise<voi
       data: {
         user1_id: user1.id,
         user1_name: user1.first_name,
+        user1_avatar: user1.profile_photo_url,
         user2_id: user2.id,
         user2_name: user2.first_name,
+        user2_avatar: user2.profile_photo_url,
       },
       user_id: user1.id,
     })
@@ -397,6 +406,7 @@ export async function trackLocationUpdated(user: any, location: string): Promise
       data: {
         user_id: user.id,
         user_name: user.first_name,
+        user_avatar: user.profile_photo_url,
         location: location,
       },
       user_id: user.id,
@@ -413,8 +423,10 @@ export async function trackChatStarted(user1: any, user2: any): Promise<void> {
       data: {
         user1_id: user1.id,
         user1_name: user1.first_name,
+        user1_avatar: user1.profile_photo_url,
         user2_id: user2.id,
         user2_name: user2.first_name,
+        user2_avatar: user2.profile_photo_url,
       },
       user_id: user1.id,
     })
@@ -430,6 +442,7 @@ export async function trackInterestUpdated(user: any, newInterests: string[]): P
       data: {
         user_id: user.id,
         user_name: user.first_name,
+        user_avatar: user.profile_photo_url,
         interests: newInterests,
         interest_count: newInterests.length,
       },

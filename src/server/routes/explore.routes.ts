@@ -452,6 +452,40 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       return res.status(403).json({ error: 'User profile not accessible' })
     }
 
+    // Get user stats
+    // 1. Count friends
+    const { count: friendsCount } = await supabase
+      .from('friendships')
+      .select('*', { count: 'exact', head: true })
+      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+      .eq('status', 'active')
+
+    // 2. Count chats (where user is a participant)
+    const { data: userChats } = await supabase
+      .from('chat_participants')
+      .select('chat_id')
+      .eq('user_id', userId)
+
+    const chatIds = userChats?.map(c => c.chat_id) || []
+    const chatsCount = chatIds.length
+
+    // 3. Count messages sent
+    const { count: messagesSent } = await supabase
+      .from('messages')
+      .select('*', { count: 'exact', head: true })
+      .eq('sender_id', userId)
+
+    // 4. Count messages received (messages in user's chats but not sent by them)
+    let messagesReceived = 0
+    if (chatIds.length > 0) {
+      const { count } = await supabase
+        .from('messages')
+        .select('*', { count: 'exact', head: true })
+        .in('chat_id', chatIds)
+        .neq('sender_id', userId)
+      messagesReceived = count || 0
+    }
+
     // Transform user data
     const userData = {
       id: userProfile.id,
@@ -466,7 +500,13 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       interests: userProfile.interests || [],
       needs: userProfile.needs || [],
       joinedDate: userProfile.created_at,
-      isOnline: false // TODO: Add online status logic
+      isOnline: false, // TODO: Add online status logic
+      stats: {
+        friends: friendsCount || 0,
+        chats: chatsCount,
+        messagesSent: messagesSent || 0,
+        messagesReceived: messagesReceived
+      }
     }
 
     console.log('Returning user data:', userData)

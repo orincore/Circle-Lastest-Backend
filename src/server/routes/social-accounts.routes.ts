@@ -36,30 +36,33 @@ router.get('/linked-accounts', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
 
-    const { data: accounts, error } = await supabase
-      .from('linked_social_accounts')
-      .select(`
-        id,
-        platform,
-        platform_username,
-        platform_display_name,
-        platform_profile_url,
-        platform_avatar_url,
-        is_verified,
-        is_public,
-        linked_at,
-        platform_data
-      `)
-      .eq('user_id', userId)
-      .is('deleted_at', null) // Only show active accounts
-      .order('linked_at', { ascending: false })
+    // Get Instagram username from profiles table
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('instagram_username, created_at')
+      .eq('id', userId)
+      .single()
 
     if (error) {
-      console.error('Error fetching linked accounts:', error)
+      console.error('Error fetching profile:', error)
       return res.status(500).json({ error: 'Failed to fetch linked accounts' })
     }
 
-    res.json({ accounts: accounts || [] })
+    // Build accounts array from profile data
+    const accounts = []
+    if (profile.instagram_username) {
+      accounts.push({
+        platform: 'instagram',
+        platform_username: profile.instagram_username,
+        platform_display_name: profile.instagram_username,
+        platform_profile_url: `https://instagram.com/${profile.instagram_username}`,
+        is_verified: true,
+        is_public: true,
+        linked_at: profile.created_at
+      })
+    }
+
+    res.json({ accounts })
   } catch (error) {
     console.error('Error in get linked accounts:', error)
     res.status(500).json({ error: 'Internal server error' })
@@ -71,29 +74,33 @@ router.get('/user/:userId/linked-accounts', requireAuth, async (req: AuthRequest
   try {
     const { userId } = req.params
 
-    const { data: accounts, error } = await supabase
-      .from('linked_social_accounts')
-      .select(`
-        platform,
-        platform_username,
-        platform_display_name,
-        platform_profile_url,
-        platform_avatar_url,
-        linked_at,
-        platform_data
-      `)
-      .eq('user_id', userId)
-      .eq('is_public', true)
-      .eq('is_verified', true)
-      .is('deleted_at', null) // Only show active accounts
-      .order('linked_at', { ascending: false })
+    // Get Instagram username from profiles table
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('instagram_username, created_at')
+      .eq('id', userId)
+      .single()
 
     if (error) {
-      console.error('Error fetching user linked accounts:', error)
+      console.error('Error fetching user profile:', error)
       return res.status(500).json({ error: 'Failed to fetch linked accounts' })
     }
 
-    res.json({ accounts: accounts || [] })
+    // Build accounts array from profile data
+    const accounts = []
+    if (profile.instagram_username) {
+      accounts.push({
+        platform: 'instagram',
+        platform_username: profile.instagram_username,
+        platform_display_name: profile.instagram_username,
+        platform_profile_url: `https://instagram.com/${profile.instagram_username}`,
+        is_verified: true,
+        is_public: true,
+        linked_at: profile.created_at
+      })
+    }
+
+    res.json({ accounts })
   } catch (error) {
     console.error('Error in get user linked accounts:', error)
     res.status(500).json({ error: 'Internal server error' })
