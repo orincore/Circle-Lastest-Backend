@@ -278,106 +278,47 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
     console.log('Getting pending requests for user:', userId)
-    console.log('User info:', req.user)
 
-    // First, try a simple query without joins to see if the table exists
-    const { data: requests, error } = await supabase
-      .from('friend_requests')
+    // Query friendships table for pending requests where user is the receiver
+    const { data: friendships, error } = await supabase
+      .from('friendships')
       .select('*')
-      .eq('receiver_id', userId)
       .eq('status', 'pending')
+      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
       .order('created_at', { ascending: false })
 
     if (error) {
       console.error('Friend requests query error:', error)
-      if (error.code === '42P01') {
-        // Table doesn't exist
-        console.log('Friend requests table does not exist yet')
-        return res.json({ requests: [] })
-      }
-      throw error
+      return res.status(500).json({ error: 'Failed to get pending requests' })
     }
+
+    // Filter to only show requests where current user is the receiver (not the sender)
+    const requests = friendships?.filter(f => f.sender_id !== userId) || []
 
     console.log('Found requests:', requests?.length || 0)
 
-    // If we have requests, try to get sender information
+    // If we have requests, get sender information from profiles
     if (requests && requests.length > 0) {
       const senderIds = requests.map(r => r.sender_id)
       
-      // Try different possible users table structures
-      let users = null
-      let usersError = null
-
-      // Try 'users' table first
-      const { data: usersData, error: usersErr } = await supabase
-        .from('users')
-        .select('id, name, email')
+      // Get sender profiles
+      const { data: profiles, error: profilesErr } = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, username, profile_photo_url')
         .in('id', senderIds)
 
-      if (usersErr) {
-        console.log('Users table query failed, trying profiles table:', usersErr.message)
-        
-        // Try 'profiles' table as fallback with different column names
-        const { data: profilesData, error: profilesErr } = await supabase
-          .from('profiles')
-          .select('id, username, email, full_name, display_name')
-          .in('id', senderIds)
-
-        if (profilesErr) {
-          console.log('Profiles table query also failed:', profilesErr.message)
-          
-          // Try with just basic columns that should exist
-          const { data: basicProfilesData, error: basicProfilesErr } = await supabase
-            .from('profiles')
-            .select('id')
-            .in('id', senderIds)
-          
-          if (!basicProfilesErr && basicProfilesData) {
-            console.log('Basic profiles query succeeded, using fallback names')
-            users = basicProfilesData.map(profile => ({
-              id: profile.id,
-              name: `User ${profile.id.slice(0, 8)}`,
-              email: `${profile.id.slice(0, 8)}@example.com`
-            }))
-          }
-          
-          // Try auth.users view as last resort
-          const { data: authUsersData, error: authUsersErr } = await supabase
-            .from('auth.users')
-            .select('id, email')
-            .in('id', senderIds)
-
-          if (authUsersErr) {
-            console.error('All user table queries failed:', authUsersErr.message)
-            usersError = authUsersErr
-          } else {
-            users = authUsersData?.map(user => ({
-              id: user.id,
-              name: user.email?.split('@')[0] || 'User', // Use email prefix as name
-              email: user.email
-            }))
-          }
-        } else {
-          // Transform profiles data to match expected format
-          users = profilesData?.map(profile => ({
-            id: profile.id,
-            name: profile.full_name || profile.display_name || profile.username || 'User',
-            email: profile.email || 'unknown@example.com'
-          }))
-        }
-      } else {
-        users = usersData
-      }
-
-      if (usersError || !users) {
-        console.error('Failed to get user information, using fallback')
-        // Return requests with basic sender info using sender_id as name
+      if (profilesErr) {
+        console.error('Failed to get sender profiles:', profilesErr)
+        // Return requests with basic sender info
         const requestsWithFallback = requests.map(request => ({
-          ...request,
+          id: request.id,
+          sender_id: request.sender_id,
+          status: request.status,
+          created_at: request.created_at,
           sender: {
             id: request.sender_id,
-            name: `User ${request.sender_id.slice(0, 8)}`, // Use first 8 chars of ID as name
-            email: `${request.sender_id.slice(0, 8)}@example.com`
+            name: 'Unknown User',
+            profile_photo_url: null
           }
         }))
         return res.json({ requests: requestsWithFallback })
@@ -385,14 +326,21 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
 
       // Combine requests with sender information
       const requestsWithSenders = requests.map(request => {
-        const sender = users?.find(u => u.id === request.sender_id) || {
-          id: request.sender_id,
-          name: 'Unknown User',
-          email: 'unknown@example.com'
-        }
+        const senderProfile = profiles?.find(p => p.id === request.sender_id)
+        const senderName = senderProfile 
+          ? `${senderProfile.first_name || ''} ${senderProfile.last_name || ''}`.trim() || senderProfile.username || 'User'
+          : 'Unknown User'
+        
         return {
-          ...request,
-          sender
+          id: request.id,
+          sender_id: request.sender_id,
+          status: request.status,
+          created_at: request.created_at,
+          sender: {
+            id: request.sender_id,
+            name: senderName,
+            profile_photo_url: senderProfile?.profile_photo_url || null
+          }
         }
       })
 

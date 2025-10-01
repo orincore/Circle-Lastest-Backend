@@ -10,17 +10,17 @@ import { logger } from '../config/logger.js'
 // Input sanitization - prevent XSS and injection attacks
 export function sanitizeInput(req: Request, res: Response, next: NextFunction) {
   try {
-    // Sanitize body
-    if (req.body && typeof req.body === 'object') {
+    // Only sanitize body for POST/PUT/PATCH requests
+    if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && typeof req.body === 'object') {
       req.body = sanitizeObject(req.body)
     }
 
-    // Sanitize query parameters
+    // Sanitize query parameters (but be lenient)
     if (req.query && typeof req.query === 'object') {
       req.query = sanitizeObject(req.query)
     }
 
-    // Sanitize URL parameters
+    // Sanitize URL parameters (but be lenient)
     if (req.params && typeof req.params === 'object') {
       req.params = sanitizeObject(req.params)
     }
@@ -28,6 +28,7 @@ export function sanitizeInput(req: Request, res: Response, next: NextFunction) {
     next()
   } catch (error) {
     logger.error({ error }, 'Error in input sanitization')
+    // Continue even if sanitization fails to avoid breaking requests
     next()
   }
 }
