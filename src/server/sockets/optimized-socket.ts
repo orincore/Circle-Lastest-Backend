@@ -207,13 +207,23 @@ export function emitToAll(event: string, payload: any) {
 }
 
 export function initOptimizedSocket(server: Server) {
+  // Allow localhost for development testing even in production
+  const allowedOrigins = [
+    'https://circle.orincore.com',
+    'https://api.circle.orincore.com',
+    'http://localhost:8081',
+    'http://localhost:8080',
+    'http://localhost:3000',
+  ]
+  
   const io = new IOServer(server, {
     path: '/ws',
     cors: { 
       origin: process.env.NODE_ENV === 'production' 
-        ? ['https://circle.orincore.com', 'https://api.circle.orincore.com']
+        ? allowedOrigins
         : '*', 
-      credentials: true 
+      credentials: true,
+      methods: ['GET', 'POST'],
     },
     // Optimized for EC2 backend (no serverless limitations)
     pingTimeout: 60000,
