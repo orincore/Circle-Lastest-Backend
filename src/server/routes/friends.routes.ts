@@ -304,7 +304,7 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
       // Get sender profiles
       const { data: profiles, error: profilesErr } = await supabase
         .from('profiles')
-        .select('id, first_name, last_name, username, profile_photo_url')
+        .select('id, first_name, last_name, username, profile_photo_url, instagram_username')
         .in('id', senderIds)
 
       if (profilesErr) {
@@ -389,7 +389,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
     // Get friend profiles separately
     const { data: profiles, error: profilesError } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name, email, profile_photo_url')
+      .select('id, first_name, last_name, email, profile_photo_url, instagram_username')
       .in('id', friendUserIds)
 
     if (profilesError) {

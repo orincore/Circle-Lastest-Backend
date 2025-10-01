@@ -14,6 +14,7 @@ export const typeDefs = gql`
     interests: [String!]!
     needs: [String!]!
     profilePhotoUrl: String
+    instagramUsername: String
     location: Location
     preferences: Preferences
     createdAt: String
@@ -43,6 +44,7 @@ export const typeDefs = gql`
     age: Int
     gender: String
     profilePhotoUrl: String
+    instagramUsername: String
     location: Location!
     distance: Float! # Distance in kilometers
     interests: [String!]!
@@ -72,6 +74,7 @@ export const typeDefs = gql`
     interests: [String!]
     needs: [String!]
     profilePhotoUrl: String
+    instagramUsername: String
   }
 
   input LocationInput {

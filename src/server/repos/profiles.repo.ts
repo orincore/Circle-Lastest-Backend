@@ -13,6 +13,7 @@ export interface Profile {
   interests: string[]
   needs: string[]
   profile_photo_url?: string | null
+  instagram_username?: string | null
   password_hash: string
   latitude?: number | null
   longitude?: number | null
@@ -56,6 +57,7 @@ export async function createProfile(p: Omit<Profile, 'id' | 'created_at'>): Prom
     interests: p.interests,
     needs: p.needs,
     profile_photo_url: p.profile_photo_url ?? null,
+    instagram_username: p.instagram_username ?? null,
     password_hash: p.password_hash
   }).select('*').single()
   if (error) throw error

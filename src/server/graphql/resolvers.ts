@@ -18,6 +18,7 @@ function toUser(u: Profile | null) {
     interests: Array.isArray(u.interests) ? u.interests : [],
     needs: Array.isArray(u.needs) ? u.needs : [],
     profilePhotoUrl: u.profile_photo_url ?? null,
+    instagramUsername: u.instagram_username ?? null,
     location: u.latitude && u.longitude ? {
       latitude: u.latitude,
       longitude: u.longitude,
@@ -45,6 +46,7 @@ function toNearbyUser(u: Profile & { distance: number }) {
     age: u.age,
     gender: u.gender,
     profilePhotoUrl: u.profile_photo_url ?? null,
+    instagramUsername: u.instagram_username ?? null,
     interests: Array.isArray(u.interests) ? u.interests : [],
     needs: Array.isArray(u.needs) ? u.needs : [],
     location: {
@@ -123,6 +125,7 @@ export const resolvers = {
       if (Array.isArray(input.interests)) allowed.interests = input.interests
       if (Array.isArray(input.needs)) allowed.needs = input.needs
       if (typeof input.profilePhotoUrl === 'string') allowed.profile_photo_url = input.profilePhotoUrl
+      if (typeof input.instagramUsername === 'string') allowed.instagram_username = input.instagramUsername
 
       const { data, error } = await supabase
         .from(TABLE)

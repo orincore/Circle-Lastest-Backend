@@ -31,11 +31,12 @@ const signupSchema = z.object({
     .optional(),
   password: z.string().min(6),
   instagramUsername: z.string()
-    .min(1, 'Instagram username is required')
     .max(30, 'Instagram username must be less than 30 characters')
-    .refine((s) => /^[a-zA-Z0-9._]+$/.test(s), {
+    .refine((s) => s === '' || /^[a-zA-Z0-9._]+$/.test(s), {
       message: 'Instagram username can only contain letters, numbers, periods, and underscores'
     })
+    .optional()
+    .default('')
 })
 
 // Username availability
@@ -75,10 +76,10 @@ router.post('/signup', async (req, res) => {
   })
 
   const normalizedEmail = email.trim().toLowerCase()
-  const cleanInstagramUsername = instagramUsername.trim().replace('@', '')
+  const cleanInstagramUsername = instagramUsername ? instagramUsername.trim().replace('@', '') : ''
 
-  // Validate Instagram username format
-  if (!cleanInstagramUsername || !/^[a-zA-Z0-9._]+$/.test(cleanInstagramUsername)) {
+  // Validate Instagram username format if provided
+  if (cleanInstagramUsername && !/^[a-zA-Z0-9._]+$/.test(cleanInstagramUsername)) {
     return res.status(400).json({ error: 'Invalid Instagram username format' })
   }
 
@@ -126,65 +127,18 @@ router.post('/signup', async (req, res) => {
     interests,
     needs,
     profile_photo_url: env.DEFAULT_PROFILE_PHOTO_URL,
+    instagram_username: cleanInstagramUsername || null,
     password_hash
   }
   
   console.log('💾 Creating profile with data:', {
     ...profileData,
     password_hash: '[HIDDEN]',
-    about: profileData.about
+    about: profileData.about,
+    instagram_username: profileData.instagram_username
   })
   
   const profile = await createProfile(profileData)
-
-  // Automatically create Instagram account for the user
-  try {
-    console.log('📸 Creating Instagram account for new user:', cleanInstagramUsername);
-    
-    // Check if Instagram username is already taken by another user
-    const { data: existingInstagram } = await supabase
-      .from('linked_social_accounts')
-      .select('user_id')
-      .eq('platform', 'instagram')
-      .eq('platform_username', cleanInstagramUsername)
-      .is('deleted_at', null)
-      .maybeSingle()
-
-    if (existingInstagram && existingInstagram.user_id !== profile.id) {
-      console.warn('⚠️ Instagram username already taken:', cleanInstagramUsername)
-      // Don't fail signup, but log the issue
-    } else {
-      const { error: instagramError } = await supabase
-        .from('linked_social_accounts')
-        .insert({
-          user_id: profile.id,
-          platform: 'instagram',
-          platform_user_id: cleanInstagramUsername,
-          platform_username: cleanInstagramUsername,
-          platform_display_name: cleanInstagramUsername,
-          platform_profile_url: `https://instagram.com/${cleanInstagramUsername}`,
-          platform_data: {
-            verification_method: 'signup_verification',
-            verified_at: new Date().toISOString()
-          },
-          is_verified: true,
-          is_public: true,
-          linked_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          deleted_at: null
-        })
-
-      if (instagramError) {
-        console.error('❌ Failed to create Instagram account during signup:', instagramError)
-        // Don't fail signup if Instagram account creation fails
-      } else {
-        console.log('✅ Instagram account created successfully for:', cleanInstagramUsername)
-      }
-    }
-  } catch (error) {
-    console.error('❌ Error creating Instagram account during signup:', error)
-    // Don't fail signup if Instagram account creation fails
-  }
 
   // Track user joined activity for live feed
   try {
@@ -235,7 +189,8 @@ router.post('/signup', async (req, res) => {
       about: profile.about,
       interests: profile.interests,
       needs: profile.needs,
-      profilePhotoUrl: profile.profile_photo_url
+      profilePhotoUrl: profile.profile_photo_url,
+      instagramUsername: profile.instagram_username
     }
   })
 })
@@ -279,7 +234,8 @@ router.post('/login', async (req, res) => {
       about: user.about,
       interests: user.interests,
       needs: user.needs,
-      profilePhotoUrl: user.profile_photo_url
+      profilePhotoUrl: user.profile_photo_url,
+      instagramUsername: user.instagram_username
     }
   })
 })
