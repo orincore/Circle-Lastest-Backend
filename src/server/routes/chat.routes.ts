@@ -91,7 +91,7 @@ router.post('/with-user/:userId', requireAuth, async (req: AuthRequest, res) => 
       .from('friendships')
       .select('id')
       .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
-      .eq('status', 'accepted')
+      .eq('status', 'active')
       .limit(1)
       .maybeSingle()
     
@@ -168,7 +168,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
       .from('friendships')
       .select('id')
       .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
-      .eq('status', 'accepted')
+      .eq('status', 'active')
       .limit(1)
       .maybeSingle()
     
