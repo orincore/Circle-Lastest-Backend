@@ -7,6 +7,14 @@ import pinoHttp from 'pino-http'
 import { env } from './config/env.js'
 import { logger } from './config/logger.js'
 import { errorHandler, notFound } from './middleware/errorHandler.js'
+import { 
+  sanitizeInput, 
+  securityHeaders, 
+  validateRequestSize, 
+  preventParameterPollution,
+  detectAttackPatterns,
+  validateContentType
+} from './middleware/security.js'
 import healthRouter from './routes/health.routes.js'
 import authRouter from './routes/auth.routes.js'
 import storageRouter from './routes/storage.routes.js'
@@ -23,10 +31,14 @@ import notificationsRouter from './routes/notifications.routes.js'
 
 export const app = express()
 
+// Trust proxy for proper IP detection behind reverse proxy
 app.set('trust proxy', 1)
 app.set('etag', false)
 
-// Disable HTTPS enforcement for development
+// Security: Disable X-Powered-By header
+app.disable('x-powered-by')
+
+// Enhanced Helmet configuration for production security
 if (env.NODE_ENV === 'development') {
   app.use(helmet({
     hsts: false,
@@ -34,19 +46,73 @@ if (env.NODE_ENV === 'development') {
     crossOriginEmbedderPolicy: false,
   }))
 } else {
-  app.use(helmet())
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
+      },
+    },
+    hsts: {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true,
+    },
+  }))
 }
 
+// CORS configuration with strict origin validation
 app.use(cors({ 
   origin: env.NODE_ENV === 'development' ? true : env.CORS_ORIGIN, 
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token'],
+  exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining'],
+  maxAge: 600, // 10 minutes
 }))
+
+// Compression for response optimization
 app.use(compression())
-app.use(express.json({ limit: '2mb' }))
-app.use(express.urlencoded({ extended: true }))
-app.use(rateLimit({ windowMs: 60_000, max: 200 }))
+
+// Security middleware - MUST be before body parsers
+app.use(securityHeaders)
+app.use(detectAttackPatterns)
+app.use(validateContentType)
+app.use(preventParameterPollution)
+
+// Body parsers with size limits
+app.use(express.json({ 
+  limit: '2mb',
+  strict: true, // Only accept arrays and objects
+}))
+app.use(express.urlencoded({ 
+  extended: true,
+  limit: '2mb',
+  parameterLimit: 100, // Limit number of parameters
+}))
+
+// Input sanitization - MUST be after body parsers
+app.use(sanitizeInput)
+
+// Request size validation
+app.use(validateRequestSize(2 * 1024 * 1024)) // 2MB limit
+
+// Global rate limiting (200 requests per minute per IP)
+app.use(rateLimit({ 
+  windowMs: 60_000, 
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' },
+  skip: (req) => req.path === '/health', // Skip health checks
+}))
 
 // Performance monitoring middleware
 app.use(performanceMiddleware())
