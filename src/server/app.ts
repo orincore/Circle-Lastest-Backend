@@ -28,6 +28,7 @@ import exploreRouter from './routes/explore.routes.js'
 import circleStatsRouter from './routes/circle-stats.routes.js'
 import socialAccountsRouter from './routes/social-accounts.routes.js'
 import notificationsRouter from './routes/notifications.routes.js'
+import uploadRouter from '../routes/upload.routes.js'
 
 export const app = express()
 
@@ -128,6 +129,7 @@ app.use('/api/explore', exploreRouter)
 app.use('/api/circle', circleStatsRouter)
 app.use('/api/social', socialAccountsRouter)
 app.use('/api/notifications', notificationsRouter)
+app.use('/api/upload', uploadRouter)
 
 // Start monitoring service
 monitoringService.startMonitoring(30000) // Every 30 seconds
