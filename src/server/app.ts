@@ -70,8 +70,32 @@ if (env.NODE_ENV === 'development') {
 }
 
 // CORS configuration with strict origin validation
+const allowedOrigins = [
+  'http://localhost:8081',
+  'http://localhost:8080',
+  'http://localhost:3000',
+  'https://circle.orincore.com',
+  'https://api.circle.orincore.com',
+]
+
 app.use(cors({ 
-  origin: env.NODE_ENV === 'development' ? true : env.CORS_ORIGIN, 
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true)
+    
+    // In development, allow all origins
+    if (env.NODE_ENV === 'development') {
+      return callback(null, true)
+    }
+    
+    // In production, check against whitelist
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true)
+    } else {
+      logger.warn({ origin }, 'CORS: Origin not allowed')
+      callback(new Error('Not allowed by CORS'))
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token'],
