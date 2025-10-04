@@ -437,6 +437,17 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
 
     if (error) {
       console.error('Error fetching user profile:', error)
+      console.error('Error details:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint
+      })
+      return res.status(404).json({ error: 'User not found' })
+    }
+    
+    if (!userProfile) {
+      console.log('No user profile found for userId:', userId)
       return res.status(404).json({ error: 'User not found' })
     }
 

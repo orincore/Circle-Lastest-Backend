@@ -83,7 +83,16 @@ router.get('/user/:userId/linked-accounts', requireAuth, async (req: AuthRequest
 
     if (error) {
       console.error('Error fetching user profile:', error)
+      // If user not found, return empty accounts array instead of error
+      if (error.code === 'PGRST116') {
+        return res.json({ accounts: [] })
+      }
       return res.status(500).json({ error: 'Failed to fetch linked accounts' })
+    }
+    
+    // If no profile found, return empty accounts
+    if (!profile) {
+      return res.json({ accounts: [] })
     }
 
     // Build accounts array from profile data

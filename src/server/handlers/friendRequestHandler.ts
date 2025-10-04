@@ -60,7 +60,12 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         .maybeSingle();
 
       if (checkError) {
-        console.error('Error checking friendship:', checkError);
+        console.error('❌ Error checking friendship:', checkError);
+        console.error('Error details:', {
+          code: checkError.code,
+          message: checkError.message,
+          details: checkError.details
+        });
         socket.emit('friend:request:error', { error: 'Database error' });
         return;
       }
@@ -92,6 +97,12 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
           .single();
 
         if (updateError) {
+          console.error('❌ Error updating friendship:', updateError);
+          console.error('Update error details:', {
+            code: updateError.code,
+            message: updateError.message,
+            details: updateError.details
+          });
           socket.emit('friend:request:error', { error: 'Failed to send request' });
           return;
         }
@@ -143,7 +154,13 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         .single();
 
       if (createError) {
-        console.error('Error creating friend request:', createError);
+        console.error('❌ Error creating friend request:', createError);
+        console.error('Create error details:', {
+          code: createError.code,
+          message: createError.message,
+          details: createError.details,
+          hint: createError.hint
+        });
         socket.emit('friend:request:error', { error: 'Failed to send request' });
         return;
       }
@@ -180,9 +197,14 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       socket.emit('friend:request:sent', { request: newRequest });
       console.log('✅ Friend request sent:', newRequest.id);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error sending friend request:', error);
-      socket.emit('friend:request:error', { error: 'Failed to send request' });
+      console.error('Catch error details:', {
+        message: error?.message,
+        code: error?.code,
+        stack: error?.stack
+      });
+      socket.emit('friend:request:error', { error: error?.message || 'Failed to send request' });
     }
   });
 
