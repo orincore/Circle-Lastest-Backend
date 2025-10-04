@@ -49,6 +49,31 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         return;
       }
 
+      // Verify both users exist in profiles table
+      const { data: senderExists } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', senderId)
+        .maybeSingle();
+
+      const { data: receiverExists } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', receiverId)
+        .maybeSingle();
+
+      if (!senderExists) {
+        console.error('❌ Sender profile not found:', senderId);
+        socket.emit('friend:request:error', { error: 'Your profile not found. Please log out and log in again.' });
+        return;
+      }
+
+      if (!receiverExists) {
+        console.error('❌ Receiver profile not found:', receiverId);
+        socket.emit('friend:request:error', { error: 'User profile not found. They may have deleted their account.' });
+        return;
+      }
+
       const { user1_id, user2_id } = getOrderedUserIds(senderId, receiverId);
 
       // Check if friendship record already exists

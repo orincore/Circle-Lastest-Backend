@@ -161,6 +161,8 @@ export async function findNearbyUsers({
       .select('*')
       .not('latitude', 'is', null)
       .not('longitude', 'is', null)
+      .not('first_name', 'is', null)
+      .not('last_name', 'is', null)
       .neq('id', excludeUserId || '')
       .limit(limit)
     
@@ -173,7 +175,8 @@ export async function findNearbyUsers({
     })).filter(user => user.distance <= radiusKm)
   }
   
-  return data || []
+  // Filter out users without complete profiles
+  return (data || []).filter((user: any) => user.first_name && user.last_name)
 }
 
 // Find users within a bounding box (for map viewport)
