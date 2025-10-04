@@ -8,6 +8,19 @@ const router = Router()
 // Start matchmaking search
 router.post('/start', requireAuth, async (req: AuthRequest, res) => {
   try {
+    // Check if user is in invisible mode
+    const { data: user } = await supabase
+      .from('profiles')
+      .select('invisible_mode')
+      .eq('id', req.user!.id)
+      .single()
+    
+    if (user?.invisible_mode) {
+      return res.status(403).json({ 
+        error: 'Matchmaking is disabled while in invisible mode. Turn off invisible mode in settings to use this feature.' 
+      })
+    }
+
     const { location } = req.body
     const preferences = location ? {
       latitude: location.latitude,

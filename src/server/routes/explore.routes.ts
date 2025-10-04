@@ -18,6 +18,16 @@ async function getAllSectionsLogic(currentUserId: string) {
 
   if (currentUserError) throw currentUserError
 
+  // Check if current user is in invisible mode
+  if (currentUser.invisible_mode) {
+    return {
+      topUsers: [],
+      newUsers: [],
+      compatibleUsers: [],
+      message: 'Explore is disabled while in invisible mode. Turn off invisible mode in settings to use this feature.'
+    }
+  }
+
   // Get all potential users (increased limit for better distribution)
   const { data: allUsers, error } = await supabase
     .from('profiles')
@@ -36,11 +46,13 @@ async function getAllSectionsLogic(currentUserId: string) {
       latitude,
       longitude,
       created_at,
-      updated_at
+      updated_at,
+      invisible_mode
     `)
     .neq('id', currentUserId)
     .not('first_name', 'is', null)
     .not('last_name', 'is', null)
+    .neq('invisible_mode', true) // Exclude users in invisible mode
     .order('updated_at', { ascending: false })
     .limit(100) // Get more users for better distribution
 
