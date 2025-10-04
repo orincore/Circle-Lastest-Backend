@@ -17,6 +17,7 @@ export const typeDefs = gql`
     instagramUsername: String
     location: Location
     preferences: Preferences
+    invisibleMode: Boolean
     createdAt: String
   }
 
@@ -75,6 +76,7 @@ export const typeDefs = gql`
     needs: [String!]
     profilePhotoUrl: String
     instagramUsername: String
+    invisibleMode: Boolean
   }
 
   input LocationInput {

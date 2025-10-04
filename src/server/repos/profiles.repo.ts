@@ -26,6 +26,7 @@ export interface Profile {
   friendship_location_priority?: boolean | null
   relationship_distance_flexible?: boolean | null
   preferences_updated_at?: string | null
+  invisible_mode?: boolean | null
   created_at?: string
 }
 

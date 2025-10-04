@@ -34,6 +34,7 @@ function toUser(u: Profile | null) {
       relationshipDistanceFlexible: u.relationship_distance_flexible ?? true,
       updatedAt: u.preferences_updated_at ?? u.created_at ?? null
     },
+    invisibleMode: u.invisible_mode ?? false,
     createdAt: u.created_at ?? null
   }
 }
@@ -126,6 +127,7 @@ export const resolvers = {
       if (Array.isArray(input.needs)) allowed.needs = input.needs
       if (typeof input.profilePhotoUrl === 'string') allowed.profile_photo_url = input.profilePhotoUrl
       if (typeof input.instagramUsername === 'string') allowed.instagram_username = input.instagramUsername
+      if (typeof input.invisibleMode === 'boolean') allowed.invisible_mode = input.invisibleMode
 
       const { data, error } = await supabase
         .from(TABLE)
