@@ -31,21 +31,25 @@ router.get('/status/:userId', requireAuth, async (req: AuthRequest, res) => {
       return res.json({ status: 'friends' })
     }
 
-    // Check friend request status (manual query)
-    const { data: requestData, error: requestError } = await supabase
-      .from('friend_requests')
-      .select('status')
-      .or(`and(sender_id.eq.${currentUserId},receiver_id.eq.${userId}),and(sender_id.eq.${userId},receiver_id.eq.${currentUserId})`)
-      .order('created_at', { ascending: false })
-      .limit(1)
+    // Check for pending friend requests in friendships table
+    const { data: pendingRequest, error: requestError } = await supabase
+      .from('friendships')
+      .select('status, sender_id')
+      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
+      .eq('status', 'pending')
       .maybeSingle()
 
-    if (requestError && requestError.code !== 'PGRST116' && requestError.code !== '42P01') {
-      // Handle missing tables gracefully
-      console.warn('Friend_requests table not found, assuming no requests exist')
+    if (requestError && requestError.code !== 'PGRST116') {
+      console.warn('Error checking pending requests:', requestError)
     }
 
-    res.json({ status: requestData?.status || 'none' })
+    if (pendingRequest) {
+      // Return 'pending_sent' or 'pending_received' based on who sent it
+      const status = pendingRequest.sender_id === currentUserId ? 'pending_sent' : 'pending_received'
+      return res.json({ status })
+    }
+
+    res.json({ status: 'none' })
   } catch (error) {
     console.error('Get friend status error:', error)
     res.status(500).json({ error: 'Failed to get friend status' })
@@ -450,20 +454,7 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
 
     if (error) throw error
 
-    // Clean up any related friend requests
-    console.log(`🧹 Cleaning up friend requests between ${userId} and ${friendId}`)
-    const { error: requestCleanupError } = await supabase
-      .from('friend_requests')
-      .delete()
-      .or(`and(sender_id.eq.${userId},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${userId})`)
-
-    if (requestCleanupError) {
-      console.error('❌ Error cleaning up friend requests:', requestCleanupError)
-      // Don't fail the unfriend operation for this, just log it
-    } else {
-      console.log(`✅ Friend requests cleaned up successfully`)
-    }
-
+    console.log(`✅ Successfully unfriended: ${userId} and ${friendId}`)
     res.json({ success: true })
   } catch (error) {
     console.error('Remove friend error:', error)
