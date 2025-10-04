@@ -1010,11 +1010,12 @@ export function initOptimizedSocket(server: Server) {
         }
 
         // Check if users are friends (required for messaging)
+        // Accept both 'active' and 'accepted' status for compatibility
         const { data: friendshipCheck } = await supabase
           .from('friendships')
           .select('id')
           .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
-          .eq('status', 'active')
+          .in('status', ['active', 'accepted'])
           .limit(1)
           .maybeSingle()
         

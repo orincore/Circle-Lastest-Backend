@@ -87,11 +87,12 @@ router.post('/with-user/:userId', requireAuth, async (req: AuthRequest, res) => 
     }
     
     // Check if users are friends (required for messaging)
+    // Accept both 'active' and 'accepted' status for compatibility
     const { data: friendshipCheck } = await supabase
       .from('friendships')
       .select('id')
       .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
       .limit(1)
       .maybeSingle()
     
@@ -157,18 +158,17 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     if (!members || members.length !== 2) {
       return res.status(400).json({ error: 'Invalid chat' })
     }
-    
     const otherUserId = members.find((m: { user_id: string }) => m.user_id !== userId)?.user_id
     if (!otherUserId) {
       return res.status(400).json({ error: 'Invalid chat members' })
     }
     
-    // Check if users are friends (required for messaging)
+    // Check if users are friends (accept both 'active' and 'accepted' status)
     const { data: friendshipCheck } = await supabase
       .from('friendships')
       .select('id')
       .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
       .limit(1)
       .maybeSingle()
     
