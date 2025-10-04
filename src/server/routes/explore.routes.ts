@@ -49,12 +49,12 @@ async function getAllSectionsLogic(currentUserId: string) {
   // Filter out friends and blocked users
   const userIds = allUsers?.map(u => u.id) || []
   
-  // Get friendships to exclude
+  // Get friendships to exclude (accept both 'active' and 'accepted')
   const { data: friendships } = await supabase
     .from('friendships')
     .select('user1_id, user2_id')
     .or(`user1_id.eq.${currentUserId},user2_id.eq.${currentUserId}`)
-    .eq('status', 'active')
+    .in('status', ['active', 'accepted'])
     .in('user1_id', [...userIds, currentUserId])
     .in('user2_id', [...userIds, currentUserId])
 
@@ -302,12 +302,12 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
       blockedIds.add(b.blocked_id)
     })
 
-    // Get friendship status for search results
+    // Get friendship status for search results (accept both 'active' and 'accepted')
     const { data: friendships } = await supabase
       .from('friendships')
       .select('user1_id, user2_id')
       .or(`user1_id.eq.${currentUserId},user2_id.eq.${currentUserId}`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
       .in('user1_id', [...userIds, currentUserId])
       .in('user2_id', [...userIds, currentUserId])
 
@@ -464,12 +464,12 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Get user stats
-    // 1. Count friends
+    // 1. Count friends (accept both 'active' and 'accepted')
     const { count: friendsCount } = await supabase
       .from('friendships')
       .select('*', { count: 'exact', head: true })
       .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
 
     // 2. Count chats (where user is a participant)
     const { data: userChats } = await supabase

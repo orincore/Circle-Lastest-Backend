@@ -15,11 +15,12 @@ router.get('/status/:userId', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Check if they are already friends in the friendships table
+    // Accept both 'active' and 'accepted' status
     const { data: friendshipData, error: friendshipError } = await supabase
       .from('friendships')
       .select('*')
       .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
       .maybeSingle()
 
     console.log(`🔍 Checking friendship between ${currentUserId} and ${userId}:`, friendshipData);
@@ -369,11 +370,12 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
     console.log('Getting friends list for user:', userId)
 
     // First get the friendships without joins
+    // Accept both 'active' and 'accepted' status
     const { data: friendships, error } = await supabase
       .from('friendships')
       .select('*')
       .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -446,11 +448,12 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
 
     // Mark friendship as inactive instead of deleting
+    // Accept both 'active' and 'accepted' status
     const { error } = await supabase
       .from('friendships')
       .update({ status: 'inactive', updated_at: new Date().toISOString() })
       .or(`and(user1_id.eq.${userId},user2_id.eq.${friendId}),and(user1_id.eq.${friendId},user2_id.eq.${userId})`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
 
     if (error) throw error
 

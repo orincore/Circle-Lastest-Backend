@@ -58,12 +58,12 @@ router.post('/message-request', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Cannot send message request to yourself' })
     }
     
-    // Check if they are already friends
+    // Check if they are already friends (accept both 'active' and 'accepted')
     const { data: existingFriendship } = await supabase
       .from('friendships')
       .select('id')
       .or(`and(user1_id.eq.${senderId},user2_id.eq.${receiverId}),and(user1_id.eq.${receiverId},user2_id.eq.${senderId})`)
-      .eq('status', 'active')
+      .in('status', ['active', 'accepted'])
       .limit(1)
       .maybeSingle()
     

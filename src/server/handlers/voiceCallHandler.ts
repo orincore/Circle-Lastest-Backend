@@ -120,11 +120,12 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
 
       // Check if users are friends (optional - you might want to allow calls to non-friends)
       console.log('🔍 Checking friendship between:', userId, 'and', data.receiverId);
+      // Accept both 'active' and 'accepted' status for compatibility
       const { data: friendship, error: friendshipError } = await supabase
         .from('friendships')
         .select('id')
         .or(`and(user1_id.eq.${userId},user2_id.eq.${data.receiverId}),and(user1_id.eq.${data.receiverId},user2_id.eq.${userId})`)
-        .eq('status', 'active')
+        .in('status', ['active', 'accepted'])
         .limit(1)
         .maybeSingle();
 
