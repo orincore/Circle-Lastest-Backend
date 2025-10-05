@@ -74,41 +74,9 @@ export const resolvers = {
   Query: {
     health: () => 'ok',
     me: async (_: any, __: any, ctx: any) => {
-      console.log('👤 GraphQL me query called with context:', {
-        hasUser: !!ctx?.user,
-        userId: ctx?.user?.id,
-        userEmail: ctx?.user?.email
-      })
-      
-      if (!ctx?.user?.id) {
-        console.log('❌ No user in context, returning null')
-        return null
-      }
-      
-      try {
-        console.log('🔍 Finding profile for user:', ctx.user.id)
-        const profile = await findById(ctx.user.id)
-        console.log('📋 Profile found:', {
-          hasProfile: !!profile,
-          profileId: profile?.id,
-          username: profile?.username,
-          email: profile?.email,
-          firstName: profile?.first_name,
-          lastName: profile?.last_name
-        })
-        
-        const user = toUser(profile)
-        console.log('✅ Returning user data:', {
-          hasUser: !!user,
-          userId: user?.id,
-          username: user?.username
-        })
-        
-        return user
-      } catch (error) {
-        console.error('❌ Error in me resolver:', error)
-        throw error
-      }
+      if (!ctx?.user?.id) return null
+      const profile = await findById(ctx.user.id)
+      return toUser(profile)
     },
     nearbyUsers: async (_: any, { latitude, longitude, radiusKm, limit }: any, ctx: any) => {
       if (!ctx?.user?.id) throw new Error('Unauthorized')

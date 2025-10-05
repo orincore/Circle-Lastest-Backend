@@ -10,10 +10,29 @@ const router = express.Router()
 router.get('/current', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
+    
+    // Debug: Log what we're checking
+    console.log('🔍 Backend Debug - Checking subscription for user:', userId)
+    
     const subscription = await SubscriptionService.getUserSubscription(userId)
     const plan = await SubscriptionService.getUserPlan(userId)
     const isPremium = await SubscriptionService.isPremiumUser(userId)
     const matchLimit = await SubscriptionService.checkDailyMatchLimit(userId)
+
+    // Debug: Log what we found
+    console.log('🔍 Backend Debug - Subscription data:', {
+      userId,
+      subscription: subscription ? {
+        id: subscription.id,
+        plan_type: subscription.plan_type,
+        status: subscription.status,
+        expires_at: subscription.expires_at,
+        started_at: subscription.started_at
+      } : null,
+      plan,
+      isPremium,
+      matchLimit
+    })
 
     res.json({
       subscription,
