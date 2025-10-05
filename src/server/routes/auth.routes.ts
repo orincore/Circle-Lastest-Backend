@@ -165,9 +165,7 @@ router.post('/signup', async (req, res) => {
     // Don't fail signup if notifications fail
   }
 
-  // Send signup success email (async, don't wait for it)
-  emailService.sendSignupSuccessEmail(profile.email, profile.first_name || 'User')
-    .catch(error => console.error('Failed to send signup success email:', error))
+  // Welcome email will be sent after email verification, not at signup
 
   const access_token = signJwt({ sub: profile.id, email: profile.email, username: profile.username })
   return res.json({

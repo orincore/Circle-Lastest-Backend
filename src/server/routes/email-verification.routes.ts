@@ -129,11 +129,12 @@ router.post('/verify-otp', otpVerifyLimit, async (req, res) => {
 
     let welcomeEmailSent = false
     if (userProfile) {
-      // Send welcome email
-      welcomeEmailSent = await emailService.sendWelcomeEmail(
+      // Send comprehensive signup success email (includes welcome + additional info)
+      welcomeEmailSent = await emailService.sendSignupSuccessEmail(
         email, 
-        userProfile.first_name || 'there'
+        userProfile.first_name || 'User'
       )
+      console.log(`🎉 Welcome email sent to ${userProfile.first_name} (${email}) after email verification`)
     }
 
     return res.json({
