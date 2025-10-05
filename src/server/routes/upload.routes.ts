@@ -17,7 +17,7 @@ const s3Client = new S3Client({
   },
 });
 
-const BUCKET_NAME = process.env.S3_BUCKET_NAME || 'circle-chat-media';
+const BUCKET_NAME = process.env.AWS_S3_BUCKET || 'media.orincore.com';
 
 // Configure multer for memory storage
 const upload = multer({
