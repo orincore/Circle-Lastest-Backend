@@ -240,4 +240,73 @@ router.post('/login', async (req, res) => {
   })
 })
 
+// Delete account endpoint (soft delete)
+router.post('/delete-account', async (req, res) => {
+  try {
+    const { email, password, reason, feedback } = req.body
+
+    // Validate input
+    if (!email || !password || !reason) {
+      return res.status(400).json({ error: 'Email, password, and reason are required' })
+    }
+
+    // Find user by email
+    const user = await findByEmail(email.toLowerCase())
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' })
+    }
+
+    // Verify password
+    const isValid = await verifyPassword(password, user.password_hash)
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid email or password' })
+    }
+
+    // Check if already deleted
+    if (user.deleted_at) {
+      return res.status(400).json({ error: 'Account is already scheduled for deletion' })
+    }
+
+    // Soft delete: Set deleted_at timestamp and deletion reason
+    const deletionDate = new Date()
+    const { error: updateError } = await supabase
+      .from('profiles')
+      .update({
+        deleted_at: deletionDate.toISOString(),
+        deletion_reason: reason,
+        deletion_feedback: feedback || null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', user.id)
+
+    if (updateError) {
+      console.error('Error soft deleting account:', updateError)
+      return res.status(500).json({ error: 'Failed to delete account' })
+    }
+
+    // Log the deletion activity
+    try {
+      await supabase
+        .from('user_activity')
+        .insert({
+          user_id: user.id,
+          action: 'account_deletion_requested',
+          details: { reason, feedback, scheduled_for: deletionDate.toISOString() }
+        })
+    } catch (activityError) {
+      console.error('Error logging deletion activity:', activityError)
+      // Don't fail the request if activity logging fails
+    }
+
+    return res.json({
+      success: true,
+      message: 'Account scheduled for deletion. You have 30 days to reactivate by logging in.',
+      deletionDate: deletionDate.toISOString()
+    })
+  } catch (error) {
+    console.error('Delete account error:', error)
+    return res.status(500).json({ error: 'Failed to delete account' })
+  }
+})
+
 export default router

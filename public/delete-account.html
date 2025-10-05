@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Delete Account - Circle</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+            animation: slideUp 0.5s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #7C2B86, #FFD6F2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 40px;
+            color: white;
+        }
+
+        h1 {
+            color: #1F1147;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+
+        .warning-box {
+            background: #FFF3CD;
+            border: 2px solid #FFC107;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 30px 0;
+        }
+
+        .warning-box h3 {
+            color: #856404;
+            font-size: 18px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .warning-box ul {
+            color: #856404;
+            margin-left: 20px;
+            margin-top: 10px;
+        }
+
+        .warning-box li {
+            margin: 8px 0;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            color: #1F1147;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .required {
+            color: #FF4D67;
+        }
+
+        input[type="email"],
+        input[type="password"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 14px;
+            border: 2px solid #E0E0E0;
+            border-radius: 12px;
+            font-size: 16px;
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #7C2B86;
+            box-shadow: 0 0 0 3px rgba(124, 43, 134, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin: 20px 0;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            margin-top: 2px;
+            cursor: pointer;
+        }
+
+        .checkbox-group label {
+            margin: 0;
+            font-weight: 400;
+            cursor: pointer;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-cancel {
+            background: #F5F5F5;
+            color: #666;
+        }
+
+        .btn-cancel:hover {
+            background: #E0E0E0;
+        }
+
+        .btn-delete {
+            background: linear-gradient(135deg, #FF4D67, #FF6B6B);
+            color: white;
+        }
+
+        .btn-delete:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 77, 103, 0.4);
+        }
+
+        .btn-delete:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .message {
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .message.success {
+            background: #D4EDDA;
+            color: #155724;
+            border: 1px solid #C3E6CB;
+        }
+
+        .message.error {
+            background: #F8D7DA;
+            color: #721C24;
+            border: 1px solid #F5C6CB;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #7C2B86;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #E0E0E0;
+        }
+
+        .footer a {
+            color: #7C2B86;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 30px 20px;
+            }
+
+            h1 {
+                font-size: 24px;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">💔</div>
+            <h1>Delete Your Account</h1>
+            <p class="subtitle">We're sorry to see you go. Please read the information below carefully before proceeding.</p>
+        </div>
+
+        <div class="warning-box">
+            <h3>⚠️ Important Information</h3>
+            <ul>
+                <li>Your account will be permanently deleted after 30 days</li>
+                <li>All your messages, matches, and connections will be removed</li>
+                <li>Your profile will no longer be visible to other users</li>
+                <li>You can reactivate your account within 30 days by logging in</li>
+                <li>After 30 days, all data will be permanently deleted and cannot be recovered</li>
+            </ul>
+        </div>
+
+        <div id="message" class="message"></div>
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 15px; color: #666;">Processing your request...</p>
+        </div>
+
+        <form id="deleteForm">
+            <div class="form-group">
+                <label for="email">Email Address <span class="required">*</span></label>
+                <input type="email" id="email" name="email" required placeholder="Enter your email address">
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password <span class="required">*</span></label>
+                <input type="password" id="password" name="password" required placeholder="Enter your password">
+            </div>
+
+            <div class="form-group">
+                <label for="reason">Reason for Leaving <span class="required">*</span></label>
+                <select id="reason" name="reason" required>
+                    <option value="">Select a reason...</option>
+                    <option value="found_partner">Found a partner</option>
+                    <option value="not_enough_matches">Not enough matches</option>
+                    <option value="privacy_concerns">Privacy concerns</option>
+                    <option value="too_expensive">Too expensive</option>
+                    <option value="technical_issues">Technical issues</option>
+                    <option value="harassment">Harassment or safety concerns</option>
+                    <option value="taking_break">Taking a break from dating</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="feedback">Additional Feedback (Optional)</label>
+                <textarea id="feedback" name="feedback" placeholder="Help us improve by sharing more details..."></textarea>
+            </div>
+
+            <div class="checkbox-group">
+                <input type="checkbox" id="confirm" name="confirm" required>
+                <label for="confirm">
+                    I understand that my account will be deleted and this action cannot be undone after 30 days. 
+                    I can reactivate my account by logging in within 30 days.
+                </label>
+            </div>
+
+            <div class="button-group">
+                <button type="button" class="btn-cancel" onclick="window.close()">Cancel</button>
+                <button type="submit" class="btn-delete" id="deleteBtn">Delete My Account</button>
+            </div>
+        </form>
+
+        <div class="footer">
+            <p>Need help? <a href="mailto:support@circle.orincore.com">Contact Support</a></p>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('deleteForm');
+        const deleteBtn = document.getElementById('deleteBtn');
+        const message = document.getElementById('message');
+        const loading = document.getElementById('loading');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // Get form data
+            const formData = {
+                email: document.getElementById('email').value,
+                password: document.getElementById('password').value,
+                reason: document.getElementById('reason').value,
+                feedback: document.getElementById('feedback').value
+            };
+
+            // Validate
+            if (!document.getElementById('confirm').checked) {
+                showMessage('Please confirm that you understand the consequences', 'error');
+                return;
+            }
+
+            // Show loading
+            form.style.display = 'none';
+            loading.style.display = 'block';
+            message.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/auth/delete-account', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showMessage(
+                        'Your account has been scheduled for deletion. You have 30 days to reactivate it by logging in. ' +
+                        'After 30 days, all your data will be permanently deleted.',
+                        'success'
+                    );
+                    form.reset();
+                    
+                    // Redirect after 5 seconds
+                    setTimeout(() => {
+                        window.location.href = 'https://circle.orincore.com';
+                    }, 5000);
+                } else {
+                    showMessage(data.error || 'Failed to delete account. Please try again.', 'error');
+                    form.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showMessage('An error occurred. Please try again later.', 'error');
+                form.style.display = 'block';
+            } finally {
+                loading.style.display = 'none';
+            }
+        });
+
+        function showMessage(text, type) {
+            message.textContent = text;
+            message.className = `message ${type}`;
+            message.style.display = 'block';
+        }
+
+        // Auto-fill email from URL parameter if present
+        const urlParams = new URLSearchParams(window.location.search);
+        const emailParam = urlParams.get('email');
+        if (emailParam) {
+            document.getElementById('email').value = emailParam;
+        }
+    </script>
+</body>
+</html>
