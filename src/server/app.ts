@@ -40,6 +40,8 @@ import reportsRouter from './routes/reports.routes.js'
 import campaignsRouter from './routes/campaigns.routes.js'
 import templatesRouter from './routes/templates.routes.js'
 import userAnalyticsRouter from './routes/user-analytics.routes.js'
+import uploadRouter from './routes/upload.routes.js'
+import adminSettingsRouter from './routes/admin-settings.routes.js'
 
 const app = express()
 
@@ -197,3 +199,9 @@ monitoringService.startMonitoring(30000) // Every 30 seconds
 setInterval(() => {
   try { heartbeat() } catch {}
 }, 30_000) // Reduced to 30 seconds since worker handles most processing
+
+// Error handling middleware (must be last)
+app.use(notFound)
+app.use(errorHandler)
+
+export { app }
