@@ -340,7 +340,7 @@ router.get('/events/:eventType', requireAuth, async (req: AuthRequest, res) => {
 
 /**
  * Get all event types summary
- * GET /api/analytics/events/summary
+ * GET /api/analytics/events-summary
  */
 router.get('/events-summary', requireAuth, async (req: AuthRequest, res) => {
   try {
