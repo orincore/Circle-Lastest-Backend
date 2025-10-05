@@ -227,15 +227,60 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       })
       .eq('id', id)
 
-    // Send notifications (this would integrate with your notification service)
-    // For now, we'll just create interaction records
-    const interactions = users.map(user => ({
-      campaign_id: id,
-      user_id: user.id,
-      action: 'sent',
-      created_at: new Date().toISOString()
-    }))
+    // Send push notifications to users
+    const interactions = []
+    let sentCount = 0
+    
+    for (const user of users) {
+      try {
+        // Get user's push token
+        const { data: pushToken } = await supabase
+          .from('push_tokens')
+          .select('token')
+          .eq('user_id', user.id)
+          .eq('enabled', true)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
 
+        if (pushToken?.token) {
+          // Send push notification using Expo
+          const message = {
+            to: pushToken.token,
+            sound: 'default',
+            title: campaign.subject || campaign.name,
+            body: campaign.content,
+            data: { 
+              campaignId: id,
+              type: 'marketing_campaign'
+            },
+          }
+
+          const response = await fetch('https://exp.host/--/api/v2/push/send', {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(message),
+          })
+
+          if (response.ok) {
+            sentCount++
+            interactions.push({
+              campaign_id: id,
+              user_id: user.id,
+              action: 'sent',
+              created_at: new Date().toISOString()
+            })
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to send notification to user ${user.id}:`, error)
+      }
+    }
+
+    // Save interaction records
     if (interactions.length > 0) {
       await supabase
         .from('user_campaign_interactions')
@@ -246,7 +291,8 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
     await supabase
       .from('campaign_analytics')
       .update({ 
-        total_sent: users.length,
+        total_sent: sentCount,
+        delivered: sentCount,
         updated_at: new Date().toISOString()
       })
       .eq('campaign_id', id)
@@ -257,10 +303,13 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       .update({ status: 'sent' })
       .eq('id', id)
 
+    console.log(`✅ Campaign ${id} sent to ${sentCount}/${users.length} users`)
+
     res.json({ 
       success: true, 
-      sent_to: users.length,
-      message: `Campaign sent to ${users.length} users`
+      sent_to: sentCount,
+      total_users: users.length,
+      message: `Campaign sent to ${sentCount} users (${users.length - sentCount} users don't have push tokens)`
     })
   } catch (error) {
     console.error('Error sending campaign:', error)
