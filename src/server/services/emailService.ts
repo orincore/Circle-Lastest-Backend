@@ -265,18 +265,19 @@ class EmailService {
                 padding: 40px;
             }
             .greeting {
-                font-size: 20px;
-                font-weight: 600;
+                font-size: 24px;
+                font-weight: 700;
                 color: #1F1147;
-                margin-bottom: 16px;
+                margin-bottom: 20px;
                 text-align: center;
             }
             .message {
-                font-size: 16px;
-                color: #4A4A4A;
+                font-size: 17px;
+                color: #2D2D2D;
                 text-align: center;
-                margin-bottom: 32px;
+                margin-bottom: 36px;
                 line-height: 1.7;
+                font-weight: 500;
             }
             .otp-container {
                 text-align: center;
@@ -293,20 +294,22 @@ class EmailService {
             .otp-code {
                 font-size: 42px;
                 font-weight: 800;
-                color: #1F1147;
-                background: linear-gradient(135deg, #F3E5F5 0%, #FCE4EC 100%);
-                border: 3px solid #E1BEE7;
+                color: #FFFFFF;
+                background: linear-gradient(135deg, #7C2B86 0%, #E91E63 100%);
+                border: 3px solid #7C2B86;
                 border-radius: 16px;
                 padding: 24px 32px;
                 letter-spacing: 12px;
                 display: inline-block;
-                box-shadow: 0 8px 16px rgba(124, 43, 134, 0.15);
+                box-shadow: 0 8px 16px rgba(124, 43, 134, 0.3);
+                text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
             }
             .instructions {
                 background: linear-gradient(135deg, #F8F4FF 0%, #FFF0F8 100%);
                 border-radius: 16px;
                 padding: 24px;
                 margin: 32px 0;
+                border: 2px solid #E1BEE7;
                 border-left: 4px solid #7C2B86;
             }
             .instructions h3 {
@@ -318,32 +321,38 @@ class EmailService {
             .instructions ul {
                 margin: 0;
                 padding-left: 20px;
-                color: #4A4A4A;
+                color: #2D2D2D;
             }
             .instructions li {
-                margin-bottom: 8px;
-                font-size: 14px;
+                margin-bottom: 10px;
+                font-size: 15px;
+                font-weight: 500;
+                color: #2D2D2D;
             }
             .security-notice {
-                background: #FFF8E1;
-                border: 2px solid #FFD54F;
+                background: linear-gradient(135deg, #FFF8E1 0%, #FFFDE7 100%);
+                border: 2px solid #FFB74D;
                 border-radius: 12px;
-                padding: 20px;
+                padding: 24px;
                 margin: 24px 0;
                 text-align: center;
+                box-shadow: 0 4px 8px rgba(255, 183, 77, 0.1);
             }
             .security-notice .icon {
-                font-size: 24px;
-                margin-bottom: 8px;
+                font-size: 28px;
+                margin-bottom: 12px;
             }
             .security-notice .title {
                 font-weight: 700;
-                color: #F57F17;
-                margin-bottom: 8px;
+                color: #E65100;
+                margin-bottom: 12px;
+                font-size: 16px;
             }
             .security-notice .text {
-                font-size: 14px;
-                color: #6D4C41;
+                font-size: 15px;
+                color: #4E342E;
+                font-weight: 500;
+                line-height: 1.6;
             }
             .footer {
                 background: #F8F9FA;
@@ -556,11 +565,12 @@ class EmailService {
                 margin-bottom: 16px;
             }
             .welcome-message {
-                font-size: 16px;
-                color: #4A4A4A;
+                font-size: 17px;
+                color: #2D2D2D;
                 text-align: center;
                 margin-bottom: 40px;
                 line-height: 1.7;
+                font-weight: 500;
             }
             .features-grid {
                 display: grid;
@@ -588,9 +598,10 @@ class EmailService {
                 margin-bottom: 8px;
             }
             .feature-desc {
-                font-size: 14px;
-                color: #4A4A4A;
+                font-size: 15px;
+                color: #2D2D2D;
                 line-height: 1.5;
+                font-weight: 500;
             }
             .cta-section {
                 background: linear-gradient(135deg, #7C2B86 0%, #E91E63 100%);
@@ -655,9 +666,10 @@ class EmailService {
                 flex-shrink: 0;
             }
             .tip-text {
-                font-size: 14px;
-                color: #4A4A4A;
+                font-size: 15px;
+                color: #2D2D2D;
                 line-height: 1.5;
+                font-weight: 500;
             }
             .footer {
                 background: #F8F9FA;
@@ -1015,9 +1027,10 @@ class EmailService {
                 margin-top: 2px;
             }
             .tip-text {
-                font-size: 14px;
-                color: #4A4A4A;
+                font-size: 15px;
+                color: #2D2D2D;
                 line-height: 1.5;
+                font-weight: 500;
             }
             .footer {
                 background: #F8F9FA;
