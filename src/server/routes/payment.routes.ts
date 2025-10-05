@@ -152,6 +152,22 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
     )
 
     if (confirmedIntent.status === 'succeeded') {
+      // Check if user already has an active subscription
+      const existingSubscription = await SubscriptionService.getActiveSubscription(userId)
+      
+      if (existingSubscription) {
+        logger.info({ userId, existingPlan: existingSubscription.plan_type, newPlan: plan_type }, 'User already has subscription, updating...')
+        
+        // Cancel existing subscription in payment gateway if different
+        if (existingSubscription.external_subscription_id) {
+          try {
+            await PaymentGateway.cancelSubscription(existingSubscription.external_subscription_id, false)
+          } catch (cancelError) {
+            logger.warn({ error: cancelError }, 'Failed to cancel existing subscription in payment gateway')
+          }
+        }
+      }
+
       // Create subscription in payment gateway
       const subscription = await PaymentGateway.createSubscription(
         customerId,
@@ -159,7 +175,7 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
         testPaymentMethod
       )
 
-      // Create subscription in our system
+      // Create or update subscription in our system
       const expiresAt = new Date()
       expiresAt.setMonth(expiresAt.getMonth() + 1)
 
@@ -179,7 +195,9 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
         success: true,
         subscription: userSubscription,
         payment_subscription: subscription,
-        message: 'Successfully subscribed to premium!'
+        message: existingSubscription 
+          ? `Successfully upgraded to ${plan_type}!` 
+          : `Successfully subscribed to ${plan_type}!`
       })
     } else {
       res.status(400).json({
@@ -188,9 +206,26 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
         status: confirmedIntent.status
       })
     }
-  } catch (error) {
+  } catch (error: any) {
     logger.error({ error }, 'Error processing subscription payment')
-    res.status(500).json({ error: 'Failed to process subscription' })
+    
+    // Provide more specific error messages
+    if (error?.code === '23505') {
+      res.status(409).json({ 
+        error: 'Subscription already exists. Please try upgrading instead.',
+        code: 'DUPLICATE_SUBSCRIPTION'
+      })
+    } else if (error?.message && error.message.includes('duplicate key')) {
+      res.status(409).json({ 
+        error: 'You already have an active subscription. Please contact support.',
+        code: 'DUPLICATE_SUBSCRIPTION'
+      })
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to process subscription. Please try again.',
+        details: process.env.NODE_ENV === 'development' ? error?.message : undefined
+      })
+    }
   }
 })
 

@@ -24,8 +24,30 @@ export interface DailyMatchLimit {
 }
 
 export class SubscriptionService {
-  // Get user's current subscription
+  // Get user's current subscription (active or any status)
   static async getUserSubscription(userId: string): Promise<Subscription | null> {
+    try {
+      const { data, error } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+      
+      if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+        throw error
+      }
+      
+      return data || null
+    } catch (error) {
+      logger.error({ error, userId }, 'Error getting user subscription')
+      throw error
+    }
+  }
+
+  // Get user's active subscription only
+  static async getActiveSubscription(userId: string): Promise<Subscription | null> {
     try {
       const { data, error } = await supabase
         .from('subscriptions')
@@ -40,7 +62,7 @@ export class SubscriptionService {
       
       return data || null
     } catch (error) {
-      logger.error({ error, userId }, 'Error getting user subscription')
+      logger.error({ error, userId }, 'Error getting active subscription')
       throw error
     }
   }
@@ -48,7 +70,7 @@ export class SubscriptionService {
   // Check if user is premium
   static async isPremiumUser(userId: string): Promise<boolean> {
     try {
-      const subscription = await this.getUserSubscription(userId)
+      const subscription = await this.getActiveSubscription(userId)
       if (!subscription) return false
       
       // Check if subscription is premium and not expired
@@ -70,7 +92,7 @@ export class SubscriptionService {
   // Get user's subscription plan
   static async getUserPlan(userId: string): Promise<'free' | 'premium' | 'premium_plus'> {
     try {
-      const subscription = await this.getUserSubscription(userId)
+      const subscription = await this.getActiveSubscription(userId)
       if (!subscription) return 'free'
       
       // Check if expired
@@ -179,25 +201,55 @@ export class SubscriptionService {
     currency = 'USD'
   ): Promise<Subscription> {
     try {
-      // Upsert subscription
-      const { data, error } = await supabase
-        .from('subscriptions')
-        .upsert({
-          user_id: userId,
-          plan_type: planType,
-          status: 'active',
-          started_at: new Date().toISOString(),
-          expires_at: expiresAt.toISOString(),
-          payment_provider: paymentProvider,
-          external_subscription_id: externalSubscriptionId,
-          price_paid: pricePaid,
-          currency,
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single()
+      // First, try to get existing subscription
+      const existingSubscription = await this.getUserSubscription(userId)
       
-      if (error) throw error
+      let data: Subscription
+      
+      if (existingSubscription) {
+        // Update existing subscription
+        const { data: updatedData, error } = await supabase
+          .from('subscriptions')
+          .update({
+            plan_type: planType,
+            status: 'active',
+            expires_at: expiresAt.toISOString(),
+            payment_provider: paymentProvider,
+            external_subscription_id: externalSubscriptionId,
+            price_paid: pricePaid,
+            currency,
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', userId)
+          .select()
+          .single()
+        
+        if (error) throw error
+        data = updatedData
+        logger.info({ userId, planType }, 'Updated existing subscription')
+      } else {
+        // Create new subscription
+        const { data: newData, error } = await supabase
+          .from('subscriptions')
+          .insert({
+            user_id: userId,
+            plan_type: planType,
+            status: 'active',
+            started_at: new Date().toISOString(),
+            expires_at: expiresAt.toISOString(),
+            payment_provider: paymentProvider,
+            external_subscription_id: externalSubscriptionId,
+            price_paid: pricePaid,
+            currency,
+            auto_renew: true
+          })
+          .select()
+          .single()
+        
+        if (error) throw error
+        data = newData
+        logger.info({ userId, planType }, 'Created new subscription')
+      }
 
       // Update profiles table
       const { error: profileError } = await supabase
