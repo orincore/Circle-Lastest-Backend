@@ -229,7 +229,10 @@ router.post('/login', async (req, res) => {
   emailService.sendLoginAlert(user.email, user.first_name || 'User', loginInfo)
     .catch(error => console.error('Failed to send login alert:', error))
   
-  return res.json({
+  console.log('🔍 [Login] User email_verified field:', user.email_verified);
+  console.log('🔍 [Login] User object keys:', Object.keys(user));
+  
+  const loginResponse = {
     access_token,
     user: {
       id: user.id,
@@ -247,7 +250,11 @@ router.post('/login', async (req, res) => {
       instagramUsername: user.instagram_username,
       emailVerified: user.email_verified || false
     }
-  })
+  };
+  
+  console.log('🔍 [Login] Response emailVerified:', loginResponse.user.emailVerified);
+  
+  return res.json(loginResponse)
 })
 
 // Delete account endpoint (soft delete)

@@ -15,6 +15,8 @@ export interface Profile {
   profile_photo_url?: string | null
   instagram_username?: string | null
   password_hash: string
+  email_verified?: boolean | null
+  email_verified_at?: string | null
   latitude?: number | null
   longitude?: number | null
   location_address?: string | null
