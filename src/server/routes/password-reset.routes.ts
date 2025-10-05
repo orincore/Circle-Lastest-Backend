@@ -132,10 +132,24 @@ router.post('/verify-reset-otp', resetVerifyLimit, async (req, res) => {
     const { email, otp } = parse.data
 
     // Verify OTP
+    console.log('🔍 Verifying reset OTP:', { email, otp })
     const verifyResult = await emailService.verifyOTP(email, otp)
+    console.log('🔍 OTP verification result:', verifyResult)
+    
     if (!verifyResult.success) {
       return res.status(400).json({ error: verifyResult.error })
     }
+
+    // Double-check that the OTP is marked as verified in the database
+    const { data: verifiedRecord } = await supabase
+      .from('email_otps')
+      .select('*')
+      .eq('email', email)
+      .eq('otp', otp)
+      .eq('verified', true)
+      .single()
+
+    console.log('🔍 Verified record in database:', verifiedRecord)
 
     return res.json({
       success: true,
@@ -165,19 +179,63 @@ router.post('/reset-password', async (req, res) => {
     const { email, resetToken, newPassword } = parse.data
 
     // Verify the reset token is still valid (check if OTP was recently verified)
-    const { data: otpRecord } = await supabase
+    const { data: otpRecord, error: otpError } = await supabase
       .from('email_otps')
       .select('*')
       .eq('email', email)
       .eq('otp', resetToken)
       .eq('verified', true)
-      .gte('verified_at', new Date(Date.now() - 10 * 60 * 1000).toISOString()) // Valid for 10 minutes
+      .gte('verified_at', new Date(Date.now() - 30 * 60 * 1000).toISOString()) // Valid for 30 minutes (increased)
       .single()
 
+    console.log('🔍 OTP Record lookup:', { 
+      email, 
+      resetToken, 
+      found: !!otpRecord, 
+      error: otpError?.message,
+      record: otpRecord 
+    })
+
     if (!otpRecord) {
-      return res.status(400).json({ 
-        error: 'Invalid or expired reset token. Please request a new password reset.' 
-      })
+      // Try to find any OTP record for debugging
+      const { data: anyOtpRecord } = await supabase
+        .from('email_otps')
+        .select('*')
+        .eq('email', email)
+        .eq('otp', resetToken)
+        .single()
+
+      console.log('🔍 Any OTP record for debugging:', anyOtpRecord)
+
+      // If we have an OTP record but it's not verified, try to verify it again
+      if (anyOtpRecord && !anyOtpRecord.verified) {
+        console.log('🔄 Attempting to re-verify OTP for password reset')
+        const verifyResult = await emailService.verifyOTP(email, resetToken)
+        
+        if (verifyResult.success) {
+          console.log('✅ OTP re-verification successful, proceeding with password reset')
+          // Continue with password reset
+        } else {
+          return res.status(400).json({ 
+            error: 'Invalid or expired reset token. Please request a new password reset.',
+            debug: process.env.NODE_ENV === 'development' ? {
+              foundRecord: !!anyOtpRecord,
+              recordVerified: anyOtpRecord?.verified,
+              recordVerifiedAt: anyOtpRecord?.verified_at,
+              reverifyResult: verifyResult
+            } : undefined
+          })
+        }
+      } else {
+        return res.status(400).json({ 
+          error: 'Invalid or expired reset token. Please request a new password reset.',
+          debug: process.env.NODE_ENV === 'development' ? {
+            foundRecord: !!anyOtpRecord,
+            recordVerified: anyOtpRecord?.verified,
+            recordVerifiedAt: anyOtpRecord?.verified_at
+          } : undefined
+        })
+      }
     }
 
     // Get user
