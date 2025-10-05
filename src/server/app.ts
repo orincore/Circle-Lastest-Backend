@@ -46,6 +46,7 @@ import uploadRouter from './routes/upload.routes.js'
 import adminSettingsRouter from './routes/admin-settings.routes.js'
 import subscriptionRouter from './routes/subscription.routes.js'
 import paymentRouter from './routes/payment.routes.js'
+import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
 
@@ -219,6 +220,8 @@ app.use('/api/analytics', userAnalyticsRouter)
 app.use('/api/subscription', subscriptionRouter)
 app.use('/api/payment', paymentRouter)
 
+// GraphQL will be set up in index.ts before error handlers
+
 // Start monitoring service
 monitoringService.startMonitoring(30000) // Every 30 seconds
 
@@ -227,8 +230,6 @@ setInterval(() => {
   try { heartbeat() } catch {}
 }, 30_000) // Reduced to 30 seconds since worker handles most processing
 
-// Error handling middleware (must be last)
-app.use(notFound)
-app.use(errorHandler)
+// Error handlers will be added in index.ts after GraphQL setup
 
 export { app }
