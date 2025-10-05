@@ -238,9 +238,12 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       for (const user of users) {
         try {
           if (user.email) {
+            // Create email with tracking
             const html = emailService.createEmailTemplate({
               title: campaign.subject || campaign.name,
               content: campaign.content,
+              campaignId: id,
+              userId: user.id,
             })
             
             await emailService.sendEmail({
@@ -381,6 +384,122 @@ router.get('/:id/analytics', requireAuth, requireAdmin, async (req: AuthRequest,
   } catch (error) {
     console.error('Error fetching analytics:', error)
     res.status(500).json({ error: 'Failed to fetch analytics' })
+  }
+})
+
+// Track email opens
+router.get('/:id/track/open', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { userId } = req.query
+
+    if (!userId) {
+      // Return 1x1 transparent pixel even if no userId
+      const pixel = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
+      res.writeHead(200, {
+        'Content-Type': 'image/gif',
+        'Content-Length': pixel.length,
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private'
+      })
+      return res.end(pixel)
+    }
+
+    // Record the open
+    await supabase
+      .from('user_campaign_interactions')
+      .insert({
+        campaign_id: id,
+        user_id: userId as string,
+        action: 'opened',
+        created_at: new Date().toISOString()
+      })
+
+    // Update analytics
+    const { data: analytics } = await supabase
+      .from('campaign_analytics')
+      .select('opened')
+      .eq('campaign_id', id)
+      .single()
+
+    if (analytics) {
+      await supabase
+        .from('campaign_analytics')
+        .update({ 
+          opened: (analytics.opened || 0) + 1,
+          updated_at: new Date().toISOString()
+        })
+        .eq('campaign_id', id)
+    }
+
+    // Return 1x1 transparent pixel
+    const pixel = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
+    res.writeHead(200, {
+      'Content-Type': 'image/gif',
+      'Content-Length': pixel.length,
+      'Cache-Control': 'no-store, no-cache, must-revalidate, private'
+    })
+    res.end(pixel)
+  } catch (error) {
+    console.error('Error tracking open:', error)
+    // Still return pixel even on error
+    const pixel = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
+    res.writeHead(200, {
+      'Content-Type': 'image/gif',
+      'Content-Length': pixel.length
+    })
+    res.end(pixel)
+  }
+})
+
+// Track email clicks
+router.get('/:id/track/click', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { userId, url } = req.query
+
+    if (userId) {
+      // Record the click
+      await supabase
+        .from('user_campaign_interactions')
+        .insert({
+          campaign_id: id,
+          user_id: userId as string,
+          action: 'clicked',
+          created_at: new Date().toISOString()
+        })
+
+      // Update analytics
+      const { data: analytics } = await supabase
+        .from('campaign_analytics')
+        .select('clicked')
+        .eq('campaign_id', id)
+        .single()
+
+      if (analytics) {
+        await supabase
+          .from('campaign_analytics')
+          .update({ 
+            clicked: (analytics.clicked || 0) + 1,
+            updated_at: new Date().toISOString()
+          })
+          .eq('campaign_id', id)
+      }
+    }
+
+    // Redirect to the actual URL
+    if (url) {
+      res.redirect(decodeURIComponent(url as string))
+    } else {
+      res.redirect('https://circle.orincore.com')
+    }
+  } catch (error) {
+    console.error('Error tracking click:', error)
+    // Redirect anyway
+    if (req.query.url) {
+      res.redirect(decodeURIComponent(req.query.url as string))
+    } else {
+      res.redirect('https://circle.orincore.com')
+    }
   }
 })
 

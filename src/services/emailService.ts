@@ -79,14 +79,25 @@ class EmailService {
     return results;
   }
 
-  // Create HTML email template
+  // Create HTML email template with tracking
   createEmailTemplate(options: {
     title: string;
     content: string;
     buttonText?: string;
     buttonUrl?: string;
+    campaignId?: string;
+    userId?: string;
   }) {
-    const { title, content, buttonText, buttonUrl } = options;
+    const { title, content, buttonText, buttonUrl, campaignId, userId } = options;
+    
+    // Create tracking URLs
+    const trackingBaseUrl = process.env.API_BASE_URL || 'http://localhost:8080';
+    const openTrackingUrl = campaignId && userId 
+      ? `${trackingBaseUrl}/api/admin/campaigns/${campaignId}/track/open?userId=${userId}`
+      : null;
+    const clickTrackingUrl = campaignId && userId && buttonUrl
+      ? `${trackingBaseUrl}/api/admin/campaigns/${campaignId}/track/click?userId=${userId}&url=${encodeURIComponent(buttonUrl)}`
+      : buttonUrl;
 
     return `
 <!DOCTYPE html>
@@ -163,9 +174,9 @@ class EmailService {
     <div class="content">
       ${content}
     </div>
-    ${buttonText && buttonUrl ? `
+    ${buttonText && clickTrackingUrl ? `
     <div style="text-align: center;">
-      <a href="${buttonUrl}" class="button">${buttonText}</a>
+      <a href="${clickTrackingUrl}" class="button">${buttonText}</a>
     </div>
     ` : ''}
     <div class="footer">
@@ -173,6 +184,10 @@ class EmailService {
       <p>If you didn't request this email, please ignore it.</p>
     </div>
   </div>
+  ${openTrackingUrl ? `
+  <!-- Open tracking pixel -->
+  <img src="${openTrackingUrl}" width="1" height="1" style="display:none;" alt="" />
+  ` : ''}
 </body>
 </html>
     `.trim();
