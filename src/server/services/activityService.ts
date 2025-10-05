@@ -303,6 +303,12 @@ export async function loadActivitiesFromDatabase(): Promise<void> {
 
 // Specific activity creators for common events
 export async function trackUserMatched(user1: any, user2: any): Promise<void> {
+  // Don't track if either user is in invisible mode
+  if (user1.invisible_mode || user2.invisible_mode) {
+    logger.info({ user1: user1.id, user2: user2.id }, 'Skipping match activity - user(s) in invisible mode')
+    return
+  }
+  
   try {
     await createActivity({
       type: ACTIVITY_TYPES.USER_MATCHED,
@@ -322,6 +328,12 @@ export async function trackUserMatched(user1: any, user2: any): Promise<void> {
 }
 
 export async function trackUserJoined(user: any): Promise<void> {
+  // Don't track if user is in invisible mode
+  if (user.invisible_mode) {
+    logger.info({ userId: user.id }, 'Skipping user joined activity - user in invisible mode')
+    return
+  }
+  
   try {
     await createActivity({
       type: ACTIVITY_TYPES.USER_JOINED,
@@ -342,6 +354,12 @@ export async function trackUserJoined(user: any): Promise<void> {
 export async function trackProfileVisited(visitor: any, profileOwner: any): Promise<void> {
   // Only track if it's not the user viewing their own profile
   if (visitor.id === profileOwner.id) return
+  
+  // Don't track if either user is in invisible mode
+  if (visitor.invisible_mode || profileOwner.invisible_mode) {
+    logger.info({ visitor: visitor.id, profileOwner: profileOwner.id }, 'Skipping profile visit activity - user(s) in invisible mode')
+    return
+  }
 
   try {
     await createActivity({
@@ -381,6 +399,12 @@ export async function trackFriendRequestSent(sender: any, receiver: any): Promis
 }
 
 export async function trackFriendsConnected(user1: any, user2: any): Promise<void> {
+  // Don't track if either user is in invisible mode
+  if (user1.invisible_mode || user2.invisible_mode) {
+    logger.info({ user1: user1.id, user2: user2.id }, 'Skipping friends connected activity - user(s) in invisible mode')
+    return
+  }
+  
   try {
     await createActivity({
       type: ACTIVITY_TYPES.FRIENDS_CONNECTED,
@@ -400,6 +424,12 @@ export async function trackFriendsConnected(user1: any, user2: any): Promise<voi
 }
 
 export async function trackLocationUpdated(user: any, location: string): Promise<void> {
+  // Don't track if user is in invisible mode
+  if (user.invisible_mode) {
+    logger.info({ userId: user.id }, 'Skipping location updated activity - user in invisible mode')
+    return
+  }
+  
   try {
     await createActivity({
       type: ACTIVITY_TYPES.LOCATION_UPDATED,
@@ -436,6 +466,12 @@ export async function trackChatStarted(user1: any, user2: any): Promise<void> {
 }
 
 export async function trackInterestUpdated(user: any, newInterests: string[]): Promise<void> {
+  // Don't track if user is in invisible mode
+  if (user.invisible_mode) {
+    logger.info({ userId: user.id }, 'Skipping interest updated activity - user in invisible mode')
+    return
+  }
+  
   try {
     await createActivity({
       type: ACTIVITY_TYPES.INTEREST_UPDATED,
