@@ -6,6 +6,66 @@ import { supabase } from '../config/supabase.js';
 const router = Router();
 
 /**
+ * Register push notification token
+ */
+router.post('/register-token', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const { token, deviceType, deviceName } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    console.log(`📱 Registering push token for user ${userId}:`, { token, deviceType, deviceName });
+
+    // Check if token already exists for this user
+    const { data: existingToken } = await supabase
+      .from('push_tokens')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('token', token)
+      .maybeSingle();
+
+    if (existingToken) {
+      // Update existing token
+      const { error: updateError } = await supabase
+        .from('push_tokens')
+        .update({
+          enabled: true,
+          device_type: deviceType,
+          device_name: deviceName,
+          updated_at: new Date().toISOString(),
+          last_used_at: new Date().toISOString(),
+        })
+        .eq('id', existingToken.id);
+
+      if (updateError) throw updateError;
+      console.log('✅ Push token updated');
+    } else {
+      // Insert new token
+      const { error: insertError } = await supabase
+        .from('push_tokens')
+        .insert({
+          user_id: userId,
+          token,
+          device_type: deviceType,
+          device_name: deviceName,
+          enabled: true,
+        });
+
+      if (insertError) throw insertError;
+      console.log('✅ Push token registered');
+    }
+
+    res.json({ success: true, message: 'Push token registered successfully' });
+  } catch (error) {
+    console.error('❌ Error registering push token:', error);
+    res.status(500).json({ error: 'Failed to register push token' });
+  }
+});
+
+/**
  * Get user notifications
  */
 router.get('/', requireAuth, async (req: AuthRequest, res) => {
