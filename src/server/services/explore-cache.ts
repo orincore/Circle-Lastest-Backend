@@ -7,7 +7,7 @@ interface CacheEntry {
 
 class ExploreCache {
   private cache: Map<string, CacheEntry> = new Map();
-  private readonly CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+  private readonly CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds (reduced from 24 hours)
 
   set(key: string, data: any): void {
     const now = Date.now();
@@ -56,6 +56,20 @@ class ExploreCache {
   clear(): void {
     this.cache.clear();
     console.log('Cache cleared');
+  }
+
+  // Invalidate cache for a specific user
+  invalidateUser(userId: string): void {
+    let removedCount = 0;
+    for (const key of this.cache.keys()) {
+      if (key.includes(userId)) {
+        this.cache.delete(key);
+        removedCount++;
+      }
+    }
+    if (removedCount > 0) {
+      console.log(`Cache invalidated for user ${userId}: removed ${removedCount} entries`);
+    }
   }
 
   // Clean up expired entries
