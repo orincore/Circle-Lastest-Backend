@@ -10,7 +10,7 @@ const router = Router()
 // Rate limiting for password reset requests
 const resetRequestLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 3, // Limit each IP to 3 reset requests per windowMs
+  max: 30, // Limit each IP to 30 reset requests per windowMs (increased for development/testing)
   message: {
     error: 'Too many password reset requests from this IP, please try again later.',
   },
@@ -20,7 +20,7 @@ const resetRequestLimit = rateLimit({
 
 const resetVerifyLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 verification attempts per windowMs
+  max: 50, // Limit each IP to 50 verification attempts per windowMs (increased for development/testing)
   message: {
     error: 'Too many reset verification attempts from this IP, please try again later.',
   },
