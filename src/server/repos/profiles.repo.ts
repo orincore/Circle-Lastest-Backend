@@ -165,6 +165,7 @@ export async function findNearbyUsers({
       .not('first_name', 'is', null)
       .not('last_name', 'is', null)
       .neq('id', excludeUserId || '')
+      .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
       .limit(limit)
     
     if (fallbackError) throw fallbackError
@@ -176,8 +177,12 @@ export async function findNearbyUsers({
     })).filter(user => user.distance <= radiusKm)
   }
   
-  // Filter out users without complete profiles
-  return (data || []).filter((user: any) => user.first_name && user.last_name)
+  // Filter out users without complete profiles and invisible users
+  return (data || []).filter((user: any) => 
+    user.first_name && 
+    user.last_name && 
+    (!user.invisible_mode || user.invisible_mode === false)
+  )
 }
 
 // Find users within a bounding box (for map viewport)
@@ -202,6 +207,7 @@ export async function findUsersInArea({
     .not('latitude', 'is', null)
     .not('longitude', 'is', null)
     .neq('id', excludeUserId || '')
+    .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
     .limit(limit)
   
   if (error) throw error
