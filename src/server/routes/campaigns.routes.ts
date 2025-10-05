@@ -1,7 +1,7 @@
 import { Router } from 'express'
+import { AuthRequest, requireAuth, requireAdmin } from '../middleware/auth.js'
 import { supabase } from '../config/supabase.js'
-import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import type { AuthRequest } from '../middleware/auth.js'
+import emailService from '../../services/emailService.js'
 
 const router = Router()
 
