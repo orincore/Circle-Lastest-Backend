@@ -26,10 +26,11 @@ const signupSchema = z.object({
   needs: z.array(z.string()).default([]),
   username: z.string()
     .trim()
-    .refine((s) => s === '' || /^[a-zA-Z0-9_.-]{3,30}$/.test(s), {
+    .min(3, 'Username must be at least 3 characters')
+    .max(30, 'Username must be less than 30 characters')
+    .refine((s) => /^[a-zA-Z0-9_.-]{3,30}$/.test(s), {
       message: 'Username must be 3-30 chars, allowed: letters, numbers, _, ., -'
-    })
-    .optional(),
+    }),
   password: z.string().min(6),
   instagramUsername: z.string()
     .min(1, 'Instagram username must be at least 1 character')
@@ -84,33 +85,18 @@ router.post('/signup', async (req, res) => {
     return res.status(400).json({ error: 'Invalid Instagram username format' })
   }
 
-  // If username missing or empty, generate from email/name
-  let finalUsername = username;
-  if (!finalUsername) {
-    const baseFrom = (email.split('@')[0] || `${firstName}${lastName}` || 'user').toLowerCase();
-    const sanitized = baseFrom.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 30);
-    finalUsername = sanitized.length >= 3 ? sanitized : `${sanitized}user`;
-  }
+  // Use the exact username provided (now required)
+  const finalUsername = username.trim();
 
-  // Ensure uniqueness (check case-insensitively but store exact case)
+  // Check for existing email and username
   const [byEmail, existing] = await Promise.all([
     findByEmail(normalizedEmail),
     findByUsername(finalUsername.toLowerCase()) // Check lowercase for uniqueness
   ])
+  
   if (byEmail) return res.status(409).json({ error: 'Email already in use' })
   if (existing) {
-    // If user provided username conflicts, return error
-    if (username) {
-      return res.status(409).json({ error: 'Username already taken' });
-    }
-    // If auto-generated username conflicts, try variations
-    for (let i = 0; i < 5; i++) {
-      const candidate = `${finalUsername.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 24)}${Math.floor(Math.random()*100000).toString().padStart(3,'0')}`;
-      const hit = await findByUsername(candidate.toLowerCase());
-      if (!hit) { finalUsername = candidate; break; }
-    }
-    const again = await findByUsername(finalUsername.toLowerCase());
-    if (again) return res.status(409).json({ error: 'Username generation failed' });
+    return res.status(409).json({ error: 'Username already taken' });
   }
 
   const password_hash = await hashPassword(password)
