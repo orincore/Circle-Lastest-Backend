@@ -227,45 +227,28 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       })
       .eq('id', id)
 
-    // Send push notifications to users
+    // Send campaign based on type
     const interactions = []
     let sentCount = 0
     
-    for (const user of users) {
-      try {
-        // Get user's push token
-        const { data: pushToken } = await supabase
-          .from('push_tokens')
-          .select('token')
-          .eq('user_id', user.id)
-          .eq('enabled', true)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-
-        if (pushToken?.token) {
-          // Send push notification using Expo
-          const message = {
-            to: pushToken.token,
-            sound: 'default',
-            title: campaign.subject || campaign.name,
-            body: campaign.content,
-            data: { 
-              campaignId: id,
-              type: 'marketing_campaign'
-            },
-          }
-
-          const response = await fetch('https://exp.host/--/api/v2/push/send', {
-            method: 'POST',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(message),
-          })
-
-          if (response.ok) {
+    if (campaign.type === 'email') {
+      // Send email campaigns
+      console.log(`📧 Sending email campaign to ${users.length} users`)
+      
+      for (const user of users) {
+        try {
+          if (user.email) {
+            const html = emailService.createEmailTemplate({
+              title: campaign.subject || campaign.name,
+              content: campaign.content,
+            })
+            
+            await emailService.sendEmail({
+              to: user.email,
+              subject: campaign.subject || campaign.name,
+              html,
+            })
+            
             sentCount++
             interactions.push({
               campaign_id: id,
@@ -274,10 +257,65 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
               created_at: new Date().toISOString()
             })
           }
+        } catch (error) {
+          console.error(`Failed to send email to user ${user.id}:`, error)
         }
-      } catch (error) {
-        console.error(`Failed to send notification to user ${user.id}:`, error)
       }
+    } else if (campaign.type === 'push_notification') {
+      // Send push notification campaigns
+      console.log(`📱 Sending push notification campaign to ${users.length} users`)
+      
+      for (const user of users) {
+        try {
+          // Get user's push token
+          const { data: pushToken } = await supabase
+            .from('push_tokens')
+            .select('token')
+            .eq('user_id', user.id)
+            .eq('enabled', true)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+
+          if (pushToken?.token) {
+            // Send push notification using Expo
+            const message = {
+              to: pushToken.token,
+              sound: 'default',
+              title: campaign.subject || campaign.name,
+              body: campaign.content,
+              data: { 
+                campaignId: id,
+                type: 'marketing_campaign'
+              },
+            }
+
+            const response = await fetch('https://exp.host/--/api/v2/push/send', {
+              method: 'POST',
+              headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(message),
+            })
+
+            if (response.ok) {
+              sentCount++
+              interactions.push({
+                campaign_id: id,
+                user_id: user.id,
+                action: 'sent',
+                created_at: new Date().toISOString()
+              })
+            }
+          }
+        } catch (error) {
+          console.error(`Failed to send push notification to user ${user.id}:`, error)
+        }
+      }
+    } else if (campaign.type === 'in_app') {
+      // In-app notifications (future implementation)
+      console.log(`📲 In-app notifications not yet implemented`)
     }
 
     // Save interaction records
