@@ -54,6 +54,10 @@ router.get('/username-available', async (req, res) => {
 })
 
 router.post('/signup', async (req, res) => {
+  console.log('🔍 [Backend] Raw request body received:', JSON.stringify(req.body, null, 2));
+  console.log('🔍 [Backend] Username in body:', req.body.username);
+  console.log('🔍 [Backend] All body keys:', Object.keys(req.body));
+  
   const parse = signupSchema.safeParse(req.body)
   if (!parse.success) {
     try {
