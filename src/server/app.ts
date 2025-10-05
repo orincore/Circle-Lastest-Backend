@@ -35,6 +35,7 @@ import adminReportsRouter from './routes/admin-reports.routes.js'
 import adminAnalyticsRouter from './routes/admin-analytics.routes.js'
 import emailVerificationRouter from './routes/email-verification.routes.js'
 import passwordResetRouter from './routes/password-reset.routes.js'
+import analyticsRouter from './routes/analytics.routes.js'
 import reportsRouter from './routes/reports.routes.js'
 import campaignsRouter from './routes/campaigns.routes.js'
 import templatesRouter from './routes/templates.routes.js'
@@ -167,6 +168,7 @@ app.use('/health', healthRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/auth', emailVerificationRouter)
 app.use('/api/auth', passwordResetRouter)
+app.use('/api/analytics', analyticsRouter)
 app.use('/api/storage', storageRouter)
 app.use('/matchmaking', matchmakingRouter)
 app.use('/chat', chatRouter)
