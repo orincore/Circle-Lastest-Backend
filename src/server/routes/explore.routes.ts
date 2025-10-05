@@ -129,6 +129,7 @@ async function getAllSectionsLogic(currentUserId: string) {
       needs: user.needs || [],
       joinedDate: user.created_at,
       isOnline: false,
+      isFriend: false, // Already filtered out friends, so this is always false
       compatibilityScore,
       completenessScore,
       isNewUser,
