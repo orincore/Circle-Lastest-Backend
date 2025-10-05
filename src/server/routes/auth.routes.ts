@@ -7,6 +7,7 @@ import { signJwt, verifyJwt } from '../utils/jwt.js'
 import { hashPassword, verifyPassword } from '../utils/password.js'
 import { NotificationService } from '../services/notificationService.js'
 import { trackUserJoined } from '../services/activityService.js'
+import emailService from '../services/emailService.js'
 
 const router = Router()
 
@@ -174,6 +175,10 @@ router.post('/signup', async (req, res) => {
     // Don't fail signup if notifications fail
   }
 
+  // Send signup success email (async, don't wait for it)
+  emailService.sendSignupSuccessEmail(profile.email, profile.first_name || 'User')
+    .catch(error => console.error('Failed to send signup success email:', error))
+
   const access_token = signJwt({ sub: profile.id, email: profile.email, username: profile.username })
   return res.json({
     access_token,
@@ -190,7 +195,8 @@ router.post('/signup', async (req, res) => {
       interests: profile.interests,
       needs: profile.needs,
       profilePhotoUrl: profile.profile_photo_url,
-      instagramUsername: profile.instagram_username
+      instagramUsername: profile.instagram_username,
+      emailVerified: false // New users need to verify email
     }
   })
 })
@@ -220,6 +226,19 @@ router.post('/login', async (req, res) => {
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' })
 
   const access_token = signJwt({ sub: user.id, email: user.email, username: user.username })
+  
+  // Send login alert email (async, don't wait for it)
+  const loginInfo = {
+    device: req.get('User-Agent') || 'Unknown device',
+    location: 'Unknown location', // You can integrate with IP geolocation service
+    ip: req.ip || req.connection.remoteAddress || 'Unknown IP',
+    timestamp: new Date().toLocaleString(),
+  }
+  
+  // Send login alert (don't await to avoid slowing down login)
+  emailService.sendLoginAlert(user.email, user.first_name || 'User', loginInfo)
+    .catch(error => console.error('Failed to send login alert:', error))
+  
   return res.json({
     access_token,
     user: {
@@ -235,7 +254,8 @@ router.post('/login', async (req, res) => {
       interests: user.interests,
       needs: user.needs,
       profilePhotoUrl: user.profile_photo_url,
-      instagramUsername: user.instagram_username
+      instagramUsername: user.instagram_username,
+      emailVerified: user.email_verified || false
     }
   })
 })
