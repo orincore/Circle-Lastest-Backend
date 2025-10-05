@@ -33,6 +33,7 @@ export interface Profile {
   suspension_ends_at?: string | null
   deleted_at?: string | null
   deletion_reason?: string | null
+  deletion_feedback?: string | null
   created_at?: string
 }
 
