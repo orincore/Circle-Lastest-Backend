@@ -34,6 +34,7 @@ import adminRouter from './routes/admin.routes.js'
 import adminUsersRouter from './routes/admin-users.routes.js'
 import adminReportsRouter from './routes/admin-reports.routes.js'
 import adminAnalyticsRouter from './routes/admin-analytics.routes.js'
+import adminSettingsRouter from './routes/admin-settings.routes.js'
 import reportsRouter from './routes/reports.routes.js'
 import campaignsRouter from './routes/campaigns.routes.js'
 import templatesRouter from './routes/templates.routes.js'
@@ -169,6 +170,7 @@ app.use('/api/admin', adminRouter)
 app.use('/api/admin/users', adminUsersRouter)
 app.use('/api/admin/reports', adminReportsRouter)
 app.use('/api/admin/analytics', adminAnalyticsRouter)
+app.use('/api/admin/settings', adminSettingsRouter)
 app.use('/api/admin/campaigns', campaignsRouter)
 app.use('/api/admin/templates', templatesRouter)
 app.use('/api/analytics', userAnalyticsRouter)
