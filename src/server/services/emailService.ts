@@ -13,25 +13,25 @@ class EmailService {
   private transporter: nodemailer.Transporter
 
   constructor() {
-    // Configure email transporter (using Gmail as example)
+    // Configure email transporter using SMTP (same as campaigns)
     this.transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: false, // Use TLS
       auth: {
-        user: process.env.EMAIL_USER, // Your email
-        pass: process.env.EMAIL_APP_PASSWORD, // App password
+        user: process.env.SMTP_USER || '',
+        pass: process.env.SMTP_PASSWORD || '',
       },
     })
 
-    // Alternative SMTP configuration
-    // this.transporter = nodemailer.createTransport({
-    //   host: process.env.SMTP_HOST,
-    //   port: parseInt(process.env.SMTP_PORT || '587'),
-    //   secure: false,
-    //   auth: {
-    //     user: process.env.SMTP_USER,
-    //     pass: process.env.SMTP_PASS,
-    //   },
-    // })
+    // Verify connection configuration
+    this.transporter.verify((error, success) => {
+      if (error) {
+        console.error('❌ Email service connection failed:', error)
+      } else {
+        console.log('✅ Email service ready to send messages')
+      }
+    })
   }
 
   /**
@@ -46,8 +46,9 @@ class EmailService {
    */
   async sendOTPEmail(email: string, otp: string, name?: string): Promise<boolean> {
     try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: `"Circle App" <${process.env.EMAIL_USER}>`,
+        from: defaultFrom,
         to: email,
         subject: 'Verify Your Email - Circle App',
         html: this.getOTPEmailTemplate(otp, name),
@@ -461,8 +462,9 @@ class EmailService {
    */
   async sendWelcomeEmail(email: string, name: string): Promise<boolean> {
     try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: `"Circle App" <${process.env.EMAIL_USER}>`,
+        from: defaultFrom,
         to: email,
         subject: 'Welcome to Circle! 🎉',
         html: this.getWelcomeEmailTemplate(name),
@@ -796,8 +798,9 @@ class EmailService {
     timestamp?: string
   }): Promise<boolean> {
     try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Security" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: `"Circle Security" <${process.env.EMAIL_USER}>`,
+        from: defaultFrom,
         to: email,
         subject: 'New Login to Your Circle Account 🔐',
         html: this.getLoginAlertTemplate(name, loginInfo),
