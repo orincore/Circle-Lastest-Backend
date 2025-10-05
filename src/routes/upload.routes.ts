@@ -89,6 +89,58 @@ router.post(
 )
 
 /**
+ * Upload media (image/video) - generic endpoint
+ * POST /api/upload/media
+ */
+router.post(
+  '/media',
+  requireAuth,
+  upload.single('file'),
+  async (req: UploadRequest, res) => {
+    try {
+      const userId = req.user!.id
+
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' })
+      }
+
+      console.log('📎 Uploading media:', {
+        userId,
+        fileName: req.file.originalname,
+        size: req.file.size,
+        mimeType: req.file.mimetype,
+      })
+
+      // Determine media type from request or mimetype
+      const mediaType = req.body.type || (req.file.mimetype.startsWith('image/') ? 'image' : 'video')
+
+      // Upload to S3 (use generic chat media upload)
+      const result = await S3Service.uploadChatMedia(
+        req.file.buffer,
+        userId,
+        'general', // Use 'general' as chatId for non-chat media
+        req.file.mimetype
+      )
+
+      console.log('✅ Media uploaded to S3:', result)
+
+      return res.json({
+        success: true,
+        url: result.url,
+        type: mediaType,
+        thumbnail: null, // Can add video thumbnail generation later
+        message: 'Media uploaded successfully',
+      })
+    } catch (error: any) {
+      console.error('❌ Media upload error:', error)
+      return res.status(500).json({
+        error: error.message || 'Failed to upload media',
+      })
+    }
+  }
+)
+
+/**
  * Upload chat media (image/video)
  * POST /api/upload/chat-media
  */
