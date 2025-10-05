@@ -4,7 +4,7 @@ import { verifyJwt } from '../utils/jwt.js'
 import { logger } from '../config/logger.js'
 
 export interface AuthRequest extends Request {
-  user?: { id: string; email: string; username: string }
+  user?: { id: string; email: string; username: string; role?: string }
   token?: string
 }
 
@@ -108,3 +108,34 @@ setInterval(() => {
     }
   }
 }, 300000) // Clean up every 5 minutes
+
+// Admin authorization middleware
+export async function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!req.user?.id) {
+      return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Authentication required' })
+    }
+
+    // Check if user has admin role
+    const { supabase } = await import('../config/supabase.js')
+    const { data: adminRole, error } = await supabase
+      .from('admin_roles')
+      .select('role')
+      .eq('user_id', req.user.id)
+      .single()
+
+    if (error || !adminRole) {
+      logger.warn(`Unauthorized admin access attempt by user: ${req.user.id}`)
+      return res.status(StatusCodes.FORBIDDEN).json({ error: 'Admin access required' })
+    }
+
+    // Attach admin role to request
+    req.user = { ...req.user, role: adminRole.role }
+    
+    console.log('✅ Admin auth successful - User ID:', req.user.id, 'Role:', adminRole.role)
+    return next()
+  } catch (e) {
+    logger.error({ userId: req.user?.id, error: e }, 'Admin authorization error')
+    return res.status(StatusCodes.FORBIDDEN).json({ error: 'Admin access denied' })
+  }
+}
