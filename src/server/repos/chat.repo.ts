@@ -17,6 +17,9 @@ export interface ChatMessage {
   chat_id: string
   sender_id: string
   text: string
+  media_url?: string
+  media_type?: string
+  thumbnail?: string
   created_at: string
   updated_at?: string
   is_edited?: boolean
@@ -287,11 +290,29 @@ export async function getChatMessages(chatId: string, limit = 30, before?: strin
   return (data || []) as (ChatMessage & { reactions: MessageReaction[]; receipts: { user_id: string; status: string }[] })[]
 }
 
-export async function insertMessage(chatId: string, senderId: string, text: string): Promise<ChatMessage> {
+export async function insertMessage(
+  chatId: string, 
+  senderId: string, 
+  text: string,
+  mediaUrl?: string,
+  mediaType?: string,
+  thumbnail?: string
+): Promise<ChatMessage> {
   // Insert the message
+  const messageData: any = { 
+    chat_id: chatId, 
+    sender_id: senderId, 
+    text: text || '' // Allow empty text for media messages
+  }
+  
+  // Add media fields if provided
+  if (mediaUrl) messageData.media_url = mediaUrl
+  if (mediaType) messageData.media_type = mediaType
+  if (thumbnail) messageData.thumbnail = thumbnail
+  
   const { data, error } = await supabase
     .from('messages')
-    .insert({ chat_id: chatId, sender_id: senderId, text })
+    .insert(messageData)
     .select('*')
     .single()
   if (error) throw error

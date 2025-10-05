@@ -963,10 +963,23 @@ export function initOptimizedSocket(server: Server) {
     })
 
     // Chat: send message with enhanced rate limiting and validation
-    socket.on('chat:message', async ({ chatId, text }: { chatId: string; text: string }) => {
+    socket.on('chat:message', async ({ 
+      chatId, 
+      text, 
+      mediaUrl, 
+      mediaType, 
+      thumbnail 
+    }: { 
+      chatId: string; 
+      text: string;
+      mediaUrl?: string;
+      mediaType?: string;
+      thumbnail?: string;
+    }) => {
       resetTimeout()
       const userId: string | undefined = user?.id
-      if (!chatId || !userId || !text?.trim()) return
+      // Allow message if either text or media is provided
+      if (!chatId || !userId || (!text?.trim() && !mediaUrl)) return
       
       // Stricter rate limiting for messages
       if (!(await checkEventRateLimit(userId, 'chat:message'))) {
@@ -975,8 +988,8 @@ export function initOptimizedSocket(server: Server) {
         return
       }
       
-      // Message length validation
-      if (text.trim().length > 1000) {
+      // Message length validation (only if text is provided)
+      if (text && text.trim().length > 1000) {
         socket.emit('chat:message:error', { error: 'Message too long' })
         return
       }
@@ -1028,12 +1041,22 @@ export function initOptimizedSocket(server: Server) {
           return
         }
         
-        const row = await insertMessage(chatId, userId, text.trim())
+        const row = await insertMessage(
+          chatId, 
+          userId, 
+          text?.trim() || '', 
+          mediaUrl, 
+          mediaType, 
+          thumbnail
+        )
         const msg = { 
           id: row.id, 
           chatId: row.chat_id, 
           senderId: row.sender_id, 
-          text: row.text, 
+          text: row.text,
+          mediaUrl: row.media_url,
+          mediaType: row.media_type,
+          thumbnail: row.thumbnail,
           createdAt: new Date(row.created_at).getTime() 
         }
         

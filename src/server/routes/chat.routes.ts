@@ -144,9 +144,13 @@ router.get('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
 router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
   const chatId = req.params.chatId
   const text = String(req.body?.text || '').trim()
+  const mediaUrl = req.body?.mediaUrl
+  const mediaType = req.body?.mediaType
+  const thumbnail = req.body?.thumbnail
   const userId = req.user!.id
   
-  if (!text) return res.status(400).json({ error: 'Message text is required' })
+  // Require either text or media
+  if (!text && !mediaUrl) return res.status(400).json({ error: 'Message text or media is required' })
   
   try {
     // Get chat members to check friendship status
@@ -180,7 +184,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
       })
     }
     
-    const msg = await insertMessage(chatId, userId, text)
+    const msg = await insertMessage(chatId, userId, text, mediaUrl, mediaType, thumbnail)
     
     // Emit real-time message to other user for chat list updates
     try {
@@ -191,6 +195,9 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
           chatId: msg.chat_id,
           senderId: msg.sender_id,
           text: msg.text,
+          mediaUrl: msg.media_url,
+          mediaType: msg.media_type,
+          thumbnail: msg.thumbnail,
           createdAt: new Date(msg.created_at).getTime(),
           status: 'sent'
         }
