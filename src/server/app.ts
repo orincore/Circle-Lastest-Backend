@@ -37,6 +37,7 @@ import adminAnalyticsRouter from './routes/admin-analytics.routes.js'
 import reportsRouter from './routes/reports.routes.js'
 import campaignsRouter from './routes/campaigns.routes.js'
 import templatesRouter from './routes/templates.routes.js'
+import userAnalyticsRouter from './routes/user-analytics.routes.js'
 
 export const app = express()
 
@@ -170,6 +171,7 @@ app.use('/api/admin/reports', adminReportsRouter)
 app.use('/api/admin/analytics', adminAnalyticsRouter)
 app.use('/api/admin/campaigns', campaignsRouter)
 app.use('/api/admin/templates', templatesRouter)
+app.use('/api/analytics', userAnalyticsRouter)
 
 // Start monitoring service
 monitoringService.startMonitoring(30000) // Every 30 seconds
