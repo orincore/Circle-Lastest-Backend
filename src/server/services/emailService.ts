@@ -467,6 +467,50 @@ class EmailService {
   }
 
   /**
+   * Send password reset email with OTP
+   */
+  async sendPasswordResetEmail(email: string, otp: string, name: string): Promise<boolean> {
+    try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
+      const mailOptions = {
+        from: defaultFrom,
+        to: email,
+        subject: 'Password Reset Code - Circle',
+        html: this.getPasswordResetEmailTemplate(name, otp),
+      }
+
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Password reset email sent:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send password reset email:', error)
+      return false
+    }
+  }
+
+  /**
+   * Send password reset confirmation email
+   */
+  async sendPasswordResetConfirmation(email: string, name: string): Promise<boolean> {
+    try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
+      const mailOptions = {
+        from: defaultFrom,
+        to: email,
+        subject: 'Password Reset Successful - Circle',
+        html: this.getPasswordResetConfirmationTemplate(name),
+      }
+
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Password reset confirmation email sent:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send password reset confirmation email:', error)
+      return false
+    }
+  }
+
+  /**
    * Send welcome email after successful verification
    */
   async sendWelcomeEmail(email: string, name: string): Promise<boolean> {
@@ -1178,6 +1222,169 @@ class EmailService {
       console.error('❌ Failed to send signup success email:', error)
       return false
     }
+  }
+
+  /**
+   * Get password reset email template
+   */
+  private getPasswordResetEmailTemplate(name: string, otp: string): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Password Reset - Circle</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%); }
+            .container { max-width: 600px; margin: 0 auto; background: #ffffff; }
+            .header { background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%); padding: 40px 20px; text-align: center; }
+            .logo { color: #ffffff; font-size: 32px; font-weight: bold; margin-bottom: 10px; }
+            .header-text { color: #E0E0E0; font-size: 18px; }
+            .content { padding: 40px 30px; }
+            .icon { width: 80px; height: 80px; background: linear-gradient(135deg, #7C2B86, #9C3D96); border-radius: 50%; margin: 0 auto 30px; display: flex; align-items: center; justify-content: center; font-size: 40px; }
+            .title { font-size: 28px; font-weight: bold; color: #1F1147; text-align: center; margin-bottom: 20px; }
+            .message { font-size: 16px; color: #666; text-align: center; line-height: 1.6; margin-bottom: 30px; }
+            .otp-container { background: #f8f9fa; border: 2px dashed #7C2B86; border-radius: 12px; padding: 30px; text-align: center; margin: 30px 0; }
+            .otp-label { font-size: 14px; color: #666; margin-bottom: 10px; }
+            .otp-code { font-size: 36px; font-weight: bold; color: #7C2B86; letter-spacing: 8px; font-family: 'Courier New', monospace; }
+            .warning { background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 20px; margin: 30px 0; }
+            .warning-title { font-weight: bold; color: #856404; margin-bottom: 10px; }
+            .warning-text { color: #856404; font-size: 14px; }
+            .footer { background: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #eee; }
+            .footer-logo { font-size: 24px; font-weight: bold; color: #7C2B86; margin-bottom: 10px; }
+            .footer-text { color: #666; font-size: 14px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">Circle</div>
+                <div class="header-text">Password Reset Request</div>
+            </div>
+            
+            <div class="content">
+                <div class="icon">🔒</div>
+                <div class="title">Reset Your Password</div>
+                <div class="message">
+                    Hi ${name},<br><br>
+                    We received a request to reset your password for your Circle account. 
+                    Use the verification code below to proceed with resetting your password.
+                </div>
+                
+                <div class="otp-container">
+                    <div class="otp-label">Your Password Reset Code</div>
+                    <div class="otp-code">${otp}</div>
+                </div>
+                
+                <div class="warning">
+                    <div class="warning-title">⚠️ Important Security Information</div>
+                    <div class="warning-text">
+                        • This code expires in 10 minutes<br>
+                        • Never share this code with anyone<br>
+                        • If you didn't request this reset, please ignore this email<br>
+                        • Contact support if you have concerns about your account security
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">Keeping your account secure 🔒</div>
+                <br>© 2024 Circle App. All rights reserved.
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
+
+  /**
+   * Get password reset confirmation email template
+   */
+  private getPasswordResetConfirmationTemplate(name: string): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Password Reset Successful - Circle</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%); }
+            .container { max-width: 600px; margin: 0 auto; background: #ffffff; }
+            .header { background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%); padding: 40px 20px; text-align: center; }
+            .logo { color: #ffffff; font-size: 32px; font-weight: bold; margin-bottom: 10px; }
+            .header-text { color: #E0E0E0; font-size: 18px; }
+            .content { padding: 40px 30px; }
+            .icon { width: 80px; height: 80px; background: linear-gradient(135deg, #4CAF50, #45a049); border-radius: 50%; margin: 0 auto 30px; display: flex; align-items: center; justify-content: center; font-size: 40px; }
+            .title { font-size: 28px; font-weight: bold; color: #1F1147; text-align: center; margin-bottom: 20px; }
+            .message { font-size: 16px; color: #666; text-align: center; line-height: 1.6; margin-bottom: 30px; }
+            .success-box { background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; padding: 20px; margin: 30px 0; text-align: center; }
+            .success-title { font-weight: bold; color: #155724; margin-bottom: 10px; }
+            .success-text { color: #155724; font-size: 14px; }
+            .tips { background: #f8f9fa; border-radius: 8px; padding: 20px; margin: 30px 0; }
+            .tips-title { font-weight: bold; color: #1F1147; margin-bottom: 15px; }
+            .tip-item { display: flex; align-items: center; margin-bottom: 10px; }
+            .tip-icon { margin-right: 10px; }
+            .tip-text { color: #666; font-size: 14px; }
+            .footer { background: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #eee; }
+            .footer-logo { font-size: 24px; font-weight: bold; color: #7C2B86; margin-bottom: 10px; }
+            .footer-text { color: #666; font-size: 14px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">Circle</div>
+                <div class="header-text">Password Reset Successful</div>
+            </div>
+            
+            <div class="content">
+                <div class="icon">✅</div>
+                <div class="title">Password Reset Complete!</div>
+                <div class="message">
+                    Hi ${name},<br><br>
+                    Your password has been successfully reset. You can now sign in to your Circle account using your new password.
+                </div>
+                
+                <div class="success-box">
+                    <div class="success-title">🎉 All Set!</div>
+                    <div class="success-text">
+                        Your account is secure and ready to use with your new password.
+                    </div>
+                </div>
+                
+                <div class="tips">
+                    <div class="tips-title">🔐 Security Tips</div>
+                    <div class="tip-item">
+                        <span class="tip-icon">💡</span>
+                        <div class="tip-text">Use a unique password that you don't use elsewhere</div>
+                    </div>
+                    <div class="tip-item">
+                        <span class="tip-icon">🔒</span>
+                        <div class="tip-text">Keep your password private and secure</div>
+                    </div>
+                    <div class="tip-item">
+                        <span class="tip-icon">📱</span>
+                        <div class="tip-text">Consider using a password manager</div>
+                    </div>
+                    <div class="tip-item">
+                        <span class="tip-icon">⚠️</span>
+                        <div class="tip-text">Contact us immediately if you notice any suspicious activity</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">Welcome back to Circle! 🎉</div>
+                <br>© 2024 Circle App. All rights reserved.
+            </div>
+        </div>
+    </body>
+    </html>
+    `
   }
 }
 

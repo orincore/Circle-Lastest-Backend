@@ -28,20 +28,19 @@ import exploreRouter from './routes/explore.routes.js'
 import circleStatsRouter from './routes/circle-stats.routes.js'
 import socialAccountsRouter from './routes/social-accounts.routes.js'
 import notificationsRouter from './routes/notifications.routes.js'
-import uploadRouter from '../routes/upload.routes.js'
 import contactRouter from './routes/contact.routes.js'
 import adminRouter from './routes/admin.routes.js'
 import adminUsersRouter from './routes/admin-users.routes.js'
 import adminReportsRouter from './routes/admin-reports.routes.js'
 import adminAnalyticsRouter from './routes/admin-analytics.routes.js'
-import adminSettingsRouter from './routes/admin-settings.routes.js'
 import emailVerificationRouter from './routes/email-verification.routes.js'
+import passwordResetRouter from './routes/password-reset.routes.js'
 import reportsRouter from './routes/reports.routes.js'
 import campaignsRouter from './routes/campaigns.routes.js'
 import templatesRouter from './routes/templates.routes.js'
 import userAnalyticsRouter from './routes/user-analytics.routes.js'
 
-export const app = express()
+const app = express()
 
 // Trust proxy for proper IP detection behind reverse proxy
 app.set('trust proxy', 1)
@@ -167,6 +166,7 @@ app.use(performanceMiddleware())
 app.use('/health', healthRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/auth', emailVerificationRouter)
+app.use('/api/auth', passwordResetRouter)
 app.use('/api/storage', storageRouter)
 app.use('/matchmaking', matchmakingRouter)
 app.use('/chat', chatRouter)
