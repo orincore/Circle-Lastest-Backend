@@ -27,6 +27,12 @@ export interface Profile {
   relationship_distance_flexible?: boolean | null
   preferences_updated_at?: string | null
   invisible_mode?: boolean | null
+  is_suspended?: boolean | null
+  suspension_reason?: string | null
+  suspended_at?: string | null
+  suspension_ends_at?: string | null
+  deleted_at?: string | null
+  deletion_reason?: string | null
   created_at?: string
 }
 

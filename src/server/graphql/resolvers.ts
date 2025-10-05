@@ -35,6 +35,12 @@ function toUser(u: Profile | null) {
       updatedAt: u.preferences_updated_at ?? u.created_at ?? null
     },
     invisibleMode: u.invisible_mode ?? false,
+    is_suspended: u.is_suspended ?? false,
+    suspension_reason: u.suspension_reason ?? null,
+    suspended_at: u.suspended_at ?? null,
+    suspension_ends_at: u.suspension_ends_at ?? null,
+    deleted_at: u.deleted_at ?? null,
+    deletion_reason: u.deletion_reason ?? null,
     createdAt: u.created_at ?? null
   }
 }

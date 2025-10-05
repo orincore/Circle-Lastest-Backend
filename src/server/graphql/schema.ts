@@ -18,6 +18,12 @@ export const typeDefs = gql`
     location: Location
     preferences: Preferences
     invisibleMode: Boolean
+    is_suspended: Boolean
+    suspension_reason: String
+    suspended_at: String
+    suspension_ends_at: String
+    deleted_at: String
+    deletion_reason: String
     createdAt: String
   }
 
