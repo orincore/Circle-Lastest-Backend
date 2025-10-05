@@ -35,6 +35,7 @@ import adminUsersRouter from './routes/admin-users.routes.js'
 import adminReportsRouter from './routes/admin-reports.routes.js'
 import adminAnalyticsRouter from './routes/admin-analytics.routes.js'
 import adminSettingsRouter from './routes/admin-settings.routes.js'
+import emailVerificationRouter from './routes/email-verification.routes.js'
 import reportsRouter from './routes/reports.routes.js'
 import campaignsRouter from './routes/campaigns.routes.js'
 import templatesRouter from './routes/templates.routes.js'
@@ -153,8 +154,9 @@ app.use(rateLimit({
 app.use(performanceMiddleware())
 
 app.use('/health', healthRouter)
-app.use('/auth', authRouter)
-app.use('/storage', storageRouter)
+app.use('/api/auth', authRouter)
+app.use('/api/auth', emailVerificationRouter)
+app.use('/api/storage', storageRouter)
 app.use('/matchmaking', matchmakingRouter)
 app.use('/chat', chatRouter)
 app.use('/api/friends', friendsRouter)
