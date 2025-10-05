@@ -2,11 +2,12 @@ import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { startSearch, getStatus, decide, cancelSearch } from '../services/matchmaking-optimized.js'
 import { supabase } from '../config/supabase.js'
+import { checkMatchLimit, SubscriptionService } from '../services/subscription.service.js'
 
 const router = Router()
 
 // Start matchmaking search
-router.post('/start', requireAuth, async (req: AuthRequest, res) => {
+router.post('/start', requireAuth, checkMatchLimit, async (req: AuthRequest, res) => {
   try {
     // Check if user is in invisible mode
     const { data: user } = await supabase
@@ -53,12 +54,36 @@ router.get('/status', requireAuth, async (req: AuthRequest, res) => {
 router.post('/decide', requireAuth, async (req: AuthRequest, res) => {
   const d = String(req.body?.decision || '')
   if (d !== 'accept' && d !== 'pass') return res.status(400).json({ error: 'Invalid decision' })
+  
+  // If accepting, check match limit and increment if needed
+  if (d === 'accept') {
+    try {
+      const { canMatch } = await SubscriptionService.checkDailyMatchLimit(req.user!.id)
+      if (!canMatch) {
+        return res.status(429).json({ 
+          error: 'Daily match limit reached',
+          upgrade_required: true,
+          message: 'Upgrade to premium for unlimited matches'
+        })
+      }
+      
+      // Increment match count for free users
+      const isPremium = await SubscriptionService.isPremiumUser(req.user!.id)
+      if (!isPremium) {
+        await SubscriptionService.incrementDailyMatches(req.user!.id)
+      }
+    } catch (error) {
+      console.error('Error checking match limit:', error)
+      return res.status(500).json({ error: 'Failed to process match' })
+    }
+  }
+  
   const status = await decide(req.user!.id, d as 'accept' | 'pass')
   res.json(status)
 })
 
 // Send message request to specific user
-router.post('/message-request', requireAuth, async (req: AuthRequest, res) => {
+router.post('/message-request', requireAuth, checkMatchLimit, async (req: AuthRequest, res) => {
   try {
     const { receiverId } = req.body
     const senderId = req.user!.id
@@ -132,6 +157,16 @@ router.post('/message-request', requireAuth, async (req: AuthRequest, res) => {
         requestId: newProposal.id,
         type: 'message_request'
       })
+    }
+    
+    // Increment match count for free users
+    try {
+      const isPremium = await SubscriptionService.isPremiumUser(senderId)
+      if (!isPremium) {
+        await SubscriptionService.incrementDailyMatches(senderId)
+      }
+    } catch (error) {
+      console.error('Error incrementing match count:', error)
     }
     
     res.json({ 

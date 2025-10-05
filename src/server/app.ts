@@ -44,6 +44,8 @@ import templatesRouter from './routes/templates.routes.js'
 import userAnalyticsRouter from './routes/user-analytics.routes.js'
 import uploadRouter from './routes/upload.routes.js'
 import adminSettingsRouter from './routes/admin-settings.routes.js'
+import subscriptionRouter from './routes/subscription.routes.js'
+import paymentRouter from './routes/payment.routes.js'
 
 const app = express()
 
@@ -214,6 +216,8 @@ app.use('/api/admin/settings', adminSettingsRouter)
 app.use('/api/admin/campaigns', campaignsRouter)
 app.use('/api/admin/templates', templatesRouter)
 app.use('/api/analytics', userAnalyticsRouter)
+app.use('/api/subscription', subscriptionRouter)
+app.use('/api/payment', paymentRouter)
 
 // Start monitoring service
 monitoringService.startMonitoring(30000) // Every 30 seconds
