@@ -4,6 +4,8 @@ import helmet from 'helmet'
 import compression from 'compression'
 import rateLimit from 'express-rate-limit'
 import pinoHttp from 'pino-http'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { env } from './config/env.js'
 import { logger } from './config/logger.js'
 import { errorHandler, notFound } from './middleware/errorHandler.js'
@@ -44,6 +46,10 @@ import uploadRouter from './routes/upload.routes.js'
 import adminSettingsRouter from './routes/admin-settings.routes.js'
 
 const app = express()
+
+// Get directory name for ES modules
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // Trust proxy for proper IP detection behind reverse proxy
 app.set('trust proxy', 1)
@@ -165,6 +171,23 @@ app.use(rateLimit({
 
 // Performance monitoring middleware
 app.use(performanceMiddleware())
+
+// Serve static HTML files from Circle/public directory
+const publicPath = path.join(__dirname, '../../../Circle/public')
+app.use(express.static(publicPath))
+
+// Specific routes for legal documents
+app.get('/terms.html', (req, res) => {
+  res.sendFile(path.join(publicPath, 'terms.html'))
+})
+
+app.get('/privacy.html', (req, res) => {
+  res.sendFile(path.join(publicPath, 'privacy.html'))
+})
+
+app.get('/delete-account.html', (req, res) => {
+  res.sendFile(path.join(publicPath, 'delete-account.html'))
+})
 
 app.use('/health', healthRouter)
 app.use('/api/auth', authRouter)
