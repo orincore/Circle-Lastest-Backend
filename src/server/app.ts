@@ -28,7 +28,7 @@ import exploreRouter from './routes/explore.routes.js'
 import circleStatsRouter from './routes/circle-stats.routes.js'
 import socialAccountsRouter from './routes/social-accounts.routes.js'
 import notificationsRouter from './routes/notifications.routes.js'
-import uploadRouter from './routes/upload.routes.js'
+import uploadRouter from '../routes/upload.routes.js'
 
 export const app = express()
 
