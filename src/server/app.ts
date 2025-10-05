@@ -140,14 +140,19 @@ app.use(sanitizeInput)
 // Request size validation
 app.use(validateRequestSize(2 * 1024 * 1024)) // 2MB limit
 
-// Global rate limiting (200 requests per minute per IP)
+// Global rate limiting (500 requests per minute per IP - increased for development)
 app.use(rateLimit({ 
   windowMs: 60_000, 
-  max: 200,
+  max: 500, // Increased from 200 to 500
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later' },
-  skip: (req) => req.path === '/health', // Skip health checks
+  message: { error: 'Too many failed authentication attempts. Please try again later.' },
+  skip: (req) => {
+    // Skip health checks and certain API endpoints that are called frequently
+    return req.path === '/health' || 
+           req.path.includes('/api/admin/settings') ||
+           req.path.includes('/api/notifications/register-token')
+  },
 }))
 
 // Performance monitoring middleware
