@@ -284,4 +284,102 @@ router.get('/screens', requireAuth, async (req: AuthRequest, res) => {
   }
 })
 
+/**
+ * Get events by type
+ * GET /api/analytics/events/:eventType
+ */
+router.get('/events/:eventType', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { eventType } = req.params
+    const { days = '7', limit = '100' } = req.query
+    const numDays = parseInt(days as string)
+    const limitNum = parseInt(limit as string)
+
+    const startDate = new Date()
+    startDate.setDate(startDate.getDate() - numDays)
+
+    const { data: events, count } = await supabase
+      .from('user_activity_events')
+      .select('*', { count: 'exact' })
+      .eq('event_name', eventType)
+      .gte('created_at', startDate.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(limitNum)
+
+    // Aggregate by properties if needed
+    const aggregated: Record<string, any> = {}
+    events?.forEach(event => {
+      const key = JSON.stringify(event.properties)
+      if (!aggregated[key]) {
+        aggregated[key] = {
+          properties: event.properties,
+          count: 0,
+          users: new Set(),
+        }
+      }
+      aggregated[key].count++
+      aggregated[key].users.add(event.user_id)
+    })
+
+    const results = Object.values(aggregated).map((item: any) => ({
+      ...item.properties,
+      count: item.count,
+      uniqueUsers: item.users.size,
+    }))
+
+    return res.json({
+      eventType,
+      totalEvents: count || 0,
+      results: results.sort((a, b) => b.count - a.count),
+    })
+  } catch (error) {
+    console.error('Events by type error:', error)
+    return res.status(500).json({ error: 'Failed to fetch events' })
+  }
+})
+
+/**
+ * Get all event types summary
+ * GET /api/analytics/events/summary
+ */
+router.get('/events-summary', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { days = '7' } = req.query
+    const numDays = parseInt(days as string)
+
+    const startDate = new Date()
+    startDate.setDate(startDate.getDate() - numDays)
+
+    // Get counts for each event type
+    const { data: events } = await supabase
+      .from('user_activity_events')
+      .select('event_name, user_id, created_at')
+      .gte('created_at', startDate.toISOString())
+
+    const eventSummary: Record<string, { count: number; users: Set<string> }> = {}
+    
+    events?.forEach(event => {
+      if (!eventSummary[event.event_name]) {
+        eventSummary[event.event_name] = {
+          count: 0,
+          users: new Set(),
+        }
+      }
+      eventSummary[event.event_name].count++
+      eventSummary[event.event_name].users.add(event.user_id)
+    })
+
+    const summary = Object.entries(eventSummary).map(([eventName, data]) => ({
+      eventName,
+      totalEvents: data.count,
+      uniqueUsers: data.users.size,
+    })).sort((a, b) => b.totalEvents - a.totalEvents)
+
+    return res.json({ summary })
+  } catch (error) {
+    console.error('Events summary error:', error)
+    return res.status(500).json({ error: 'Failed to fetch events summary' })
+  }
+})
+
 export default router
