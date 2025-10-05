@@ -30,6 +30,11 @@ import socialAccountsRouter from './routes/social-accounts.routes.js'
 import notificationsRouter from './routes/notifications.routes.js'
 import uploadRouter from '../routes/upload.routes.js'
 import contactRouter from './routes/contact.routes.js'
+import adminRouter from './routes/admin.routes.js'
+import adminUsersRouter from './routes/admin-users.routes.js'
+import adminReportsRouter from './routes/admin-reports.routes.js'
+import adminAnalyticsRouter from './routes/admin-analytics.routes.js'
+import reportsRouter from './routes/reports.routes.js'
 
 export const app = express()
 
@@ -156,6 +161,11 @@ app.use('/api/social', socialAccountsRouter)
 app.use('/api/notifications', notificationsRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/contact', contactRouter)
+app.use('/api/reports', reportsRouter)
+app.use('/api/admin', adminRouter)
+app.use('/api/admin/users', adminUsersRouter)
+app.use('/api/admin/reports', adminReportsRouter)
+app.use('/api/admin/analytics', adminAnalyticsRouter)
 
 // Start monitoring service
 monitoringService.startMonitoring(30000) // Every 30 seconds
