@@ -287,6 +287,19 @@ export async function getChatMessages(chatId: string, limit = 30, before?: strin
   
   const { data, error } = await q
   if (error) throw error
+  
+  // Debug: Log media messages
+  const mediaMessages = (data || []).filter(msg => msg.media_url || msg.media_type)
+  if (mediaMessages.length > 0) {
+    console.log('📱 Found media messages in database:', mediaMessages.map(msg => ({
+      id: msg.id,
+      text: msg.text,
+      media_url: msg.media_url,
+      media_type: msg.media_type,
+      thumbnail: msg.thumbnail
+    })))
+  }
+  
   return (data || []) as (ChatMessage & { reactions: MessageReaction[]; receipts: { user_id: string; status: string }[] })[]
 }
 
@@ -310,12 +323,20 @@ export async function insertMessage(
   if (mediaType) messageData.media_type = mediaType
   if (thumbnail) messageData.thumbnail = thumbnail
   
+  console.log('📝 Inserting message with data:', messageData)
+  
   const { data, error } = await supabase
     .from('messages')
     .insert(messageData)
     .select('*')
     .single()
-  if (error) throw error
+  
+  if (error) {
+    console.error('❌ Message insert error:', error)
+    throw error
+  }
+  
+  console.log('✅ Message inserted successfully:', data)
 
   // Update chat last_message_at (best-effort)
   try {

@@ -892,7 +892,10 @@ export function initOptimizedSocket(server: Server) {
             id: r.id, 
             chatId: r.chat_id, 
             senderId: r.sender_id, 
-            text: r.text, 
+            text: r.text,
+            mediaUrl: r.media_url,
+            mediaType: r.media_type,
+            thumbnail: r.thumbnail,
             createdAt: new Date(r.created_at).getTime(),
             updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined,
             isEdited: r.is_edited || false,
@@ -1040,6 +1043,15 @@ export function initOptimizedSocket(server: Server) {
           })
           return
         }
+        
+        console.log('📤 Socket received message data:', { 
+          chatId, 
+          userId, 
+          text: text?.trim() || '', 
+          mediaUrl, 
+          mediaType, 
+          thumbnail 
+        })
         
         const row = await insertMessage(
           chatId, 
