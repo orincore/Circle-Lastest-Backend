@@ -1841,11 +1841,12 @@ class EmailService {
                 font-weight: 500;
             }
             .subscription-details {
-                background: linear-gradient(135deg, #F8F4FF 0%, #FFF0F8 100%);
+                background: #FFFFFF;
                 border-radius: 16px;
-                padding: 32px;
+                padding: 24px;
                 margin: 32px 0;
-                border: 2px solid #E1BEE7;
+                border: 3px solid #7C2B86;
+                box-shadow: 0 8px 24px rgba(124, 43, 134, 0.15);
             }
             .detail-row {
                 display: table;
@@ -1954,6 +1955,9 @@ class EmailService {
                 .header, .content, .footer { padding: 24px; }
                 .welcome-title { font-size: 24px; }
                 .features-grid { grid-template-columns: 1fr; }
+                .subscription-details { padding: 16px; margin: 20px 0; }
+                .subscription-details table { font-size: 14px; }
+                .subscription-details td { padding: 12px 16px !important; }
             }
         </style>
     </head>
@@ -1975,22 +1979,22 @@ class EmailService {
                 </div>
                 
                 <div class="subscription-details">
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="border-bottom: 1px solid #E1BEE7;">
-                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Plan:</td>
-                            <td style="font-weight: 700; color: #1F1147; padding: 12px 0; text-align: right;">${planName}</td>
+                    <table style="width: 100%; border-collapse: collapse; background: #FFFFFF; border-radius: 12px; overflow: hidden;">
+                        <tr style="border-bottom: 2px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F4FF;">Plan:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F4FF;">${planName}</td>
                         </tr>
-                        <tr style="border-bottom: 1px solid #E1BEE7;">
-                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Amount Paid:</td>
-                            <td style="font-weight: 700; color: #1F1147; padding: 12px 0; text-align: right;">${formattedAmount}</td>
+                        <tr style="border-bottom: 2px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Amount Paid:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">${formattedAmount}</td>
                         </tr>
-                        <tr style="border-bottom: 1px solid #E1BEE7;">
-                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Billing:</td>
-                            <td style="font-weight: 700; color: #1F1147; padding: 12px 0; text-align: right;">Monthly</td>
+                        <tr style="border-bottom: 2px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F4FF;">Billing:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F4FF;">Monthly</td>
                         </tr>
                         <tr>
-                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Status:</td>
-                            <td style="font-weight: 700; color: #22C55E; padding: 12px 0; text-align: right;">✅ Active</td>
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">✅ Active</td>
                         </tr>
                     </table>
                 </div>
