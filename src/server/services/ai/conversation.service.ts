@@ -265,16 +265,36 @@ How can I help you today?`,
           }
         }
 
-        // Handle subscription cancellation
+        // Handle subscription cancellation with automatic refund if eligible
         if (this.isCancellationRequest(messageContent)) {
-          const result = await AdminActionsService.cancelSubscription(conversation.userId, 'AI Assistant - User requested cancellation')
-          return {
-            message: result.message + (result.success ? 
-              '\n\nYour subscription will not renew, but you can continue using your premium features until the end of your current billing period.' : ''),
-            confidence: 0.95,
-            intent: 'cancellation',
-            requiresEscalation: !result.success,
-            conversationEnded: result.success
+          // First check if user is eligible for refund (within 7 days)
+          const eligibilityResult = await AdminActionsService.checkRefundEligibility(conversation.userId)
+          
+          if (eligibilityResult.success && eligibilityResult.data?.eligible) {
+            // Process refund automatically for cancellations within 7 days
+            const refundResult = await AdminActionsService.processRefund(conversation.userId, 'AI Assistant - Cancellation with refund (within 7 days)')
+            
+            return {
+              message: refundResult.success ? 
+                `✅ Subscription cancelled and refund processed! Since you subscribed within the last 7 days, I've automatically processed your refund of ${refundResult.data?.amount} ${refundResult.data?.currency}.\n\nYour refund will appear in your account within 3-5 business days. You can continue using Circle with a free account.` :
+                `I've cancelled your subscription, but there was an issue processing your refund. Please contact our support team for assistance with your refund.`,
+              confidence: 0.95,
+              intent: 'cancellation_with_refund',
+              requiresEscalation: !refundResult.success,
+              conversationEnded: refundResult.success
+            }
+          } else {
+            // Regular cancellation without refund (after 7 days)
+            const result = await AdminActionsService.cancelSubscription(conversation.userId, 'AI Assistant - User requested cancellation')
+            return {
+              message: result.success ? 
+                `✅ Subscription cancelled successfully. Since your subscription is older than 7 days, no refund is available according to our refund policy.\n\nYour subscription will not renew, but you can continue using your premium features until the end of your current billing period.` :
+                result.message,
+              confidence: 0.95,
+              intent: 'cancellation',
+              requiresEscalation: !result.success,
+              conversationEnded: result.success
+            }
           }
         }
 
@@ -335,7 +355,10 @@ How can I help you today?`,
   private static isCancellationRequest(message: string): boolean {
     const cancellationKeywords = [
       'cancel subscription', 'cancel my subscription', 'stop subscription',
-      'end subscription', 'unsubscribe', 'cancel plan'
+      'end subscription', 'unsubscribe', 'cancel plan', 'cancel my plan',
+      'i want to cancel', 'please cancel', 'cancel service', 'stop billing',
+      'discontinue subscription', 'terminate subscription', 'end my subscription',
+      'stop my subscription', 'cancel account', 'close subscription'
     ]
     return cancellationKeywords.some(keyword => message.includes(keyword))
   }
