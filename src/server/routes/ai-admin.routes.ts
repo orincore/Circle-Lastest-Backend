@@ -1,5 +1,40 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
+// Apply admin authentication to all routes
+const router = Router()
+
+// Admin middleware - protect all routes
+router.use(requireAuth)
+
+// Admin user configuration
+const ADMIN_USERS = [
+  'admin@circle.com',
+  'support@circle.com',
+  'orincore@gmail.com'
+]
+
+// Admin auth middleware
+const requireAdminAuth = async (req: AuthRequest, res: any, next: any) => {
+  try {
+    const user = req.user!
+    const isAdmin = ADMIN_USERS.includes(user.email) || 
+                   ADMIN_USERS.includes(user.id) ||
+                   user.role === 'admin'
+
+    if (!isAdmin) {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        message: 'Admin privileges required' 
+      })
+    }
+    next()
+  } catch (error) {
+    res.status(500).json({ error: 'Authentication failed' })
+  }
+}
+
+// Apply admin auth to all routes
+router.use(requireAdminAuth)
 import { ConversationService } from '../services/ai/conversation.service.js'
 import { AdminActionsService } from '../services/ai/admin-actions.service.js'
 import EnhancedConversationService from '../services/ai/enhanced-conversation.service.js'
@@ -11,20 +46,10 @@ import MultilingualSupportService from '../services/ai/multilingual-support.serv
 import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
 
-const router = Router()
-
 // Admin verification endpoint
-router.get('/verify-admin', requireAuth, async (req: AuthRequest, res) => {
+router.get('/verify-admin', async (req: AuthRequest, res) => {
   try {
     const user = req.user!
-    
-    // List of admin emails/IDs - replace with your actual admin identifiers
-    const ADMIN_USERS = [
-      'admin@circle.com',
-      'support@circle.com', 
-      'orincore@gmail.com'
-      // Add more admin emails or user IDs here
-    ]
     
     // Check if user is admin
     const isAdmin = ADMIN_USERS.includes(user.email) || 
@@ -55,7 +80,7 @@ router.get('/verify-admin', requireAuth, async (req: AuthRequest, res) => {
 })
 
 // Test endpoint for AI admin capabilities
-router.post('/test-admin-actions', requireAuth, async (req: AuthRequest, res) => {
+router.post('/test-admin-actions', async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
     const { action } = req.body
@@ -96,7 +121,7 @@ router.post('/test-admin-actions', requireAuth, async (req: AuthRequest, res) =>
 })
 
 // Enhanced conversation endpoint that uses admin actions
-router.post('/conversation/enhanced', requireAuth, async (req: AuthRequest, res) => {
+router.post('/conversation/enhanced', async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
     const { sessionId, message, conversationId } = req.body
