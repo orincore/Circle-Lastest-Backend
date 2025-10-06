@@ -149,6 +149,37 @@ router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: Ad
       throw error
     }
 
+    // Get user details for email
+    const { data: userProfile, error: profileError } = await supabase
+      .from('profiles')
+      .select('email, username')
+      .eq('id', subscription.user_id)
+      .single()
+
+    if (userProfile && userProfile.email) {
+      // Send cancellation email
+      try {
+        await EmailService.sendSubscriptionCancellationEmail(
+          userProfile.email,
+          userProfile.username || 'User',
+          subscription.plan_type,
+          new Date().toISOString()
+        )
+        logger.info({ 
+          subscriptionId,
+          userId: subscription.user_id,
+          email: userProfile.email
+        }, 'Admin cancellation email sent')
+      } catch (emailError) {
+        logger.error({ 
+          error: emailError,
+          subscriptionId,
+          userId: subscription.user_id
+        }, 'Failed to send admin cancellation email')
+        // Don't fail the cancellation if email fails
+      }
+    }
+
     logger.info({ 
       subscriptionId, 
       adminId: req.user!.id,

@@ -44,6 +44,41 @@ router.post('/cancel', requireAuth, async (req: AuthRequest, res) => {
     
     // Cancel the subscription
     await SubscriptionService.cancelSubscription(userId)
+
+    // Send cancellation email
+    if (subscription && req.user!.email) {
+      console.log('📧 Attempting to send subscription cancellation email...')
+      try {
+        const emailResult = await EmailService.sendSubscriptionCancellationEmail(
+          req.user!.email,
+          req.user!.username || 'User',
+          subscription.plan_type,
+          new Date().toISOString()
+        )
+        
+        if (emailResult) {
+          logger.info({ 
+            userId, 
+            email: req.user!.email,
+            planType: subscription.plan_type
+          }, 'Subscription cancellation email sent successfully')
+        } else {
+          logger.warn({ 
+            userId, 
+            email: req.user!.email,
+            planType: subscription.plan_type
+          }, 'Cancellation email service returned false')
+        }
+      } catch (emailError) {
+        console.error('📧 Cancellation email error:', emailError)
+        logger.error({ 
+          error: emailError,
+          userId,
+          planType: subscription.plan_type
+        }, 'Failed to send subscription cancellation email')
+        // Don't fail the cancellation if email fails
+      }
+    }
     
     res.json({
       message: 'Subscription cancelled successfully'
@@ -254,63 +289,6 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
     })
   } catch (error) {
     logger.error({ error }, 'Error creating subscription')
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-// Cancel subscription
-router.post('/cancel', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const userId = req.user!.id
-    
-    // Get subscription details before cancelling
-    const subscription = await SubscriptionService.getUserSubscription(userId)
-    
-    await SubscriptionService.cancelSubscription(userId)
-
-    // Send cancellation email
-    if (subscription && req.user!.email) {
-      console.log('📧 Attempting to send subscription cancellation email...')
-      try {
-        const emailResult = await EmailService.sendSubscriptionCancellationEmail(
-          req.user!.email,
-          req.user!.username || 'User',
-          subscription.plan_type,
-          new Date().toISOString()
-        )
-        
-        if (emailResult) {
-          logger.info({ 
-            userId, 
-            email: req.user!.email,
-            planType: subscription.plan_type
-          }, 'Subscription cancellation email sent successfully')
-        } else {
-          logger.warn({ 
-            userId, 
-            email: req.user!.email,
-            planType: subscription.plan_type
-          }, 'Cancellation email service returned false')
-        }
-      } catch (emailError) {
-        console.error('📧 Cancellation email error:', emailError)
-        logger.error({ 
-          error: emailError,
-          userId,
-          planType: subscription.plan_type
-        }, 'Failed to send subscription cancellation email')
-        // Don't fail the cancellation if email fails
-      }
-    }
-
-    logger.info({ userId }, 'User cancelled subscription')
-
-    res.json({
-      success: true,
-      message: 'Subscription cancelled successfully'
-    })
-  } catch (error) {
-    logger.error({ error }, 'Error cancelling subscription')
     res.status(500).json({ error: 'Internal server error' })
   }
 })
