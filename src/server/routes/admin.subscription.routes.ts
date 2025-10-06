@@ -359,4 +359,35 @@ router.get('/user/:userId/history', requireAuth, requireAdmin, async (req: Admin
   }
 })
 
+// Test email sending (admin only)
+router.post('/test-email', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { email } = req.body
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' })
+    }
+
+    console.log('🔍 Testing email sending to:', email)
+    
+    const subscriptionEmailService = SubscriptionEmailService.getInstance()
+    const success = await subscriptionEmailService.testEmailSending(email)
+
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Test email sent successfully' 
+      })
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to send test email' 
+      })
+    }
+  } catch (error) {
+    logger.error({ error }, 'Error sending test email')
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 export default router

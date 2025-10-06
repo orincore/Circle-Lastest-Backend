@@ -47,6 +47,34 @@ export class SubscriptionEmailService {
   }
 
   /**
+   * Test email sending functionality
+   */
+  async testEmailSending(userEmail: string): Promise<boolean> {
+    try {
+      console.log('📧 Testing email sending to:', userEmail)
+      
+      const result = await this.transporter.sendMail({
+        from: `"Circle Team" <${process.env.SMTP_FROM_EMAIL || 'noreply@circle.orincore.com'}>`,
+        to: userEmail,
+        subject: 'Test Email from Circle',
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h1>Test Email</h1>
+            <p>This is a test email from Circle to verify email functionality.</p>
+            <p>If you receive this, email sending is working correctly!</p>
+          </div>
+        `,
+      })
+
+      console.log('📧 Test email result:', result)
+      return !!result.messageId
+    } catch (error) {
+      console.error('📧 Test email failed:', error)
+      return false
+    }
+  }
+
+  /**
    * Send sponsored subscription email when admin creates a subscription
    */
   async sendSponsoredSubscriptionEmail(data: SubscriptionEmailData): Promise<boolean> {
@@ -54,7 +82,27 @@ export class SubscriptionEmailService {
       logger.info({ userEmail: data.userEmail, planType: data.planType }, 'Sending sponsored subscription email')
 
       const templatePath = path.join(this.templatesPath, 'sponsored-subscription.html')
-      let template = await fs.readFile(templatePath, 'utf-8')
+      console.log('📧 Loading template from:', templatePath)
+      
+      let template: string
+      try {
+        template = await fs.readFile(templatePath, 'utf-8')
+        console.log('📧 Template loaded successfully, length:', template.length)
+      } catch (templateError: any) {
+        console.error('📧 Failed to load template:', templateError)
+        // Fallback to simple HTML email
+        template = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h1 style="color: #7C2B86;">🎁 Congratulations!</h1>
+            <p>Hi ${data.userName},</p>
+            <p>You've received a sponsored ${this.getPlanDisplayName(data.planType)} subscription from the Circle team!</p>
+            <p>Your premium features are now active${data.expiryDate ? ` until ${new Date(data.expiryDate).toLocaleDateString()}` : ''}.</p>
+            <p>Start exploring your premium features in the Circle app!</p>
+            <p>Best regards,<br>The Circle Team</p>
+          </div>
+        `
+        console.log('📧 Using fallback template')
+      }
 
       // Replace template variables
       const replacements = {
@@ -79,17 +127,27 @@ export class SubscriptionEmailService {
 
       const subject = `🎁 You've received a sponsored ${this.getPlanDisplayName(data.planType)} subscription!`
 
-      await this.transporter.sendMail({
+      console.log('📧 Attempting to send sponsored subscription email to:', data.userEmail)
+      console.log('📧 SMTP Config:', {
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT,
+        user: process.env.SMTP_USER ? 'Present' : 'Missing',
+        pass: process.env.SMTP_PASS ? 'Present' : 'Missing',
+        from: process.env.SMTP_FROM_EMAIL
+      })
+
+      const result = await this.transporter.sendMail({
         from: `"Circle Team" <${process.env.SMTP_FROM_EMAIL || 'noreply@circle.orincore.com'}>`,
         to: data.userEmail,
         subject,
         html: template,
       })
 
-      const success = true
+      console.log('📧 Email send result:', result)
+      const success = !!result.messageId
 
       if (success) {
-        logger.info({ userEmail: data.userEmail }, 'Sponsored subscription email sent successfully')
+        logger.info({ userEmail: data.userEmail, messageId: result.messageId }, 'Sponsored subscription email sent successfully')
       } else {
         logger.error({ userEmail: data.userEmail }, 'Failed to send sponsored subscription email')
       }
@@ -144,17 +202,20 @@ export class SubscriptionEmailService {
 
       const subject = `✅ Welcome to Circle ${this.getPlanDisplayName(data.planType)}!`
 
-      await this.transporter.sendMail({
+      console.log('📧 Attempting to send subscription confirmation email to:', data.userEmail)
+
+      const result = await this.transporter.sendMail({
         from: `"Circle Team" <${process.env.SMTP_FROM_EMAIL || 'noreply@circle.orincore.com'}>`,
         to: data.userEmail,
         subject,
         html: template,
       })
 
-      const success = true
+      console.log('📧 Confirmation email send result:', result)
+      const success = !!result.messageId
 
       if (success) {
-        logger.info({ userEmail: data.userEmail }, 'Subscription confirmation email sent successfully')
+        logger.info({ userEmail: data.userEmail, messageId: result.messageId }, 'Subscription confirmation email sent successfully')
       } else {
         logger.error({ userEmail: data.userEmail }, 'Failed to send subscription confirmation email')
       }
