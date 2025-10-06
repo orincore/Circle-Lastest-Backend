@@ -1751,6 +1751,17 @@ class EmailService {
       ? `Your subscription renews on ${new Date(expiresAt).toLocaleDateString()}.`
       : 'Your subscription details are available in your account.'
 
+    // Debug template variables
+    console.log('📧 Template variables:', {
+      name,
+      planType,
+      planName,
+      amount,
+      formattedAmount,
+      currency,
+      expiryText
+    })
+
     return `
     <!DOCTYPE html>
     <html>
@@ -1837,9 +1848,8 @@ class EmailService {
                 border: 2px solid #E1BEE7;
             }
             .detail-row {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
+                display: table;
+                width: 100%;
                 margin-bottom: 16px;
                 padding-bottom: 16px;
                 border-bottom: 1px solid #E1BEE7;
@@ -1850,12 +1860,18 @@ class EmailService {
                 border-bottom: none;
             }
             .detail-label {
+                display: table-cell;
                 font-weight: 600;
                 color: #7C2B86;
+                width: 40%;
+                vertical-align: middle;
             }
             .detail-value {
+                display: table-cell;
                 font-weight: 700;
                 color: #1F1147;
+                text-align: right;
+                vertical-align: middle;
             }
             .features-showcase {
                 background: linear-gradient(135deg, #7C2B86 0%, #E91E63 100%);
@@ -1959,22 +1975,24 @@ class EmailService {
                 </div>
                 
                 <div class="subscription-details">
-                    <div class="detail-row">
-                        <span class="detail-label">Plan:</span>
-                        <span class="detail-value">${planName}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Amount Paid:</span>
-                        <span class="detail-value">${formattedAmount}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Billing:</span>
-                        <span class="detail-value">Monthly</span>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Status:</span>
-                        <span class="detail-value" style="color: #22C55E;">✅ Active</span>
-                    </div>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="border-bottom: 1px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Plan:</td>
+                            <td style="font-weight: 700; color: #1F1147; padding: 12px 0; text-align: right;">${planName}</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Amount Paid:</td>
+                            <td style="font-weight: 700; color: #1F1147; padding: 12px 0; text-align: right;">${formattedAmount}</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Billing:</td>
+                            <td style="font-weight: 700; color: #1F1147; padding: 12px 0; text-align: right;">Monthly</td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: 600; color: #7C2B86; padding: 12px 0; width: 40%;">Status:</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 12px 0; text-align: right;">✅ Active</td>
+                        </tr>
+                    </table>
                 </div>
                 
                 <div class="features-showcase">
