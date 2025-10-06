@@ -197,8 +197,16 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
     )
 
     // Send subscription confirmation email
+    console.log('📧 Attempting to send subscription confirmation email...')
+    console.log('📧 Email details:', {
+      email: req.user!.email,
+      username: req.user!.username,
+      planType: plan_type,
+      amount: amount / 100
+    })
+    
     try {
-      await EmailService.sendSubscriptionConfirmationEmail(
+      const emailResult = await EmailService.sendSubscriptionConfirmationEmail(
         req.user!.email,
         req.user!.username || 'User',
         plan_type,
@@ -206,12 +214,24 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
         'USD',
         expiresAt.toISOString()
       )
-      logger.info({ 
-        userId, 
-        email: req.user!.email,
-        planType: plan_type
-      }, 'Subscription confirmation email sent')
+      
+      console.log('📧 Email service result:', emailResult)
+      
+      if (emailResult) {
+        logger.info({ 
+          userId, 
+          email: req.user!.email,
+          planType: plan_type
+        }, 'Subscription confirmation email sent successfully')
+      } else {
+        logger.warn({ 
+          userId, 
+          email: req.user!.email,
+          planType: plan_type
+        }, 'Email service returned false - email may not have been sent')
+      }
     } catch (emailError) {
+      console.error('📧 Email error:', emailError)
       logger.error({ 
         error: emailError,
         userId,

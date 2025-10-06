@@ -13,6 +13,14 @@ class EmailService {
   private transporter: nodemailer.Transporter
 
   constructor() {
+    // Debug email configuration
+    console.log('📧 Email service initializing with config:', {
+      host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
+      port: process.env.SMTP_PORT || '587',
+      user: process.env.SMTP_USER ? '***configured***' : 'NOT SET',
+      pass: process.env.SMTP_PASSWORD ? '***configured***' : 'NOT SET'
+    })
+
     // Configure email transporter using SMTP (same as campaigns)
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
@@ -870,8 +878,19 @@ class EmailService {
    * Send subscription confirmation email (user subscribed)
    */
   async sendSubscriptionConfirmationEmail(email: string, name: string, planType: string, amount: number, currency: string, expiresAt?: string): Promise<boolean> {
+    console.log('📧 sendSubscriptionConfirmationEmail called with:', {
+      email,
+      name,
+      planType,
+      amount,
+      currency,
+      hasExpiresAt: !!expiresAt
+    })
+
     try {
       const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
+      console.log('📧 Using from address:', defaultFrom)
+      
       const mailOptions = {
         from: defaultFrom,
         to: email,
@@ -879,11 +898,26 @@ class EmailService {
         html: this.getSubscriptionConfirmationTemplate(name, planType, amount, currency, expiresAt),
       }
 
+      console.log('📧 Mail options prepared:', {
+        from: mailOptions.from,
+        to: mailOptions.to,
+        subject: mailOptions.subject,
+        htmlLength: mailOptions.html.length
+      })
+
+      console.log('📧 Attempting to send email via transporter...')
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Subscription confirmation email sent:', result.messageId)
+      console.log('✅ Subscription confirmation email sent successfully:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send subscription confirmation email:', error)
+      console.error('❌ Error details:', {
+        message: (error as any)?.message,
+        code: (error as any)?.code,
+        command: (error as any)?.command,
+        response: (error as any)?.response,
+        responseCode: (error as any)?.responseCode
+      })
       return false
     }
   }
