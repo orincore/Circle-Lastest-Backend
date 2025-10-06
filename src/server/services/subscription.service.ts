@@ -302,29 +302,19 @@ export class SubscriptionService {
     }
   }
 
-  // Expire subscription
+  // Expire a subscription (mark as expired)
   static async expireSubscription(userId: string): Promise<void> {
     try {
-      const { error } = await supabase
+      await supabase
         .from('subscriptions')
-        .update({
+        .update({ 
           status: 'expired',
-          updated_at: new Date().toISOString()
+          expired_at: new Date().toISOString()
         })
         .eq('user_id', userId)
         .eq('status', 'active')
       
-      if (error) throw error
-
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          subscription_plan: 'free',
-          premium_expires_at: null
-        })
-        .eq('id', userId)
-      
-      if (profileError) throw profileError
+      logger.info({ userId }, 'Subscription expired')
 
       logger.info({ userId }, 'Expired subscription')
     } catch (error) {

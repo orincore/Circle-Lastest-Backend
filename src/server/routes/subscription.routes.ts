@@ -46,6 +46,34 @@ router.get('/current', requireAuth, async (req: AuthRequest, res) => {
   }
 })
 
+// Cancel subscription
+router.post('/cancel', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    
+    console.log('🔍 Backend Debug - Canceling subscription for user:', userId)
+    
+    // Get current active subscription
+    const subscription = await SubscriptionService.getActiveSubscription(userId)
+    
+    if (!subscription) {
+      return res.status(404).json({ error: 'No active subscription found' })
+    }
+    
+    // Cancel the subscription
+    await SubscriptionService.cancelSubscription(userId)
+    
+    console.log('🔍 Backend Debug - Subscription cancelled for user:', userId)
+    
+    res.json({
+      message: 'Subscription cancelled successfully'
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error cancelling subscription')
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // Get subscription plans and pricing
 router.get('/plans', async (req, res) => {
   try {
