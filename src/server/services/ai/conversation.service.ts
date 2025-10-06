@@ -263,6 +263,7 @@ How can I help you today?`,
 
       return {
         ...data,
+        sessionId: data.session_id, // Map session_id to sessionId
         messages: JSON.parse(data.messages || '[]'),
         userContext: JSON.parse(data.user_context || 'null'),
         createdAt: new Date(data.created_at),
