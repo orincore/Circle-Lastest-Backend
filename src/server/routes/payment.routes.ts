@@ -3,6 +3,7 @@ import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { PaymentGateway, type PaymentMethod } from '../services/payment.service.js'
 import { SubscriptionService } from '../services/subscription.service.js'
 import { logger } from '../config/logger.js'
+import EmailService from '../services/emailService.js'
 
 const router = express.Router()
 
@@ -188,6 +189,50 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
         amount / 100, // Convert back to dollars
         'USD'
       )
+
+      // Send subscription confirmation email
+      console.log('📧 Attempting to send subscription confirmation email...')
+      console.log('📧 Email details:', {
+        email: req.user!.email,
+        username: req.user!.username,
+        planType: plan_type,
+        amount: amount / 100
+      })
+      
+      try {
+        const emailResult = await EmailService.sendSubscriptionConfirmationEmail(
+          req.user!.email,
+          req.user!.username || 'User',
+          plan_type,
+          amount / 100, // Convert back to dollars
+          'USD',
+          expiresAt.toISOString()
+        )
+        
+        console.log('📧 Email service result:', emailResult)
+        
+        if (emailResult) {
+          logger.info({ 
+            userId, 
+            email: req.user!.email,
+            planType: plan_type
+          }, 'Subscription confirmation email sent successfully')
+        } else {
+          logger.warn({ 
+            userId, 
+            email: req.user!.email,
+            planType: plan_type
+          }, 'Email service returned false - email may not have been sent')
+        }
+      } catch (emailError) {
+        console.error('📧 Email error:', emailError)
+        logger.error({ 
+          error: emailError,
+          userId,
+          planType: plan_type
+        }, 'Failed to send subscription confirmation email')
+        // Don't fail the subscription if email fails
+      }
 
       logger.info({ userId, plan_type, subscriptionId: subscription.id }, 'Subscription created successfully')
 
