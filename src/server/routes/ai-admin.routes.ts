@@ -8,6 +8,7 @@ import AnalyticsInsightsService from '../services/ai/analytics-insights.service.
 import ProactiveSupportService from '../services/ai/proactive-support.service.js'
 import EscalationSystemService from '../services/ai/escalation-system.service.js'
 import MultilingualSupportService from '../services/ai/multilingual-support.service.js'
+import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
 
 const router = Router()
@@ -268,6 +269,192 @@ router.get('/supported-languages', requireAuth, async (req: AuthRequest, res) =>
   } catch (error) {
     logger.error({ error }, 'Error getting supported languages')
     res.status(500).json({ error: 'Failed to get supported languages' })
+  }
+})
+
+// Admin dashboard specific endpoints
+router.get('/admin/conversations', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { page = 1, limit = 20, status, priority } = req.query
+    
+    let query = supabase
+      .from('ai_conversations')
+      .select(`
+        id, user_id, status, intent, satisfaction_rating, 
+        created_at, updated_at, personality, sentiment_analysis,
+        escalation_level, detected_language
+      `)
+      .order('created_at', { ascending: false })
+      .range((Number(page) - 1) * Number(limit), Number(page) * Number(limit) - 1)
+
+    if (status) {
+      query = query.eq('status', status)
+    }
+
+    if (priority) {
+      query = query.eq('escalation_level', priority)
+    }
+
+    const { data: conversations, error } = await query
+
+    if (error) throw error
+
+    res.json({ success: true, conversations, page: Number(page), limit: Number(limit) })
+  } catch (error) {
+    logger.error({ error }, 'Error getting admin conversations')
+    res.status(500).json({ error: 'Failed to get conversations' })
+  }
+})
+
+router.get('/admin/conversation/:id', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params
+    
+    const { data: conversation, error } = await supabase
+      .from('ai_conversations')
+      .select(`
+        *, 
+        satisfaction_ratings(rating, feedback, created_at),
+        escalation_logs(priority, escalation_reason, assigned_agent, created_at)
+      `)
+      .eq('id', id)
+      .single()
+
+    if (error) throw error
+
+    res.json({ success: true, conversation })
+  } catch (error) {
+    logger.error({ error, conversationId: req.params.id }, 'Error getting conversation details')
+    res.status(500).json({ error: 'Failed to get conversation details' })
+  }
+})
+
+router.get('/admin/escalations', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { page = 1, limit = 20, priority } = req.query
+    
+    let query = supabase
+      .from('escalation_logs')
+      .select(`
+        *, 
+        ai_conversations(id, intent),
+        profiles(first_name, last_name, email)
+      `)
+      .order('created_at', { ascending: false })
+      .range((Number(page) - 1) * Number(limit), Number(page) * Number(limit) - 1)
+
+    if (priority) {
+      query = query.eq('priority', priority)
+    }
+
+    const { data: escalations, error } = await query
+
+    if (error) throw error
+
+    res.json({ success: true, escalations, page: Number(page), limit: Number(limit) })
+  } catch (error) {
+    logger.error({ error }, 'Error getting escalations')
+    res.status(500).json({ error: 'Failed to get escalations' })
+  }
+})
+
+router.get('/admin/survey-responses', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { page = 1, limit = 20, rating } = req.query
+    
+    let query = supabase
+      .from('satisfaction_ratings')
+      .select(`
+        *, 
+        ai_conversations(id, intent),
+        profiles(first_name, last_name, email)
+      `)
+      .order('created_at', { ascending: false })
+      .range((Number(page) - 1) * Number(limit), Number(page) * Number(limit) - 1)
+
+    if (rating) {
+      query = query.eq('rating', Number(rating))
+    }
+
+    const { data: responses, error } = await query
+
+    if (error) throw error
+
+    res.json({ success: true, responses, page: Number(page), limit: Number(limit) })
+  } catch (error) {
+    logger.error({ error }, 'Error getting survey responses')
+    res.status(500).json({ error: 'Failed to get survey responses' })
+  }
+})
+
+router.get('/admin/follow-up-tasks', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { status = 'pending' } = req.query
+    
+    const { data: tasks, error } = await supabase
+      .from('follow_up_tasks')
+      .select(`
+        *, 
+        ai_conversations(id, intent),
+        profiles(first_name, last_name, email)
+      `)
+      .eq('status', status)
+      .order('scheduled_for', { ascending: true })
+
+    if (error) throw error
+
+    res.json({ success: true, tasks })
+  } catch (error) {
+    logger.error({ error }, 'Error getting follow-up tasks')
+    res.status(500).json({ error: 'Failed to get follow-up tasks' })
+  }
+})
+
+router.put('/admin/follow-up-task/:id', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params
+    const { status, assigned_to, notes } = req.body
+    
+    const updates: any = { updated_at: new Date().toISOString() }
+    
+    if (status) updates.status = status
+    if (assigned_to) updates.assigned_to = assigned_to
+    if (status === 'completed') updates.completed_at = new Date().toISOString()
+
+    const { data: task, error } = await supabase
+      .from('follow_up_tasks')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    res.json({ success: true, task })
+  } catch (error) {
+    logger.error({ error, taskId: req.params.id }, 'Error updating follow-up task')
+    res.status(500).json({ error: 'Failed to update task' })
+  }
+})
+
+router.get('/admin/agent-performance', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const agents = await AnalyticsInsightsService.getAgentPerformance()
+    res.json({ success: true, agents })
+  } catch (error) {
+    logger.error({ error }, 'Error getting agent performance')
+    res.status(500).json({ error: 'Failed to get agent performance' })
+  }
+})
+
+router.get('/admin/analytics/report', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { period = 'week' } = req.query
+    const report = await AnalyticsInsightsService.generateAnalyticsReport(period as 'week' | 'month' | 'quarter')
+    res.json({ success: true, report })
+  } catch (error) {
+    logger.error({ error }, 'Error generating analytics report')
+    res.status(500).json({ error: 'Failed to generate report' })
   }
 })
 
