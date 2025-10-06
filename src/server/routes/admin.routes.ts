@@ -30,19 +30,23 @@ const router = express.Router()
 router.get('/check', requireAuth, async (req: AuthRequest, res) => {
   try {
     console.log('🔍 Admin check - User ID:', req.user?.id)
-    const userId = req.user!.id
+    const user = req.user!
 
-    const { data: adminRole, error } = await supabase
-      .from('admin_roles')
-      .select('id, role, granted_at, is_active')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    // Admin user configuration - same as in AI routes
+    const ADMIN_USERS = [
+      'admin@circle.com',
+      'support@circle.com',
+      'orincore@gmail.com'
+    ]
 
-    console.log('🔍 Admin check - Query result:', { adminRole, error })
+    // Check if user is admin by email, ID, or role
+    const isAdmin = ADMIN_USERS.includes(user.email) || 
+                   ADMIN_USERS.includes(user.id) ||
+                   user.role === 'admin'
 
-    if (error || !adminRole) {
+    console.log('🔍 Admin check - Email:', user.email, 'Is Admin:', isAdmin)
+
+    if (!isAdmin) {
       console.log('❌ Admin check - User is not an admin')
       return res.json({
         isAdmin: false,
@@ -50,11 +54,11 @@ router.get('/check', requireAuth, async (req: AuthRequest, res) => {
       })
     }
 
-    console.log('✅ Admin check - User is admin:', adminRole.role)
+    console.log('✅ Admin check - User is admin')
     return res.json({
       isAdmin: true,
-      role: adminRole.role,
-      grantedAt: adminRole.granted_at
+      role: user.role || 'admin',
+      grantedAt: new Date().toISOString()
     })
   } catch (error) {
     console.error('❌ Admin check error:', error)
