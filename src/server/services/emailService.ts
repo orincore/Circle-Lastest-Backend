@@ -845,6 +845,50 @@ class EmailService {
   }
 
   /**
+   * Send sponsored subscription email (admin created subscription)
+   */
+  async sendSponsoredSubscriptionEmail(email: string, name: string, planType: string, expiresAt?: string): Promise<boolean> {
+    try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
+      const mailOptions = {
+        from: defaultFrom,
+        to: email,
+        subject: `🎉 You've Been Gifted ${planType === 'premium' ? 'Premium' : 'Premium Plus'} Access!`,
+        html: this.getSponsoredSubscriptionTemplate(name, planType, expiresAt),
+      }
+
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Sponsored subscription email sent:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send sponsored subscription email:', error)
+      return false
+    }
+  }
+
+  /**
+   * Send subscription confirmation email (user subscribed)
+   */
+  async sendSubscriptionConfirmationEmail(email: string, name: string, planType: string, amount: number, currency: string, expiresAt?: string): Promise<boolean> {
+    try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
+      const mailOptions = {
+        from: defaultFrom,
+        to: email,
+        subject: `Welcome to ${planType === 'premium' ? 'Premium' : 'Premium Plus'}! 🚀`,
+        html: this.getSubscriptionConfirmationTemplate(name, planType, amount, currency, expiresAt),
+      }
+
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Subscription confirmation email sent:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send subscription confirmation email:', error)
+      return false
+    }
+  }
+
+  /**
    * Send login alert email
    */
   async sendLoginAlert(email: string, name: string, loginInfo: {
@@ -1380,6 +1424,575 @@ class EmailService {
                 <div class="footer-logo">Circle</div>
                 <div class="footer-text">Welcome back to Circle! 🎉</div>
                 <br>© 2024 Circle App. All rights reserved.
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
+
+  /**
+   * Get sponsored subscription email template
+   */
+  private getSponsoredSubscriptionTemplate(name: string, planType: string, expiresAt?: string): string {
+    const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
+    const expiryText = expiresAt 
+      ? `Your ${planName} access expires on ${new Date(expiresAt).toLocaleDateString()}.`
+      : 'Your access details will be available in your account.'
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>You've Been Gifted ${planName}! - Circle</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+                line-height: 1.6;
+                color: #1F1147;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 0;
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                min-height: 100vh;
+            }
+            .container {
+                background: #FFFFFF;
+                border-radius: 24px;
+                margin: 20px;
+                padding: 0;
+                box-shadow: 0 20px 40px rgba(31, 17, 71, 0.3);
+                overflow: hidden;
+            }
+            .header {
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                padding: 40px;
+                text-align: center;
+                color: white;
+                position: relative;
+            }
+            .gift-icon {
+                font-size: 64px;
+                margin-bottom: 16px;
+                display: block;
+                animation: bounce 2s infinite;
+            }
+            .logo {
+                font-size: 36px;
+                font-weight: 800;
+                color: #FFFFFF;
+                margin-bottom: 8px;
+                letter-spacing: -1px;
+            }
+            .header-subtitle {
+                font-size: 18px;
+                color: rgba(255, 255, 255, 0.9);
+                font-weight: 500;
+            }
+            .gift-badge {
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 20px;
+                padding: 8px 16px;
+                display: inline-block;
+                margin-top: 16px;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            .content {
+                padding: 40px;
+            }
+            .gift-title {
+                font-size: 28px;
+                font-weight: 700;
+                color: #1F1147;
+                text-align: center;
+                margin-bottom: 16px;
+            }
+            .gift-message {
+                font-size: 17px;
+                color: #2D2D2D;
+                text-align: center;
+                margin-bottom: 40px;
+                line-height: 1.7;
+                font-weight: 500;
+            }
+            .plan-showcase {
+                background: linear-gradient(135deg, #7C2B86 0%, #E91E63 100%);
+                border-radius: 16px;
+                padding: 32px;
+                text-align: center;
+                margin: 32px 0;
+                color: white;
+            }
+            .plan-name {
+                font-size: 32px;
+                font-weight: 800;
+                margin-bottom: 12px;
+            }
+            .plan-description {
+                font-size: 16px;
+                margin-bottom: 20px;
+                opacity: 0.9;
+            }
+            .features-list {
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 12px;
+                padding: 20px;
+                margin: 20px 0;
+            }
+            .feature-item {
+                display: flex;
+                align-items: center;
+                margin-bottom: 12px;
+                font-size: 15px;
+            }
+            .feature-icon {
+                margin-right: 12px;
+                font-size: 18px;
+            }
+            .cta-section {
+                background: linear-gradient(135deg, #F8F4FF 0%, #FFF0F8 100%);
+                border-radius: 16px;
+                padding: 32px;
+                text-align: center;
+                margin: 32px 0;
+                border: 2px solid #E1BEE7;
+            }
+            .cta-title {
+                font-size: 20px;
+                font-weight: 700;
+                color: #7C2B86;
+                margin-bottom: 12px;
+            }
+            .cta-text {
+                font-size: 16px;
+                color: #2D2D2D;
+                margin-bottom: 20px;
+            }
+            .expiry-info {
+                background: #FFF8E1;
+                border: 2px solid #FFB74D;
+                border-radius: 12px;
+                padding: 20px;
+                margin: 24px 0;
+                text-align: center;
+            }
+            .expiry-title {
+                font-weight: 700;
+                color: #E65100;
+                margin-bottom: 8px;
+                font-size: 16px;
+            }
+            .expiry-text {
+                font-size: 15px;
+                color: #4E342E;
+            }
+            .footer {
+                background: #F8F9FA;
+                padding: 32px 40px;
+                text-align: center;
+                border-top: 1px solid #E9ECEF;
+            }
+            .footer-logo {
+                font-size: 24px;
+                font-weight: 700;
+                background: linear-gradient(135deg, #7C2B86, #E91E63);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 16px;
+            }
+            .footer-text {
+                font-size: 14px;
+                color: #6C757D;
+                margin-bottom: 8px;
+            }
+            @keyframes bounce {
+                0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+                40% { transform: translateY(-10px); }
+                60% { transform: translateY(-5px); }
+            }
+            @media (max-width: 600px) {
+                .container { margin: 10px; }
+                .header, .content, .footer { padding: 24px; }
+                .gift-title { font-size: 24px; }
+                .plan-name { font-size: 28px; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="gift-icon">🎁</div>
+                <div class="logo">Circle</div>
+                <div class="header-subtitle">Connect • Match • Belong</div>
+                <div class="gift-badge">✨ Sponsored by Circle</div>
+            </div>
+            
+            <div class="content">
+                <div class="gift-title">Surprise, ${name}! 🎉</div>
+                
+                <div class="gift-message">
+                    Great news! You've been gifted <strong>${planName}</strong> access to Circle! 
+                    This special upgrade is sponsored by our team to enhance your experience and help you connect with amazing people.
+                </div>
+                
+                <div class="plan-showcase">
+                    <div class="plan-name">${planName}</div>
+                    <div class="plan-description">Your premium experience starts now!</div>
+                    
+                    <div class="features-list">
+                        <div class="feature-item">
+                            <span class="feature-icon">💫</span>
+                            <span>Unlimited matches every day</span>
+                        </div>
+                        <div class="feature-item">
+                            <span class="feature-icon">📸</span>
+                            <span>See Instagram usernames</span>
+                        </div>
+                        <div class="feature-item">
+                            <span class="feature-icon">🚫</span>
+                            <span>Ad-free experience</span>
+                        </div>
+                        <div class="feature-item">
+                            <span class="feature-icon">👑</span>
+                            <span>Premium badge on your profile</span>
+                        </div>
+                        <div class="feature-item">
+                            <span class="feature-icon">🎯</span>
+                            <span>Advanced matching filters</span>
+                        </div>
+                        ${planType === 'premium_plus' ? `
+                        <div class="feature-item">
+                            <span class="feature-icon">💖</span>
+                            <span>See who liked you</span>
+                        </div>
+                        <div class="feature-item">
+                            <span class="feature-icon">🚀</span>
+                            <span>Boost your profile visibility</span>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+                
+                <div class="cta-section">
+                    <div class="cta-title">Ready to explore your premium features? 🚀</div>
+                    <div class="cta-text">Open the Circle app and start enjoying your enhanced experience!</div>
+                </div>
+                
+                <div class="expiry-info">
+                    <div class="expiry-title">📅 Access Details</div>
+                    <div class="expiry-text">${expiryText}</div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">Enjoy your premium experience! 💜</div>
+                <div class="footer-text">This upgrade is our gift to you.</div>
+                
+                <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
+                    This is an automated message from Circle. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
+
+  /**
+   * Get subscription confirmation email template
+   */
+  private getSubscriptionConfirmationTemplate(name: string, planType: string, amount: number, currency: string, expiresAt?: string): string {
+    const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
+    const formattedAmount = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency.toUpperCase()
+    }).format(amount)
+    
+    const expiryText = expiresAt 
+      ? `Your subscription renews on ${new Date(expiresAt).toLocaleDateString()}.`
+      : 'Your subscription details are available in your account.'
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Welcome to ${planName}! - Circle</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+                line-height: 1.6;
+                color: #1F1147;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 0;
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                min-height: 100vh;
+            }
+            .container {
+                background: #FFFFFF;
+                border-radius: 24px;
+                margin: 20px;
+                padding: 0;
+                box-shadow: 0 20px 40px rgba(31, 17, 71, 0.3);
+                overflow: hidden;
+            }
+            .header {
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                padding: 40px;
+                text-align: center;
+                color: white;
+                position: relative;
+            }
+            .success-icon {
+                font-size: 64px;
+                margin-bottom: 16px;
+                display: block;
+                animation: pulse 2s infinite;
+            }
+            .logo {
+                font-size: 36px;
+                font-weight: 800;
+                color: #FFFFFF;
+                margin-bottom: 8px;
+                letter-spacing: -1px;
+            }
+            .header-subtitle {
+                font-size: 18px;
+                color: rgba(255, 255, 255, 0.9);
+                font-weight: 500;
+            }
+            .premium-badge {
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 20px;
+                padding: 8px 16px;
+                display: inline-block;
+                margin-top: 16px;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            .content {
+                padding: 40px;
+            }
+            .welcome-title {
+                font-size: 28px;
+                font-weight: 700;
+                color: #1F1147;
+                text-align: center;
+                margin-bottom: 16px;
+            }
+            .welcome-message {
+                font-size: 17px;
+                color: #2D2D2D;
+                text-align: center;
+                margin-bottom: 40px;
+                line-height: 1.7;
+                font-weight: 500;
+            }
+            .subscription-details {
+                background: linear-gradient(135deg, #F8F4FF 0%, #FFF0F8 100%);
+                border-radius: 16px;
+                padding: 32px;
+                margin: 32px 0;
+                border: 2px solid #E1BEE7;
+            }
+            .detail-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 16px;
+                padding-bottom: 16px;
+                border-bottom: 1px solid #E1BEE7;
+            }
+            .detail-row:last-child {
+                margin-bottom: 0;
+                padding-bottom: 0;
+                border-bottom: none;
+            }
+            .detail-label {
+                font-weight: 600;
+                color: #7C2B86;
+            }
+            .detail-value {
+                font-weight: 700;
+                color: #1F1147;
+            }
+            .features-showcase {
+                background: linear-gradient(135deg, #7C2B86 0%, #E91E63 100%);
+                border-radius: 16px;
+                padding: 32px;
+                text-align: center;
+                margin: 32px 0;
+                color: white;
+            }
+            .features-title {
+                font-size: 24px;
+                font-weight: 700;
+                margin-bottom: 20px;
+            }
+            .features-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+                margin-top: 20px;
+            }
+            .feature-card {
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 12px;
+                padding: 16px;
+                text-align: center;
+            }
+            .feature-icon {
+                font-size: 24px;
+                margin-bottom: 8px;
+                display: block;
+            }
+            .feature-text {
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .next-steps {
+                background: #E8F5E8;
+                border: 2px solid #4CAF50;
+                border-radius: 12px;
+                padding: 24px;
+                margin: 24px 0;
+            }
+            .next-steps-title {
+                font-weight: 700;
+                color: #2E7D32;
+                margin-bottom: 12px;
+                font-size: 16px;
+            }
+            .next-steps-text {
+                font-size: 15px;
+                color: #1B5E20;
+                line-height: 1.6;
+            }
+            .footer {
+                background: #F8F9FA;
+                padding: 32px 40px;
+                text-align: center;
+                border-top: 1px solid #E9ECEF;
+            }
+            .footer-logo {
+                font-size: 24px;
+                font-weight: 700;
+                background: linear-gradient(135deg, #7C2B86, #E91E63);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 16px;
+            }
+            .footer-text {
+                font-size: 14px;
+                color: #6C757D;
+                margin-bottom: 8px;
+            }
+            @keyframes pulse {
+                0% { transform: scale(1); }
+                50% { transform: scale(1.05); }
+                100% { transform: scale(1); }
+            }
+            @media (max-width: 600px) {
+                .container { margin: 10px; }
+                .header, .content, .footer { padding: 24px; }
+                .welcome-title { font-size: 24px; }
+                .features-grid { grid-template-columns: 1fr; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="success-icon">🚀</div>
+                <div class="logo">Circle</div>
+                <div class="header-subtitle">Connect • Match • Belong</div>
+                <div class="premium-badge">✨ ${planName} Member</div>
+            </div>
+            
+            <div class="content">
+                <div class="welcome-title">Welcome to ${planName}, ${name}! 🎉</div>
+                
+                <div class="welcome-message">
+                    Thank you for subscribing to <strong>${planName}</strong>! Your payment has been processed successfully, 
+                    and you now have access to all premium features. Get ready to supercharge your Circle experience!
+                </div>
+                
+                <div class="subscription-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Plan:</span>
+                        <span class="detail-value">${planName}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Amount Paid:</span>
+                        <span class="detail-value">${formattedAmount}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Billing:</span>
+                        <span class="detail-value">Monthly</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Status:</span>
+                        <span class="detail-value" style="color: #22C55E;">✅ Active</span>
+                    </div>
+                </div>
+                
+                <div class="features-showcase">
+                    <div class="features-title">Your Premium Features</div>
+                    <div class="features-grid">
+                        <div class="feature-card">
+                            <span class="feature-icon">💫</span>
+                            <div class="feature-text">Unlimited Matches</div>
+                        </div>
+                        <div class="feature-card">
+                            <span class="feature-icon">📸</span>
+                            <div class="feature-text">Instagram Access</div>
+                        </div>
+                        <div class="feature-card">
+                            <span class="feature-icon">🚫</span>
+                            <div class="feature-text">Ad-Free Experience</div>
+                        </div>
+                        <div class="feature-card">
+                            <span class="feature-icon">👑</span>
+                            <div class="feature-text">Premium Badge</div>
+                        </div>
+                        ${planType === 'premium_plus' ? `
+                        <div class="feature-card">
+                            <span class="feature-icon">💖</span>
+                            <div class="feature-text">See Who Liked You</div>
+                        </div>
+                        <div class="feature-card">
+                            <span class="feature-icon">🚀</span>
+                            <div class="feature-text">Profile Boost</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+                
+                <div class="next-steps">
+                    <div class="next-steps-title">🎯 What's Next?</div>
+                    <div class="next-steps-text">
+                        Open the Circle app to start using your premium features! ${expiryText} 
+                        You can manage your subscription anytime in your account settings.
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">Thank you for choosing ${planName}! 💜</div>
+                <div class="footer-text">Questions? We're here to help.</div>
+                
+                <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
+                    This is an automated message from Circle. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
             </div>
         </div>
     </body>

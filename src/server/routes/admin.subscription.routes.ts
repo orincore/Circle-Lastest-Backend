@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { requireAdmin, type AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
 import { logger } from '../config/logger.js'
 import { supabase } from '../config/supabase.js'
+import EmailService from '../services/emailService.js'
 
 const router = express.Router()
 
@@ -231,6 +232,37 @@ router.post('/create', requireAuth, requireAdmin, async (req: AdminRequest, res)
 
     if (error) {
       throw error
+    }
+
+    // Get user details for email
+    const { data: userProfile, error: profileError } = await supabase
+      .from('profiles')
+      .select('email, username')
+      .eq('id', user_id)
+      .single()
+
+    if (userProfile && userProfile.email) {
+      // Send sponsored subscription email
+      try {
+        await EmailService.sendSponsoredSubscriptionEmail(
+          userProfile.email,
+          userProfile.username || 'User',
+          plan_type,
+          expires_at ? new Date(expires_at).toISOString() : undefined
+        )
+        logger.info({ 
+          subscriptionId: data.id,
+          userId: user_id,
+          email: userProfile.email
+        }, 'Sponsored subscription email sent')
+      } catch (emailError) {
+        logger.error({ 
+          error: emailError,
+          subscriptionId: data.id,
+          userId: user_id
+        }, 'Failed to send sponsored subscription email')
+        // Don't fail the subscription creation if email fails
+      }
     }
 
     logger.info({ 

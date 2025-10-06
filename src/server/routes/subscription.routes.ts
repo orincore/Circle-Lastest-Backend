@@ -3,6 +3,7 @@ import { SubscriptionService } from '../services/subscription.service.js'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { PaymentGateway } from '../services/payment.service.js'
 import { logger } from '../config/logger.js'
+import EmailService from '../services/emailService.js'
 
 const router = express.Router()
 
@@ -194,6 +195,30 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
       amount / 100, // Convert back to dollars
       'USD'
     )
+
+    // Send subscription confirmation email
+    try {
+      await EmailService.sendSubscriptionConfirmationEmail(
+        req.user!.email,
+        req.user!.username || 'User',
+        plan_type,
+        amount / 100, // Convert back to dollars
+        'USD',
+        expiresAt.toISOString()
+      )
+      logger.info({ 
+        userId, 
+        email: req.user!.email,
+        planType: plan_type
+      }, 'Subscription confirmation email sent')
+    } catch (emailError) {
+      logger.error({ 
+        error: emailError,
+        userId,
+        planType: plan_type
+      }, 'Failed to send subscription confirmation email')
+      // Don't fail the subscription if email fails
+    }
 
     logger.info({ userId, plan_type, paymentSubscriptionId: paymentSubscription.id }, 'User subscribed to premium')
 
