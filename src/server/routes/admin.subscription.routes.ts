@@ -1,6 +1,5 @@
 import express from 'express'
 import { SubscriptionService } from '../services/subscription.service.js'
-import emailService from '../services/emailService.js'
 import { requireAuth } from '../middleware/auth.js'
 import { requireAdmin, type AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
 import { logger } from '../config/logger.js'
@@ -155,38 +154,6 @@ router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: Ad
       userId: subscription.user_id 
     }, 'Subscription cancelled by admin')
 
-    // Send cancellation email
-    try {
-      // Get user details for email
-      const { data: userProfile, error: userError } = await supabase
-        .from('profiles')
-        .select('email, first_name, last_name')
-        .eq('id', subscription.user_id)
-        .single()
-
-      if (!userError && userProfile) {
-        console.log('📧 Sending admin cancellation email to:', userProfile.email)
-        
-        const userName = `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User'
-        
-        const emailResult = await emailService.sendSubscriptionCancellationEmail(
-          userProfile.email,
-          userName,
-          subscription.plan_type as 'premium' | 'premium_plus',
-          subscription.expires_at
-        )
-        
-        if (emailResult) {
-          logger.info({ userEmail: userProfile.email, subscriptionId }, 'Admin cancellation email sent successfully')
-        } else {
-          logger.error({ userEmail: userProfile.email, subscriptionId }, 'Failed to send admin cancellation email')
-        }
-      }
-    } catch (emailError) {
-      logger.error({ error: emailError, subscriptionId }, 'Error sending admin cancellation email')
-      // Don't fail the cancellation if email fails
-    }
-
     res.json({
       message: 'Subscription cancelled successfully',
       subscription: data
@@ -272,36 +239,6 @@ router.post('/create', requireAuth, requireAdmin, async (req: AdminRequest, res)
       userId: user_id,
       planType: plan_type
     }, 'Subscription created by admin')
-
-    // Send sponsored subscription email
-    try {
-      // Get user details for email
-      const { data: userProfile, error: userError } = await supabase
-        .from('profiles')
-        .select('email, first_name, last_name')
-        .eq('id', user_id)
-        .single()
-
-      if (!userError && userProfile) {
-        const userName = `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User'
-        
-        const emailResult = await emailService.sendSponsoredSubscriptionEmail(
-          userProfile.email,
-          userName,
-          plan_type as 'premium' | 'premium_plus',
-          data.expires_at
-        )
-        
-        if (emailResult) {
-          logger.info({ userEmail: userProfile.email, subscriptionId: data.id }, 'Sponsored subscription email sent successfully')
-        } else {
-          logger.error({ userEmail: userProfile.email, subscriptionId: data.id }, 'Failed to send sponsored subscription email')
-        }
-      }
-    } catch (emailError) {
-      logger.error({ error: emailError, subscriptionId: data.id }, 'Failed to send sponsored subscription email')
-      // Don't fail the subscription creation if email fails
-    }
 
     res.status(201).json({
       message: 'Subscription created successfully',
@@ -389,55 +326,6 @@ router.get('/user/:userId/history', requireAuth, requireAdmin, async (req: Admin
     })
   } catch (error) {
     logger.error({ error, userId: req.params.userId }, 'Error fetching user subscription history')
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-// Test email sending (admin only)
-router.post('/test-email', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
-  try {
-    const { email, type = 'otp' } = req.body
-
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' })
-    }
-
-    console.log('🔍 Testing email sending to:', email, 'type:', type)
-    
-    let success = false
-    let message = ''
-
-    switch (type) {
-      case 'sponsored':
-        success = await emailService.sendSponsoredSubscriptionEmail(email, 'Test User', 'premium', new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
-        message = 'Sponsored subscription test email sent successfully'
-        break
-      case 'confirmation':
-        success = await emailService.sendSubscriptionConfirmationEmail(email, 'Test User', 'premium', 9.99, 'USD', 'VISA ending in 4242', new Date().toISOString(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), true)
-        message = 'Subscription confirmation test email sent successfully'
-        break
-      case 'cancellation':
-        success = await emailService.sendSubscriptionCancellationEmail(email, 'Test User', 'premium', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString())
-        message = 'Subscription cancellation test email sent successfully'
-        break
-      default:
-        success = await emailService.sendOTPEmail(email, '123456', 'Test User')
-        message = 'OTP test email sent successfully'
-    }
-
-    if (success) {
-      res.json({ 
-        success: true, 
-        message 
-      })
-    } else {
-      res.status(500).json({ 
-        success: false, 
-        error: `Failed to send ${type} test email` 
-      })
-    }
-  } catch (error) {
-    logger.error({ error }, 'Error sending test email')
     res.status(500).json({ error: 'Internal server error' })
   }
 })
