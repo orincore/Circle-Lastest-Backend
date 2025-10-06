@@ -269,6 +269,42 @@ export class DummyPaymentGateway {
     return intent
   }
 
+  // Process refund
+  static async processRefund(
+    subscriptionId: string,
+    amount: number,
+    currency: string = 'USD'
+  ): Promise<{ id: string; amount: number; currency: string; status: string }> {
+    const refundId = `re_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    
+    // Simulate refund processing delay
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
+    // Simulate success (95% success rate for refunds)
+    const isSuccess = Math.random() > 0.05
+    
+    const refund = {
+      id: refundId,
+      amount,
+      currency,
+      status: isSuccess ? 'succeeded' : 'failed'
+    }
+    
+    logger.info({ 
+      refundId, 
+      subscriptionId,
+      amount, 
+      currency,
+      status: refund.status 
+    }, 'Dummy payment gateway: Processed refund')
+    
+    if (!isSuccess) {
+      throw new Error('Refund processing failed')
+    }
+    
+    return refund
+  }
+
   // Clear all test data (for testing purposes)
   static clearTestData(): void {
     this.paymentIntents.clear()

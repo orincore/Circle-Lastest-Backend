@@ -2592,6 +2592,388 @@ class EmailService {
     </html>
     `
   }
+
+  /**
+   * Send refund request confirmation email
+   */
+  async sendRefundRequestConfirmation(
+    email: string,
+    username: string,
+    planType: string,
+    amount: number,
+    currency: string,
+    refundId: string
+  ): Promise<boolean> {
+    try {
+      const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
+      const formattedAmount = `${currency.toUpperCase()} ${amount.toFixed(2)}`
+
+      const mailOptions = {
+        from: `"Circle Support" <${process.env.SMTP_USER}>`,
+        to: email,
+        subject: '🔄 Refund Request Received - Circle',
+        html: this.getRefundRequestTemplate(username, planName, formattedAmount, refundId)
+      }
+
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Refund request confirmation email sent:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send refund request confirmation email:', error)
+      return false
+    }
+  }
+
+  /**
+   * Send refund approval email
+   */
+  async sendRefundApprovalEmail(
+    email: string,
+    username: string,
+    planType: string,
+    amount: number,
+    currency: string
+  ): Promise<boolean> {
+    try {
+      const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
+      const formattedAmount = `${currency.toUpperCase()} ${amount.toFixed(2)}`
+
+      const mailOptions = {
+        from: `"Circle Support" <${process.env.SMTP_USER}>`,
+        to: email,
+        subject: '✅ Refund Approved - Circle',
+        html: this.getRefundApprovalTemplate(username, planName, formattedAmount)
+      }
+
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Refund approval email sent:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send refund approval email:', error)
+      return false
+    }
+  }
+
+  /**
+   * Send refund rejection email
+   */
+  async sendRefundRejectionEmail(
+    email: string,
+    username: string,
+    planType: string,
+    reason: string
+  ): Promise<boolean> {
+    try {
+      const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
+
+      const mailOptions = {
+        from: `"Circle Support" <${process.env.SMTP_USER}>`,
+        to: email,
+        subject: '❌ Refund Request Update - Circle',
+        html: this.getRefundRejectionTemplate(username, planName, reason)
+      }
+
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Refund rejection email sent:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send refund rejection email:', error)
+      return false
+    }
+  }
+
+  /**
+   * Get refund request confirmation email template
+   */
+  private getRefundRequestTemplate(username: string, planName: string, amount: string, refundId: string): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Refund Request Received - Circle</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8f9fa; }
+            .container { max-width: 600px; margin: 0 auto; background: white; }
+            .header { text-align: center; padding: 40px 20px; background: linear-gradient(135deg, #7C2B86, #A16AE8); color: white; }
+            .logo { width: 60px; height: 60px; background: rgba(255,255,255,0.2); border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; }
+            .title { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
+            .subtitle { font-size: 16px; opacity: 0.9; }
+            .content { padding: 40px 20px; }
+            .greeting { font-size: 20px; font-weight: 600; color: #1F1147; margin-bottom: 20px; }
+            .message { font-size: 16px; line-height: 1.6; color: #4A5568; margin-bottom: 30px; }
+            .info-card { background: #f8f9fa; border-radius: 12px; overflow: hidden; margin: 30px 0; }
+            .info-table { width: 100%; border-collapse: collapse; }
+            .next-steps { background: #f0f9ff; padding: 24px; border-radius: 12px; margin: 30px 0; }
+            .next-steps-title { font-size: 18px; font-weight: 700; color: #1F1147; margin-bottom: 12px; }
+            .next-steps-text { font-size: 14px; line-height: 1.6; color: #4A5568; }
+            .footer { text-align: center; padding: 40px 20px; background: #f8f9fa; color: #6B7280; }
+            .footer-logo { font-size: 24px; font-weight: 800; color: #7C2B86; margin-bottom: 12px; }
+            .footer-text { font-size: 14px; margin-bottom: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">C</div>
+                <div class="title">Refund Request Received</div>
+                <div class="subtitle">We've received your refund request</div>
+            </div>
+            
+            <div class="content">
+                <div class="greeting">Hi ${username}! 👋</div>
+                
+                <div class="message">
+                    We've successfully received your refund request for your ${planName} subscription. 
+                    Our team will review your request and get back to you within 2 business days.
+                </div>
+                
+                <div class="info-card">
+                    <table class="info-table">
+                        <tr style="border-bottom: 2px solid #E3F2FD;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Refund ID:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">${refundId.substring(0, 8)}...</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #E3F2FD;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F9FA;">Plan:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F9FA;">${planName}</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #E3F2FD;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Amount:</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">${amount}</td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F9FA;">Status:</td>
+                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F9FA;">⏳ Under Review</td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <div class="next-steps">
+                    <div class="next-steps-title">📋 What happens next?</div>
+                    <div class="next-steps-text">
+                        • Our team will review your request within 2 business days<br>
+                        • You'll receive an email with the decision<br>
+                        • If approved, the refund will be processed to your original payment method<br>
+                        • Refunds typically take 5-10 business days to appear in your account
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">Thank you for using Circle! 💜</div>
+                <div class="footer-text">If you have any questions, please contact support@circle.orincore.com</div>
+                
+                <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
+                    This is an automated message from Circle. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
+
+  /**
+   * Get refund approval email template
+   */
+  private getRefundApprovalTemplate(username: string, planName: string, amount: string): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Refund Approved - Circle</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8f9fa; }
+            .container { max-width: 600px; margin: 0 auto; background: white; }
+            .header { text-align: center; padding: 40px 20px; background: linear-gradient(135deg, #7C2B86, #A16AE8); color: white; }
+            .logo { width: 60px; height: 60px; background: rgba(255,255,255,0.2); border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; }
+            .title { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
+            .subtitle { font-size: 16px; opacity: 0.9; }
+            .content { padding: 40px 20px; }
+            .greeting { font-size: 20px; font-weight: 600; color: #1F1147; margin-bottom: 20px; }
+            .message { font-size: 16px; line-height: 1.6; color: #4A5568; margin-bottom: 30px; }
+            .info-card { background: #f8f9fa; border-radius: 12px; overflow: hidden; margin: 30px 0; }
+            .info-table { width: 100%; border-collapse: collapse; }
+            .next-steps { background: #f0f9ff; padding: 24px; border-radius: 12px; margin: 30px 0; }
+            .next-steps-title { font-size: 18px; font-weight: 700; color: #1F1147; margin-bottom: 12px; }
+            .next-steps-text { font-size: 14px; line-height: 1.6; color: #4A5568; }
+            .footer { text-align: center; padding: 40px 20px; background: #f8f9fa; color: #6B7280; }
+            .footer-logo { font-size: 24px; font-weight: 800; color: #7C2B86; margin-bottom: 12px; }
+            .footer-text { font-size: 14px; margin-bottom: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">C</div>
+                <div class="title">Refund Approved ✅</div>
+                <div class="subtitle">Your refund has been processed</div>
+            </div>
+            
+            <div class="content">
+                <div class="greeting">Hi ${username}! 👋</div>
+                
+                <div class="message">
+                    Great news! Your refund request for your ${planName} subscription has been approved and processed. 
+                    The refund amount will be credited to your original payment method within 5-10 business days.
+                </div>
+                
+                <div class="info-card">
+                    <table class="info-table">
+                        <tr style="border-bottom: 2px solid #E8F5E8;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Plan:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">${planName}</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #E8F5E8;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F9FA;">Refund Amount:</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F9FA;">${amount}</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #E8F5E8;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">✅ Processed</td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F9FA;">Processing Time:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F9FA;">5-10 business days</td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <div class="next-steps">
+                    <div class="next-steps-title">💳 Important Information</div>
+                    <div class="next-steps-text">
+                        • The refund will appear on your original payment method<br>
+                        • Processing time depends on your bank or payment provider<br>
+                        • Your premium features have been deactivated<br>
+                        • You can resubscribe anytime to restore premium access
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">Thank you for using Circle! 💜</div>
+                <div class="footer-text">We hope to see you back soon!</div>
+                
+                <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
+                    This is an automated message from Circle. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
+
+  /**
+   * Get refund rejection email template
+   */
+  private getRefundRejectionTemplate(username: string, planName: string, reason: string): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Refund Request Update - Circle</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8f9fa; }
+            .container { max-width: 600px; margin: 0 auto; background: white; }
+            .header { text-align: center; padding: 40px 20px; background: linear-gradient(135deg, #7C2B86, #A16AE8); color: white; }
+            .logo { width: 60px; height: 60px; background: rgba(255,255,255,0.2); border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; }
+            .title { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
+            .subtitle { font-size: 16px; opacity: 0.9; }
+            .content { padding: 40px 20px; }
+            .greeting { font-size: 20px; font-weight: 600; color: #1F1147; margin-bottom: 20px; }
+            .message { font-size: 16px; line-height: 1.6; color: #4A5568; margin-bottom: 30px; }
+            .info-card { background: #f8f9fa; border-radius: 12px; overflow: hidden; margin: 30px 0; }
+            .info-table { width: 100%; border-collapse: collapse; }
+            .next-steps { background: #f0f9ff; padding: 24px; border-radius: 12px; margin: 30px 0; }
+            .next-steps-title { font-size: 18px; font-weight: 700; color: #1F1147; margin-bottom: 12px; }
+            .next-steps-text { font-size: 14px; line-height: 1.6; color: #4A5568; }
+            .renew-section { background: #f0fff4; padding: 24px; border-radius: 12px; margin: 30px 0; }
+            .renew-title { font-size: 18px; font-weight: 700; color: #1F1147; margin-bottom: 12px; }
+            .renew-text { font-size: 14px; line-height: 1.6; color: #4A5568; }
+            .footer { text-align: center; padding: 40px 20px; background: #f8f9fa; color: #6B7280; }
+            .footer-logo { font-size: 24px; font-weight: 800; color: #7C2B86; margin-bottom: 12px; }
+            .footer-text { font-size: 14px; margin-bottom: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">C</div>
+                <div class="title">Refund Request Update</div>
+                <div class="subtitle">We've reviewed your refund request</div>
+            </div>
+            
+            <div class="content">
+                <div class="greeting">Hi ${username}! 👋</div>
+                
+                <div class="message">
+                    Thank you for your refund request for your ${planName} subscription. 
+                    After careful review, we're unable to process your refund at this time.
+                </div>
+                
+                <div class="info-card">
+                    <table class="info-table">
+                        <tr style="border-bottom: 2px solid #FFE0E0;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Plan:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">${planName}</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #FFE0E0;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF8F8;">Status:</td>
+                            <td style="font-weight: 700; color: #EF4444; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFF8F8;">❌ Not Approved</td>
+                        </tr>
+                        <tr>
+                            <td colspan="2" style="font-weight: 600; color: #1F1147; padding: 16px 20px; font-size: 16px; background: #FFFFFF;">
+                                <strong>Reason:</strong><br>
+                                <span style="font-weight: 400; color: #666;">${reason}</span>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <div class="next-steps">
+                    <div class="next-steps-title">📞 Need Help?</div>
+                    <div class="next-steps-text">
+                        If you have questions about this decision or believe there's been an error, 
+                        please contact our support team at support@circle.orincore.com. 
+                        We're here to help and will be happy to review your case.
+                    </div>
+                </div>
+                
+                <div class="renew-section">
+                    <div class="renew-title">Continue Enjoying Premium 🚀</div>
+                    <div class="renew-text">
+                        Your ${planName} subscription is still active! Continue enjoying unlimited matches, 
+                        Instagram access, and all your favorite premium features.
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">Thank you for using Circle! 💜</div>
+                <div class="footer-text">We appreciate your understanding.</div>
+                
+                <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
+                    This is an automated message from Circle. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
 }
 
 export default new EmailService()
