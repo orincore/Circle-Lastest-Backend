@@ -1,6 +1,6 @@
 import express from 'express'
 import { SubscriptionService } from '../services/subscription.service.js'
-import EmailService from '../services/emailService.js'
+import emailService from '../services/emailService.js'
 import { requireAuth } from '../middleware/auth.js'
 import { requireAdmin, type AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
 import { logger } from '../config/logger.js'
@@ -169,7 +169,7 @@ router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: Ad
         
         const userName = `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User'
         
-        const emailResult = await EmailService.sendSubscriptionCancellationEmail(
+        const emailResult = await emailService.sendSubscriptionCancellationEmail(
           userProfile.email,
           userName,
           subscription.plan_type as 'premium' | 'premium_plus',
@@ -285,7 +285,7 @@ router.post('/create', requireAuth, requireAdmin, async (req: AdminRequest, res)
       if (!userError && userProfile) {
         const userName = `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User'
         
-        const emailResult = await EmailService.sendSponsoredSubscriptionEmail(
+        const emailResult = await emailService.sendSponsoredSubscriptionEmail(
           userProfile.email,
           userName,
           plan_type as 'premium' | 'premium_plus',
@@ -409,19 +409,19 @@ router.post('/test-email', requireAuth, requireAdmin, async (req: AdminRequest, 
 
     switch (type) {
       case 'sponsored':
-        success = await EmailService.sendSponsoredSubscriptionEmail(email, 'Test User', 'premium', new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
+        success = await emailService.sendSponsoredSubscriptionEmail(email, 'Test User', 'premium', new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
         message = 'Sponsored subscription test email sent successfully'
         break
       case 'confirmation':
-        success = await EmailService.sendSubscriptionConfirmationEmail(email, 'Test User', 'premium', 9.99, 'USD', 'VISA ending in 4242', new Date().toISOString(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), true)
+        success = await emailService.sendSubscriptionConfirmationEmail(email, 'Test User', 'premium', 9.99, 'USD', 'VISA ending in 4242', new Date().toISOString(), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), true)
         message = 'Subscription confirmation test email sent successfully'
         break
       case 'cancellation':
-        success = await EmailService.sendSubscriptionCancellationEmail(email, 'Test User', 'premium', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString())
+        success = await emailService.sendSubscriptionCancellationEmail(email, 'Test User', 'premium', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString())
         message = 'Subscription cancellation test email sent successfully'
         break
       default:
-        success = await EmailService.sendOTPEmail(email, '123456', 'Test User')
+        success = await emailService.sendOTPEmail(email, '123456', 'Test User')
         message = 'OTP test email sent successfully'
     }
 

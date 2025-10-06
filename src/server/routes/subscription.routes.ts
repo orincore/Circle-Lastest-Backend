@@ -1,6 +1,6 @@
 import express from 'express'
 import { SubscriptionService } from '../services/subscription.service.js'
-import EmailService from '../services/emailService.js'
+import emailService from '../services/emailService.js'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { PaymentGateway } from '../services/payment.service.js'
 import { logger } from '../config/logger.js'
@@ -224,7 +224,7 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
         
         console.log('📧 Calling sendSubscriptionConfirmationEmail...')
         
-        const emailResult = await EmailService.sendSubscriptionConfirmationEmail(
+        const emailResult = await emailService.sendSubscriptionConfirmationEmail(
           userProfile.email,
           userName,
           plan_type as 'premium' | 'premium_plus',
@@ -296,7 +296,7 @@ router.post('/cancel', requireAuth, async (req: AuthRequest, res) => {
           
           const userName = `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User'
           
-          const emailResult = await EmailService.sendSubscriptionCancellationEmail(
+          const emailResult = await emailService.sendSubscriptionCancellationEmail(
             userProfile.email,
             userName,
             subscription.plan_type as 'premium' | 'premium_plus',

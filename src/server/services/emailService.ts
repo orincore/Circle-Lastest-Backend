@@ -1216,6 +1216,8 @@ class EmailService {
     expiryDate?: string
   ): Promise<boolean> {
     try {
+      console.log('🔍 DEBUG: sendSponsoredSubscriptionEmail called with:', { email, userName, planType, expiryDate })
+      console.log('🔍 DEBUG: Transporter exists:', !!this.transporter)
       console.log('📧 Sending sponsored subscription email to:', email)
       
       const planName = planType === 'premium_plus' ? 'Premium+' : 'Premium'
@@ -1284,11 +1286,15 @@ class EmailService {
         `
       }
 
-      await this.transporter.sendMail(mailOptions)
-      console.log('📧 Sponsored subscription email sent successfully to:', email)
+      console.log('🔍 DEBUG: About to send mail with options:', { from: mailOptions.from, to: mailOptions.to, subject: mailOptions.subject })
+      
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('🔍 DEBUG: Email send result:', result)
+      console.log('📧 Sponsored subscription email sent successfully to:', email, 'MessageId:', result.messageId)
       return true
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Failed to send sponsored subscription email:', error)
+      console.error('❌ Error details:', error.message, error.stack)
       return false
     }
   }
@@ -1308,6 +1314,8 @@ class EmailService {
     autoRenew: boolean = true
   ): Promise<boolean> {
     try {
+      console.log('🔍 DEBUG: sendSubscriptionConfirmationEmail called with:', { email, userName, planType, amount, currency })
+      console.log('🔍 DEBUG: Transporter exists:', !!this.transporter)
       console.log('📧 Sending subscription confirmation email to:', email)
       
       const planName = planType === 'premium_plus' ? 'Premium+' : 'Premium'
@@ -1406,11 +1414,15 @@ class EmailService {
         `
       }
 
-      await this.transporter.sendMail(mailOptions)
-      console.log('📧 Subscription confirmation email sent successfully to:', email)
+      console.log('🔍 DEBUG: About to send confirmation mail with options:', { from: mailOptions.from, to: mailOptions.to, subject: mailOptions.subject })
+      
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('🔍 DEBUG: Confirmation email send result:', result)
+      console.log('📧 Subscription confirmation email sent successfully to:', email, 'MessageId:', result.messageId)
       return true
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Failed to send subscription confirmation email:', error)
+      console.error('❌ Error details:', error.message, error.stack)
       return false
     }
   }
