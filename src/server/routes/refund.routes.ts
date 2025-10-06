@@ -45,22 +45,52 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
       refundUserId = user_id
     }
 
-    // For now, create a simple refund record without the complex eligibility checks
-    // This will be improved once the refunds table is created
-    const mockRefund = {
-      id: `refund_${Date.now()}`,
-      subscription_id,
-      user_id: refundUserId,
-      amount: subscription.price_paid || 9.99,
-      currency: subscription.currency || 'USD',
-      reason: reason || 'User requested refund',
-      status: 'pending',
-      requested_at: new Date().toISOString()
+    // Create actual refund record in database
+    const { data: refund, error: refundError } = await supabase
+      .from('refunds')
+      .insert({
+        subscription_id,
+        user_id: refundUserId,
+        amount: subscription.price_paid || 9.99,
+        currency: subscription.currency || 'USD',
+        reason: reason || 'User requested refund',
+        payment_provider: subscription.payment_provider,
+        refund_method: 'original_payment_method'
+      })
+      .select()
+      .single()
+
+    if (refundError) {
+      logger.error({ refundError, subscription_id }, 'Failed to create refund record')
+      return res.status(500).json({ error: 'Failed to create refund request' })
+    }
+
+    // Send notification email to user
+    try {
+      const { data: userProfile } = await supabase
+        .from('profiles')
+        .select('email, username')
+        .eq('id', refundUserId)
+        .single()
+
+      if (userProfile?.email) {
+        const { default: EmailService } = await import('../services/emailService.js')
+        await EmailService.sendRefundRequestConfirmation(
+          userProfile.email,
+          userProfile.username || 'User',
+          subscription.plan_type,
+          refund.amount,
+          refund.currency,
+          refund.id
+        )
+      }
+    } catch (emailError) {
+      logger.warn({ error: emailError, refundId: refund.id }, 'Failed to send refund confirmation email')
     }
 
     res.json({
       success: true,
-      refund: mockRefund,
+      refund,
       message: 'Refund request submitted successfully. You will receive an email confirmation shortly.'
     })
   } catch (error: any) {
@@ -75,14 +105,59 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
 router.get('/my-requests', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    const refunds = await RefundService.getUserRefunds(userId)
+    
+    const { data, error } = await supabase
+      .from('refunds')
+      .select(`
+        *,
+        subscription:subscriptions(plan_type, started_at),
+        processed_by_profile:profiles!refunds_processed_by_fkey(username)
+      `)
+      .eq('user_id', userId)
+      .order('requested_at', { ascending: false })
+
+    if (error) {
+      logger.error({ error, userId }, 'Error getting user refunds')
+      return res.status(500).json({ error: 'Failed to load refunds' })
+    }
 
     res.json({
-      refunds,
-      total: refunds.length
+      refunds: data || [],
+      total: data?.length || 0
     })
   } catch (error) {
     logger.error({ error, userId: req.user!.id }, 'Error getting user refunds')
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Admin: Get refunds for a specific user
+router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    // TODO: Add admin role check
+    const { userId } = req.params
+    
+    const { data, error } = await supabase
+      .from('refunds')
+      .select(`
+        *,
+        subscription:subscriptions(plan_type, started_at),
+        processed_by_profile:profiles!refunds_processed_by_fkey(username)
+      `)
+      .eq('user_id', userId)
+      .order('requested_at', { ascending: false })
+
+    if (error) {
+      logger.error({ error, userId }, 'Error getting user refunds')
+      return res.status(500).json({ error: 'Failed to load refunds' })
+    }
+
+    res.json({
+      refunds: data || [],
+      total: data?.length || 0
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.params.userId }, 'Error getting user refunds')
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -112,14 +187,32 @@ router.get('/admin/all', requireAuth, async (req: AuthRequest, res) => {
     // TODO: Add admin role check
     const { status, limit = 50, offset = 0 } = req.query
 
-    // Mock empty refunds list for now
-    const mockResult = {
-      refunds: [],
-      total: 0
+    let query = supabase
+      .from('refunds')
+      .select(`
+        *,
+        subscription:subscriptions(plan_type, started_at, external_subscription_id),
+        user:profiles!refunds_user_id_fkey(username, email),
+        processed_by_profile:profiles!refunds_processed_by_fkey(username)
+      `, { count: 'exact' })
+      .order('requested_at', { ascending: false })
+
+    if (status && status !== 'all') {
+      query = query.eq('status', status)
     }
 
-    logger.info({ status, limit, offset }, 'Mock: Getting all refunds')
-    res.json(mockResult)
+    const { data, error, count } = await query
+      .range(parseInt(offset as string), parseInt(offset as string) + parseInt(limit as string) - 1)
+
+    if (error) {
+      logger.error({ error }, 'Error getting all refunds')
+      return res.status(500).json({ error: 'Failed to load refunds' })
+    }
+
+    res.json({
+      refunds: data || [],
+      total: count || 0
+    })
   } catch (error) {
     logger.error({ error }, 'Error getting all refunds')
     res.status(500).json({ error: 'Internal server error' })
@@ -138,21 +231,75 @@ router.post('/admin/process/:refundId', requireAuth, async (req: AuthRequest, re
       return res.status(400).json({ error: 'Action must be either "approve" or "reject"' })
     }
 
-    // For now, create a mock processed refund response
-    // This will be replaced with actual refund processing once the table is created
-    const mockProcessedRefund = {
-      id: refundId,
-      status: action === 'approve' ? 'processed' : 'rejected',
-      processed_at: new Date().toISOString(),
-      processed_by: adminUserId,
-      admin_notes: admin_notes || `Refund ${action}d by admin`
+    // Get the refund record
+    const { data: refund, error: fetchError } = await supabase
+      .from('refunds')
+      .select(`
+        *,
+        subscription:subscriptions(*),
+        user:profiles!refunds_user_id_fkey(username, email)
+      `)
+      .eq('id', refundId)
+      .single()
+
+    if (fetchError || !refund) {
+      return res.status(404).json({ error: 'Refund not found' })
     }
 
-    logger.info({ refundId, action, adminUserId }, `Mock refund ${action}d`)
+    if (refund.status !== 'pending') {
+      return res.status(400).json({ error: 'Refund has already been processed' })
+    }
+
+    const newStatus = action === 'approve' ? 'processed' : 'rejected'
+
+    // Update refund status
+    const { data: updatedRefund, error: updateError } = await supabase
+      .from('refunds')
+      .update({
+        status: newStatus,
+        processed_at: new Date().toISOString(),
+        processed_by: adminUserId,
+        admin_notes: admin_notes || `Refund ${action}d by admin`
+      })
+      .eq('id', refundId)
+      .select()
+      .single()
+
+    if (updateError) {
+      logger.error({ updateError, refundId }, 'Failed to update refund status')
+      return res.status(500).json({ error: 'Failed to process refund' })
+    }
+
+    // Send notification email to user
+    try {
+      if (refund.user?.email) {
+        const { default: EmailService } = await import('../services/emailService.js')
+        if (action === 'approve') {
+          await EmailService.sendRefundApprovalEmail(
+            refund.user.email,
+            refund.user.username || 'User',
+            refund.subscription.plan_type,
+            refund.amount,
+            refund.currency
+          )
+        } else {
+          await EmailService.sendRefundRejectionEmail(
+            refund.user.email,
+            refund.user.username || 'User',
+            refund.subscription.plan_type,
+            admin_notes || 'No reason provided'
+          )
+        }
+      }
+    } catch (emailError) {
+      logger.warn({ error: emailError, refundId }, 'Failed to send refund status email')
+    }
+
+    logger.info({ refundId, action, adminUserId }, `Refund ${action}d successfully`)
 
     res.json({
       success: true,
-      refund: mockProcessedRefund,
+      refund: updatedRefund,
       message: `Refund ${action}d successfully`
     })
   } catch (error: any) {
@@ -167,8 +314,14 @@ router.post('/admin/process/:refundId', requireAuth, async (req: AuthRequest, re
 router.get('/admin/stats', requireAuth, async (req: AuthRequest, res) => {
   try {
     // TODO: Add admin role check
-    // Mock stats for now
-    const mockStats = {
+    const { data, error } = await supabase.rpc('get_refund_stats')
+
+    if (error) {
+      logger.error({ error }, 'Error getting refund stats')
+      return res.status(500).json({ error: 'Failed to load refund statistics' })
+    }
+
+    res.json(data || {
       total_requests: 0,
       pending: 0,
       approved: 0,
@@ -177,10 +330,7 @@ router.get('/admin/stats', requireAuth, async (req: AuthRequest, res) => {
       failed: 0,
       total_amount: 0,
       pending_amount: 0
-    }
-
-    logger.info('Mock: Getting refund stats')
-    res.json(mockStats)
+    })
   } catch (error) {
     logger.error({ error }, 'Error getting refund stats')
     res.status(500).json({ error: 'Internal server error' })
