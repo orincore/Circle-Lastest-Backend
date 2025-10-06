@@ -1,6 +1,6 @@
 import express from 'express'
 import { SubscriptionService } from '../services/subscription.service.js'
-import { SubscriptionEmailService } from '../services/subscription-email.service.js'
+import EmailService from '../services/emailService.js'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { PaymentGateway } from '../services/payment.service.js'
 import { logger } from '../config/logger.js'
@@ -199,6 +199,10 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
 
     logger.info({ userId, plan_type, paymentSubscriptionId: paymentSubscription.id }, 'User subscribed to premium')
 
+    // IMMEDIATE EMAIL TEST - This should show up in logs
+    console.log('🚨 IMMEDIATE TEST: This line should appear in logs')
+    logger.info({ userId }, 'IMMEDIATE TEST: Logger version should also appear')
+    
     // Send subscription confirmation email
     console.log('📧 Starting email sending process for user:', userId)
     try {
@@ -213,26 +217,25 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
       console.log('📧 User profile fetch result:', { userProfile, userError })
 
       if (!userError && userProfile) {
-        console.log('📧 User profile found, initializing email service...')
-        const subscriptionEmailService = SubscriptionEmailService.getInstance()
+        console.log('📧 User profile found, sending confirmation email...')
         
-        const emailData = {
-          userEmail: userProfile.email,
-          userName: `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User',
-          planType: plan_type as 'premium' | 'premium_plus',
-          amount: amount / 100, // Convert back to dollars
-          currency: 'USD',
-          paymentMethod: testPaymentMethod.brand ? `${testPaymentMethod.brand.toUpperCase()} ending in ${testPaymentMethod.last4}` : 'Credit Card',
-          startDate: new Date().toISOString(),
-          expiryDate: expiresAt.toISOString(),
-          autoRenew: true,
-          receiptUrl: `${process.env.FRONTEND_URL || 'https://circle.orincore.com'}/profile/subscription`
-        }
-
-        console.log('📧 Email data prepared:', emailData)
+        const userName = `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User'
+        const paymentMethodText = testPaymentMethod.brand ? `${testPaymentMethod.brand.toUpperCase()} ending in ${testPaymentMethod.last4}` : 'Credit Card'
+        
         console.log('📧 Calling sendSubscriptionConfirmationEmail...')
         
-        const emailResult = await subscriptionEmailService.sendSubscriptionConfirmationEmail(emailData)
+        const emailResult = await EmailService.sendSubscriptionConfirmationEmail(
+          userProfile.email,
+          userName,
+          plan_type as 'premium' | 'premium_plus',
+          amount / 100, // Convert back to dollars
+          'USD',
+          paymentMethodText,
+          new Date().toISOString(),
+          expiresAt.toISOString(),
+          true // autoRenew
+        )
+        
         console.log('📧 Email send result:', emailResult)
         
         if (emailResult) {
@@ -270,9 +273,47 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
 router.post('/cancel', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
+    
+    // Get subscription details before cancelling for email
+    const subscription = await SubscriptionService.getUserSubscription(userId)
+    
     await SubscriptionService.cancelSubscription(userId)
 
     logger.info({ userId }, 'User cancelled subscription')
+
+    // Send cancellation email
+    try {
+      if (subscription) {
+        // Get user details for email
+        const { data: userProfile, error: userError } = await supabase
+          .from('profiles')
+          .select('email, first_name, last_name')
+          .eq('id', userId)
+          .single()
+
+        if (!userError && userProfile) {
+          console.log('📧 Sending cancellation email to:', userProfile.email)
+          
+          const userName = `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User'
+          
+          const emailResult = await EmailService.sendSubscriptionCancellationEmail(
+            userProfile.email,
+            userName,
+            subscription.plan_type as 'premium' | 'premium_plus',
+            subscription.expires_at ? subscription.expires_at.toString() : undefined
+          )
+          
+          if (emailResult) {
+            logger.info({ userEmail: userProfile.email, userId }, 'Subscription cancellation email sent successfully')
+          } else {
+            logger.error({ userEmail: userProfile.email, userId }, 'Failed to send subscription cancellation email')
+          }
+        }
+      }
+    } catch (emailError) {
+      logger.error({ error: emailError, userId }, 'Error sending subscription cancellation email')
+      // Don't fail the cancellation if email fails
+    }
 
     res.json({
       success: true,
