@@ -13,6 +13,47 @@ import { logger } from '../config/logger.js'
 
 const router = Router()
 
+// Admin verification endpoint
+router.get('/verify-admin', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!
+    
+    // List of admin emails/IDs - replace with your actual admin identifiers
+    const ADMIN_USERS = [
+      'admin@circle.com',
+      'support@circle.com', 
+      'orincore@gmail.com'
+      // Add more admin emails or user IDs here
+    ]
+    
+    // Check if user is admin
+    const isAdmin = ADMIN_USERS.includes(user.email) || 
+                   ADMIN_USERS.includes(user.id) ||
+                   user.role === 'admin'
+
+    if (!isAdmin) {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        message: 'You do not have admin privileges',
+        isAdmin: false 
+      })
+    }
+
+    res.json({ 
+      success: true, 
+      isAdmin: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role || 'admin'
+      }
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user?.id }, 'Error verifying admin access')
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // Test endpoint for AI admin capabilities
 router.post('/test-admin-actions', requireAuth, async (req: AuthRequest, res) => {
   try {
