@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sponsored Premium Subscription - Circle</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        .logo {
+            font-size: 32px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            background: linear-gradient(45deg, #FFD6F2, #FFFFFF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .gift-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        .title {
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+        .subtitle {
+            font-size: 18px;
+            opacity: 0.9;
+            margin-bottom: 30px;
+        }
+        .plan-badge {
+            display: inline-block;
+            background: rgba(255, 214, 242, 0.2);
+            border: 2px solid #FFD6F2;
+            border-radius: 25px;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 30px;
+        }
+        .content {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            text-align: left;
+        }
+        .feature-list {
+            list-style: none;
+            padding: 0;
+            margin: 20px 0;
+        }
+        .feature-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+            position: relative;
+            padding-left: 30px;
+        }
+        .feature-list li:before {
+            content: "✨";
+            position: absolute;
+            left: 0;
+            top: 10px;
+        }
+        .feature-list li:last-child {
+            border-bottom: none;
+        }
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #7C2B86, #9333EA);
+            color: white;
+            text-decoration: none;
+            padding: 15px 30px;
+            border-radius: 25px;
+            font-weight: bold;
+            font-size: 16px;
+            margin: 20px 0;
+            transition: transform 0.2s;
+        }
+        .cta-button:hover {
+            transform: translateY(-2px);
+        }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            padding: 20px;
+        }
+        .footer a {
+            color: #7C2B86;
+            text-decoration: none;
+        }
+        .expiry-info {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            color: #856404;
+        }
+        .sponsored-by {
+            background: rgba(124, 43, 134, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">Circle</div>
+        <div class="gift-icon">🎁</div>
+        <h1 class="title">Congratulations!</h1>
+        <p class="subtitle">You've received a sponsored premium subscription</p>
+        <div class="plan-badge">{{PLAN_NAME}} Plan</div>
+    </div>
+
+    <div class="content">
+        <div class="sponsored-by">
+            <h3>🎉 Sponsored by Circle Team</h3>
+            <p>This premium subscription has been gifted to you by our admin team. Enjoy all the premium features at no cost!</p>
+        </div>
+
+        <h2>What's included in your {{PLAN_NAME}} subscription:</h2>
+        <ul class="feature-list">
+            <li>Unlimited matches and connections</li>
+            <li>Advanced search filters and preferences</li>
+            <li>Priority profile visibility</li>
+            <li>Read receipts for messages</li>
+            <li>Voice and video calling</li>
+            <li>Premium badges and profile highlights</li>
+            <li>Ad-free experience</li>
+            {{#if isPremiumPlus}}
+            <li>Super likes and priority matching</li>
+            <li>Incognito mode browsing</li>
+            <li>Advanced analytics and insights</li>
+            {{/if}}
+        </ul>
+
+        {{#if expiryDate}}
+        <div class="expiry-info">
+            <strong>⏰ Subscription Details:</strong><br>
+            Your sponsored subscription is valid until <strong>{{EXPIRY_DATE}}</strong>
+        </div>
+        {{/if}}
+
+        <div style="text-align: center;">
+            <a href="{{APP_URL}}" class="cta-button">Start Using Premium Features</a>
+        </div>
+
+        <h3>Need Help?</h3>
+        <p>If you have any questions about your sponsored subscription, feel free to reach out to our support team.</p>
+    </div>
+
+    <div class="footer">
+        <p>This email was sent by Circle - Find meaningful connections</p>
+        <p>
+            <a href="{{APP_URL}}/terms">Terms of Service</a> | 
+            <a href="{{APP_URL}}/privacy">Privacy Policy</a> | 
+            <a href="{{UNSUBSCRIBE_URL}}">Unsubscribe</a>
+        </p>
+        <p>© 2024 Circle. All rights reserved.</p>
+    </div>
+</body>
+</html>

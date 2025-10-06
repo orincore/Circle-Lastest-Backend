@@ -1,8 +1,10 @@
 import express from 'express'
 import { SubscriptionService } from '../services/subscription.service.js'
+import { SubscriptionEmailService } from '../services/subscription-email.service.js'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { PaymentGateway } from '../services/payment.service.js'
 import { logger } from '../config/logger.js'
+import { supabase } from '../config/supabase.js'
 
 const router = express.Router()
 
@@ -196,6 +198,38 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
     )
 
     logger.info({ userId, plan_type, paymentSubscriptionId: paymentSubscription.id }, 'User subscribed to premium')
+
+    // Send subscription confirmation email
+    try {
+      // Get user details for email
+      const { data: userProfile, error: userError } = await supabase
+        .from('profiles')
+        .select('email, first_name, last_name')
+        .eq('id', userId)
+        .single()
+
+      if (!userError && userProfile) {
+        const subscriptionEmailService = SubscriptionEmailService.getInstance()
+        const emailData = {
+          userEmail: userProfile.email,
+          userName: `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User',
+          planType: plan_type as 'premium' | 'premium_plus',
+          amount: amount / 100, // Convert back to dollars
+          currency: 'USD',
+          paymentMethod: testPaymentMethod.brand ? `${testPaymentMethod.brand.toUpperCase()} ending in ${testPaymentMethod.last4}` : 'Credit Card',
+          startDate: new Date().toISOString(),
+          expiryDate: expiresAt.toISOString(),
+          autoRenew: true,
+          receiptUrl: `${process.env.FRONTEND_URL || 'https://circle.orincore.com'}/profile/subscription`
+        }
+
+        await subscriptionEmailService.sendSubscriptionConfirmationEmail(emailData)
+        logger.info({ userEmail: userProfile.email, subscriptionId: subscription.id }, 'Subscription confirmation email sent')
+      }
+    } catch (emailError) {
+      logger.error({ error: emailError, userId }, 'Failed to send subscription confirmation email')
+      // Don't fail the subscription creation if email fails
+    }
 
     res.json({
       success: true,

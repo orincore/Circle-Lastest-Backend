@@ -1,5 +1,6 @@
 import express from 'express'
 import { SubscriptionService } from '../services/subscription.service.js'
+import { SubscriptionEmailService } from '../services/subscription-email.service.js'
 import { requireAuth } from '../middleware/auth.js'
 import { requireAdmin, type AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
 import { logger } from '../config/logger.js'
@@ -239,6 +240,34 @@ router.post('/create', requireAuth, requireAdmin, async (req: AdminRequest, res)
       userId: user_id,
       planType: plan_type
     }, 'Subscription created by admin')
+
+    // Send sponsored subscription email
+    try {
+      // Get user details for email
+      const { data: userProfile, error: userError } = await supabase
+        .from('profiles')
+        .select('email, first_name, last_name')
+        .eq('id', user_id)
+        .single()
+
+      if (!userError && userProfile) {
+        const subscriptionEmailService = SubscriptionEmailService.getInstance()
+        const emailData = {
+          userEmail: userProfile.email,
+          userName: `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User',
+          planType: plan_type as 'premium' | 'premium_plus',
+          startDate: data.started_at,
+          expiryDate: data.expires_at,
+          isSponsored: true
+        }
+
+        await subscriptionEmailService.sendSponsoredSubscriptionEmail(emailData)
+        logger.info({ userEmail: userProfile.email, subscriptionId: data.id }, 'Sponsored subscription email sent')
+      }
+    } catch (emailError) {
+      logger.error({ error: emailError, subscriptionId: data.id }, 'Failed to send sponsored subscription email')
+      // Don't fail the subscription creation if email fails
+    }
 
     res.status(201).json({
       message: 'Subscription created successfully',
