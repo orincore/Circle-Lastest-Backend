@@ -875,6 +875,98 @@ class EmailService {
   }
 
   /**
+   * Send subscription cancellation email
+   */
+  async sendSubscriptionCancellationEmail(email: string, name: string, planType: string, cancelledAt?: string): Promise<boolean> {
+    console.log('📧 sendSubscriptionCancellationEmail called with:', {
+      email,
+      name,
+      planType,
+      hasCancelledAt: !!cancelledAt
+    })
+
+    try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
+      console.log('📧 Using from address:', defaultFrom)
+      
+      const mailOptions = {
+        from: defaultFrom,
+        to: email,
+        subject: `Your ${planType === 'premium' ? 'Premium' : 'Premium Plus'} subscription has been cancelled`,
+        html: this.getSubscriptionCancellationTemplate(name, planType, cancelledAt),
+      }
+
+      console.log('📧 Mail options prepared:', {
+        from: mailOptions.from,
+        to: mailOptions.to,
+        subject: mailOptions.subject,
+        htmlLength: mailOptions.html.length
+      })
+
+      console.log('📧 Attempting to send cancellation email via transporter...')
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Subscription cancellation email sent successfully:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send subscription cancellation email:', error)
+      console.error('❌ Error details:', {
+        message: (error as any)?.message,
+        code: (error as any)?.code,
+        command: (error as any)?.command,
+        response: (error as any)?.response,
+        responseCode: (error as any)?.responseCode
+      })
+      return false
+    }
+  }
+
+  /**
+   * Send subscription expiration email
+   */
+  async sendSubscriptionExpirationEmail(email: string, name: string, planType: string, expiredAt?: string): Promise<boolean> {
+    console.log('📧 sendSubscriptionExpirationEmail called with:', {
+      email,
+      name,
+      planType,
+      hasExpiredAt: !!expiredAt
+    })
+
+    try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
+      console.log('📧 Using from address:', defaultFrom)
+      
+      const mailOptions = {
+        from: defaultFrom,
+        to: email,
+        subject: `Your ${planType === 'premium' ? 'Premium' : 'Premium Plus'} subscription has expired`,
+        html: this.getSubscriptionExpirationTemplate(name, planType, expiredAt),
+      }
+
+      console.log('📧 Mail options prepared:', {
+        from: mailOptions.from,
+        to: mailOptions.to,
+        subject: mailOptions.subject,
+        htmlLength: mailOptions.html.length
+      })
+
+      console.log('📧 Attempting to send expiration email via transporter...')
+      const result = await this.transporter.sendMail(mailOptions)
+      console.log('✅ Subscription expiration email sent successfully:', result.messageId)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send subscription expiration email:', error)
+      console.error('❌ Error details:', {
+        message: (error as any)?.message,
+        code: (error as any)?.code,
+        command: (error as any)?.command,
+        response: (error as any)?.response,
+        responseCode: (error as any)?.responseCode
+      })
+      return false
+    }
+  }
+
+  /**
    * Send subscription confirmation email (user subscribed)
    */
   async sendSubscriptionConfirmationEmail(email: string, name: string, planType: string, amount: number, currency: string, expiresAt?: string): Promise<boolean> {
@@ -1471,8 +1563,16 @@ class EmailService {
   private getSponsoredSubscriptionTemplate(name: string, planType: string, expiresAt?: string): string {
     const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
     const expiryText = expiresAt 
-      ? `Your ${planName} access expires on ${new Date(expiresAt).toLocaleDateString()}.`
+      ? `Your subscription expires on ${new Date(expiresAt).toLocaleDateString()}.`
       : 'Your access details will be available in your account.'
+
+    // Debug template variables
+    console.log('📧 Sponsored template variables:', {
+      name,
+      planType,
+      planName,
+      expiryText
+    })
 
     return `
     <!DOCTYPE html>
@@ -1552,7 +1652,15 @@ class EmailService {
                 line-height: 1.7;
                 font-weight: 500;
             }
-            .plan-showcase {
+            .subscription-details {
+                background: #FFFFFF;
+                border-radius: 16px;
+                padding: 24px;
+                margin: 32px 0;
+                border: 3px solid #7C2B86;
+                box-shadow: 0 8px 24px rgba(124, 43, 134, 0.15);
+            }
+            .features-showcase {
                 background: linear-gradient(135deg, #7C2B86 0%, #E91E63 100%);
                 border-radius: 16px;
                 padding: 32px;
@@ -1560,68 +1668,49 @@ class EmailService {
                 margin: 32px 0;
                 color: white;
             }
-            .plan-name {
-                font-size: 32px;
-                font-weight: 800;
-                margin-bottom: 12px;
-            }
-            .plan-description {
-                font-size: 16px;
+            .features-title {
+                font-size: 24px;
+                font-weight: 700;
                 margin-bottom: 20px;
-                opacity: 0.9;
             }
-            .features-list {
+            .features-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+                margin-top: 20px;
+            }
+            .feature-card {
                 background: rgba(255, 255, 255, 0.1);
                 border-radius: 12px;
-                padding: 20px;
-                margin: 20px 0;
-            }
-            .feature-item {
-                display: flex;
-                align-items: center;
-                margin-bottom: 12px;
-                font-size: 15px;
+                padding: 16px;
+                text-align: center;
             }
             .feature-icon {
-                margin-right: 12px;
-                font-size: 18px;
-            }
-            .cta-section {
-                background: linear-gradient(135deg, #F8F4FF 0%, #FFF0F8 100%);
-                border-radius: 16px;
-                padding: 32px;
-                text-align: center;
-                margin: 32px 0;
-                border: 2px solid #E1BEE7;
-            }
-            .cta-title {
-                font-size: 20px;
-                font-weight: 700;
-                color: #7C2B86;
-                margin-bottom: 12px;
-            }
-            .cta-text {
-                font-size: 16px;
-                color: #2D2D2D;
-                margin-bottom: 20px;
-            }
-            .expiry-info {
-                background: #FFF8E1;
-                border: 2px solid #FFB74D;
-                border-radius: 12px;
-                padding: 20px;
-                margin: 24px 0;
-                text-align: center;
-            }
-            .expiry-title {
-                font-weight: 700;
-                color: #E65100;
+                font-size: 24px;
                 margin-bottom: 8px;
+                display: block;
+            }
+            .feature-text {
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .next-steps {
+                background: #E8F5E8;
+                border: 2px solid #4CAF50;
+                border-radius: 12px;
+                padding: 24px;
+                margin: 24px 0;
+            }
+            .next-steps-title {
+                font-weight: 700;
+                color: #2E7D32;
+                margin-bottom: 12px;
                 font-size: 16px;
             }
-            .expiry-text {
+            .next-steps-text {
                 font-size: 15px;
-                color: #4E342E;
+                color: #1B5E20;
+                line-height: 1.6;
             }
             .footer {
                 background: #F8F9FA;
@@ -1634,6 +1723,7 @@ class EmailService {
                 font-weight: 700;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
+                background-clip: text;
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 16px;
             }
@@ -1651,7 +1741,10 @@ class EmailService {
                 .container { margin: 10px; }
                 .header, .content, .footer { padding: 24px; }
                 .gift-title { font-size: 24px; }
-                .plan-name { font-size: 28px; }
+                .features-grid { grid-template-columns: 1fr; }
+                .subscription-details { padding: 16px; margin: 20px 0; }
+                .subscription-details table { font-size: 14px; }
+                .subscription-details td { padding: 12px 16px !important; }
             }
         </style>
     </head>
@@ -1672,52 +1765,65 @@ class EmailService {
                     This special upgrade is sponsored by our team to enhance your experience and help you connect with amazing people.
                 </div>
                 
-                <div class="plan-showcase">
-                    <div class="plan-name">${planName}</div>
-                    <div class="plan-description">Your premium experience starts now!</div>
-                    
-                    <div class="features-list">
-                        <div class="feature-item">
+                <div class="subscription-details">
+                    <table style="width: 100%; border-collapse: collapse; background: #FFFFFF; border-radius: 12px; overflow: hidden;">
+                        <tr style="border-bottom: 2px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F4FF;">Plan:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F4FF;">${planName}</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Sponsored By:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">Circle Team</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #E1BEE7;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F4FF;">Value:</td>
+                            <td style="font-weight: 700; color: #7C2B86; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F4FF;">${planType === 'premium' ? '$9.99/month' : '$19.99/month'}</td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">✅ Active</td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <div class="features-showcase">
+                    <div class="features-title">Your Premium Features</div>
+                    <div class="features-grid">
+                        <div class="feature-card">
                             <span class="feature-icon">💫</span>
-                            <span>Unlimited matches every day</span>
+                            <div class="feature-text">Unlimited Matches</div>
                         </div>
-                        <div class="feature-item">
+                        <div class="feature-card">
                             <span class="feature-icon">📸</span>
-                            <span>See Instagram usernames</span>
+                            <div class="feature-text">Instagram Access</div>
                         </div>
-                        <div class="feature-item">
+                        <div class="feature-card">
                             <span class="feature-icon">🚫</span>
-                            <span>Ad-free experience</span>
+                            <div class="feature-text">Ad-Free Experience</div>
                         </div>
-                        <div class="feature-item">
+                        <div class="feature-card">
                             <span class="feature-icon">👑</span>
-                            <span>Premium badge on your profile</span>
-                        </div>
-                        <div class="feature-item">
-                            <span class="feature-icon">🎯</span>
-                            <span>Advanced matching filters</span>
+                            <div class="feature-text">Premium Badge</div>
                         </div>
                         ${planType === 'premium_plus' ? `
-                        <div class="feature-item">
+                        <div class="feature-card">
                             <span class="feature-icon">💖</span>
-                            <span>See who liked you</span>
+                            <div class="feature-text">See Who Liked You</div>
                         </div>
-                        <div class="feature-item">
+                        <div class="feature-card">
                             <span class="feature-icon">🚀</span>
-                            <span>Boost your profile visibility</span>
+                            <div class="feature-text">Profile Boost</div>
                         </div>
                         ` : ''}
                     </div>
                 </div>
                 
-                <div class="cta-section">
-                    <div class="cta-title">Ready to explore your premium features? 🚀</div>
-                    <div class="cta-text">Open the Circle app and start enjoying your enhanced experience!</div>
-                </div>
-                
-                <div class="expiry-info">
-                    <div class="expiry-title">📅 Access Details</div>
-                    <div class="expiry-text">${expiryText}</div>
+                <div class="next-steps">
+                    <div class="next-steps-title">🎯 What's Next?</div>
+                    <div class="next-steps-text">
+                        Open the Circle app to start using your premium features! ${expiryText} 
+                        This upgrade is our gift to you - enjoy connecting with amazing people!
+                    </div>
                 </div>
             </div>
             
@@ -2044,6 +2150,437 @@ class EmailService {
                 <div class="footer-logo">Circle</div>
                 <div class="footer-text">Thank you for choosing ${planName}! 💜</div>
                 <div class="footer-text">Questions? We're here to help.</div>
+                
+                <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
+                    This is an automated message from Circle. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
+
+  /**
+   * Get subscription cancellation email template
+   */
+  private getSubscriptionCancellationTemplate(name: string, planType: string, cancelledAt?: string): string {
+    const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
+    const cancelText = cancelledAt 
+      ? `Your subscription was cancelled on ${new Date(cancelledAt).toLocaleDateString()}.`
+      : 'Your subscription has been cancelled.'
+
+    // Debug template variables
+    console.log('📧 Cancellation template variables:', {
+      name,
+      planType,
+      planName,
+      cancelText
+    })
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Subscription Cancelled - Circle</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+                line-height: 1.6;
+                color: #1F1147;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 0;
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                min-height: 100vh;
+            }
+            .container {
+                background: #FFFFFF;
+                border-radius: 24px;
+                margin: 20px;
+                padding: 0;
+                box-shadow: 0 20px 40px rgba(31, 17, 71, 0.3);
+                overflow: hidden;
+            }
+            .header {
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                padding: 40px;
+                text-align: center;
+                color: white;
+                position: relative;
+            }
+            .cancel-icon {
+                font-size: 64px;
+                margin-bottom: 16px;
+                display: block;
+            }
+            .logo {
+                font-size: 36px;
+                font-weight: 800;
+                color: #FFFFFF;
+                margin-bottom: 8px;
+                letter-spacing: -1px;
+            }
+            .header-subtitle {
+                font-size: 18px;
+                color: rgba(255, 255, 255, 0.9);
+                font-weight: 500;
+            }
+            .content {
+                padding: 40px;
+            }
+            .cancel-title {
+                font-size: 28px;
+                font-weight: 700;
+                color: #1F1147;
+                text-align: center;
+                margin-bottom: 16px;
+            }
+            .cancel-message {
+                font-size: 17px;
+                color: #2D2D2D;
+                text-align: center;
+                margin-bottom: 40px;
+                line-height: 1.7;
+                font-weight: 500;
+            }
+            .subscription-details {
+                background: #FFFFFF;
+                border-radius: 16px;
+                padding: 24px;
+                margin: 32px 0;
+                border: 3px solid #FF6B6B;
+                box-shadow: 0 8px 24px rgba(255, 107, 107, 0.15);
+            }
+            .next-steps {
+                background: #FFF3CD;
+                border: 2px solid #FFC107;
+                border-radius: 12px;
+                padding: 24px;
+                margin: 24px 0;
+            }
+            .next-steps-title {
+                font-weight: 700;
+                color: #856404;
+                margin-bottom: 12px;
+                font-size: 16px;
+            }
+            .next-steps-text {
+                font-size: 15px;
+                color: #856404;
+                line-height: 1.6;
+            }
+            .footer {
+                background: #F8F9FA;
+                padding: 32px 40px;
+                text-align: center;
+                border-top: 1px solid #E9ECEF;
+            }
+            .footer-logo {
+                font-size: 24px;
+                font-weight: 700;
+                background: linear-gradient(135deg, #7C2B86, #E91E63);
+                -webkit-background-clip: text;
+                background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 16px;
+            }
+            .footer-text {
+                font-size: 14px;
+                color: #6C757D;
+                margin-bottom: 8px;
+            }
+            @media (max-width: 600px) {
+                .container { margin: 10px; }
+                .header, .content, .footer { padding: 24px; }
+                .cancel-title { font-size: 24px; }
+                .subscription-details { padding: 16px; margin: 20px 0; }
+                .subscription-details table { font-size: 14px; }
+                .subscription-details td { padding: 12px 16px !important; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="cancel-icon">😔</div>
+                <div class="logo">Circle</div>
+                <div class="header-subtitle">Connect • Match • Belong</div>
+            </div>
+            
+            <div class="content">
+                <div class="cancel-title">Subscription Cancelled</div>
+                
+                <div class="cancel-message">
+                    Hi ${name}, we're sorry to see you go! Your <strong>${planName}</strong> subscription has been cancelled. 
+                    You'll continue to have access to premium features until your current billing period ends.
+                </div>
+                
+                <div class="subscription-details">
+                    <table style="width: 100%; border-collapse: collapse; background: #FFFFFF; border-radius: 12px; overflow: hidden;">
+                        <tr style="border-bottom: 2px solid #FFE1E1;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF5F5;">Plan:</td>
+                            <td style="font-weight: 700; color: #FF6B6B; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFF5F5;">${planName}</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #FFE1E1;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
+                            <td style="font-weight: 700; color: #FF6B6B; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">❌ Cancelled</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #FFE1E1;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF5F5;">Access Until:</td>
+                            <td style="font-weight: 700; color: #FF6B6B; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFF5F5;">End of billing period</td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Cancelled:</td>
+                            <td style="font-weight: 700; color: #FF6B6B; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">${cancelText}</td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <div class="next-steps">
+                    <div class="next-steps-title">💡 What happens next?</div>
+                    <div class="next-steps-text">
+                        Your premium features will remain active until the end of your current billing period. 
+                        After that, your account will return to our free plan. You can resubscribe anytime from your account settings.
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">We hope to see you back soon! 💜</div>
+                <div class="footer-text">Thank you for being part of Circle.</div>
+                
+                <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
+                    This is an automated message from Circle. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
+
+  /**
+   * Get subscription expiration email template
+   */
+  private getSubscriptionExpirationTemplate(name: string, planType: string, expiredAt?: string): string {
+    const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
+    const expiredText = expiredAt 
+      ? `Your subscription expired on ${new Date(expiredAt).toLocaleDateString()}.`
+      : 'Your subscription has expired.'
+
+    // Debug template variables
+    console.log('📧 Expiration template variables:', {
+      name,
+      planType,
+      planName,
+      expiredText
+    })
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Subscription Expired - Circle</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+                line-height: 1.6;
+                color: #1F1147;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 0;
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                min-height: 100vh;
+            }
+            .container {
+                background: #FFFFFF;
+                border-radius: 24px;
+                margin: 20px;
+                padding: 0;
+                box-shadow: 0 20px 40px rgba(31, 17, 71, 0.3);
+                overflow: hidden;
+            }
+            .header {
+                background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%);
+                padding: 40px;
+                text-align: center;
+                color: white;
+                position: relative;
+            }
+            .expire-icon {
+                font-size: 64px;
+                margin-bottom: 16px;
+                display: block;
+            }
+            .logo {
+                font-size: 36px;
+                font-weight: 800;
+                color: #FFFFFF;
+                margin-bottom: 8px;
+                letter-spacing: -1px;
+            }
+            .header-subtitle {
+                font-size: 18px;
+                color: rgba(255, 255, 255, 0.9);
+                font-weight: 500;
+            }
+            .content {
+                padding: 40px;
+            }
+            .expire-title {
+                font-size: 28px;
+                font-weight: 700;
+                color: #1F1147;
+                text-align: center;
+                margin-bottom: 16px;
+            }
+            .expire-message {
+                font-size: 17px;
+                color: #2D2D2D;
+                text-align: center;
+                margin-bottom: 40px;
+                line-height: 1.7;
+                font-weight: 500;
+            }
+            .subscription-details {
+                background: #FFFFFF;
+                border-radius: 16px;
+                padding: 24px;
+                margin: 32px 0;
+                border: 3px solid #FFA726;
+                box-shadow: 0 8px 24px rgba(255, 167, 38, 0.15);
+            }
+            .renew-section {
+                background: linear-gradient(135deg, #7C2B86 0%, #E91E63 100%);
+                border-radius: 16px;
+                padding: 32px;
+                text-align: center;
+                margin: 32px 0;
+                color: white;
+            }
+            .renew-title {
+                font-size: 24px;
+                font-weight: 700;
+                margin-bottom: 12px;
+            }
+            .renew-text {
+                font-size: 16px;
+                margin-bottom: 20px;
+                opacity: 0.9;
+            }
+            .next-steps {
+                background: #FFF3CD;
+                border: 2px solid #FFC107;
+                border-radius: 12px;
+                padding: 24px;
+                margin: 24px 0;
+            }
+            .next-steps-title {
+                font-weight: 700;
+                color: #856404;
+                margin-bottom: 12px;
+                font-size: 16px;
+            }
+            .next-steps-text {
+                font-size: 15px;
+                color: #856404;
+                line-height: 1.6;
+            }
+            .footer {
+                background: #F8F9FA;
+                padding: 32px 40px;
+                text-align: center;
+                border-top: 1px solid #E9ECEF;
+            }
+            .footer-logo {
+                font-size: 24px;
+                font-weight: 700;
+                background: linear-gradient(135deg, #7C2B86, #E91E63);
+                -webkit-background-clip: text;
+                background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 16px;
+            }
+            .footer-text {
+                font-size: 14px;
+                color: #6C757D;
+                margin-bottom: 8px;
+            }
+            @media (max-width: 600px) {
+                .container { margin: 10px; }
+                .header, .content, .footer { padding: 24px; }
+                .expire-title { font-size: 24px; }
+                .subscription-details { padding: 16px; margin: 20px 0; }
+                .subscription-details table { font-size: 14px; }
+                .subscription-details td { padding: 12px 16px !important; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="expire-icon">⏰</div>
+                <div class="logo">Circle</div>
+                <div class="header-subtitle">Connect • Match • Belong</div>
+            </div>
+            
+            <div class="content">
+                <div class="expire-title">Subscription Expired</div>
+                
+                <div class="expire-message">
+                    Hi ${name}, your <strong>${planName}</strong> subscription has expired. 
+                    Don't worry - your account is still active on our free plan, but you'll miss out on premium features.
+                </div>
+                
+                <div class="subscription-details">
+                    <table style="width: 100%; border-collapse: collapse; background: #FFFFFF; border-radius: 12px; overflow: hidden;">
+                        <tr style="border-bottom: 2px solid #FFE0B2;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF8E1;">Plan:</td>
+                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFF8E1;">${planName}</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #FFE0B2;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
+                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">⏰ Expired</td>
+                        </tr>
+                        <tr style="border-bottom: 2px solid #FFE0B2;">
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF8E1;">Current Plan:</td>
+                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFF8E1;">Free</td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Expired:</td>
+                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">${expiredText}</td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <div class="renew-section">
+                    <div class="renew-title">Ready to Renew? 🚀</div>
+                    <div class="renew-text">
+                        Get back to unlimited matches, Instagram access, and all your favorite premium features!
+                    </div>
+                </div>
+                
+                <div class="next-steps">
+                    <div class="next-steps-title">💡 What's next?</div>
+                    <div class="next-steps-text">
+                        Open the Circle app and go to Settings → Subscription to renew your ${planName} access. 
+                        Your premium features will be restored immediately after payment.
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div class="footer-logo">Circle</div>
+                <div class="footer-text">We'd love to have you back! 💜</div>
+                <div class="footer-text">Renew anytime to continue your premium journey.</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
                     This is an automated message from Circle. Please do not reply to this email.
