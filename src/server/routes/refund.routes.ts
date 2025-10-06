@@ -9,24 +9,40 @@ const router = express.Router()
 // User: Request a refund
 router.post('/request', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const userId = req.user!.id
-    const { subscription_id, reason } = req.body
+    const adminUserId = req.user!.id
+    const { subscription_id, reason, user_id } = req.body
 
     if (!subscription_id) {
       return res.status(400).json({ error: 'Subscription ID is required' })
     }
 
-    // Check if subscription exists and belongs to user
+    // Check if subscription exists
     const { data: subscription, error: subError } = await supabase
       .from('subscriptions')
       .select('*')
       .eq('id', subscription_id)
-      .eq('user_id', userId)
       .single()
 
     if (subError || !subscription) {
-      logger.error({ subError, subscription_id, userId }, 'Subscription not found')
-      return res.status(400).json({ error: 'Subscription not found or does not belong to user' })
+      logger.error({ subError, subscription_id }, 'Subscription not found')
+      return res.status(400).json({ error: 'Subscription not found' })
+    }
+
+    // For admin-initiated refunds, use the subscription's actual user_id
+    // For user-initiated refunds, ensure it belongs to the requesting user
+    let refundUserId = subscription.user_id
+    
+    if (!user_id) {
+      // User-initiated refund - check ownership
+      if (subscription.user_id !== adminUserId) {
+        return res.status(400).json({ error: 'Subscription does not belong to user' })
+      }
+    } else {
+      // Admin-initiated refund - verify the user_id matches subscription
+      if (subscription.user_id !== user_id) {
+        return res.status(400).json({ error: 'Subscription does not belong to specified user' })
+      }
+      refundUserId = user_id
     }
 
     // For now, create a simple refund record without the complex eligibility checks
@@ -34,7 +50,7 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
     const mockRefund = {
       id: `refund_${Date.now()}`,
       subscription_id,
-      user_id: userId,
+      user_id: refundUserId,
       amount: subscription.price_paid || 9.99,
       currency: subscription.currency || 'USD',
       reason: reason || 'User requested refund',
