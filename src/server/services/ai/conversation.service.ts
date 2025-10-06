@@ -1,7 +1,7 @@
 import { supabase } from '../../config/supabase.js'
 import { logger } from '../../config/logger.js'
 import { TogetherAIService, type AIMessage, type AIResponse } from './together-ai.service.js'
-import { RefundPolicyService } from './refund-policy.service'
+import { RefundPolicyService } from './refund-policy.service.js'
 
 export interface Conversation {
   id: string
