@@ -45,6 +45,12 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
       refundUserId = user_id
     }
 
+    // Determine initial status based on who is making the request
+    const isAdminInitiated = !!user_id // If user_id is provided, it's admin-initiated
+    const initialStatus = isAdminInitiated ? 'approved' : 'pending'
+    const processedBy = isAdminInitiated ? adminUserId : null
+    const processedAt = isAdminInitiated ? new Date().toISOString() : null
+    
     // Create actual refund record in database
     const { data: refund, error: refundError } = await supabase
       .from('refunds')
@@ -53,9 +59,13 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
         user_id: refundUserId,
         amount: subscription.price_paid || 9.99,
         currency: subscription.currency || 'USD',
-        reason: reason || 'User requested refund',
+        reason: reason || (isAdminInitiated ? 'Admin-initiated refund' : 'User requested refund'),
         payment_provider: subscription.payment_provider,
-        refund_method: 'original_payment_method'
+        refund_method: 'original_payment_method',
+        status: initialStatus,
+        processed_by: processedBy,
+        processed_at: processedAt,
+        admin_notes: isAdminInitiated ? `Admin-initiated refund. Reason: ${reason || 'No reason provided'}` : null
       })
       .select()
       .single()
@@ -75,23 +85,40 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
 
       if (userProfile?.email) {
         const { default: EmailService } = await import('../services/emailService.js')
-        await EmailService.sendRefundRequestConfirmation(
-          userProfile.email,
-          userProfile.username || 'User',
-          subscription.plan_type,
-          refund.amount,
-          refund.currency,
-          refund.id
-        )
+        
+        if (isAdminInitiated) {
+          // Send approval email directly for admin-initiated refunds
+          await EmailService.sendRefundApprovalEmail(
+            userProfile.email,
+            userProfile.username || 'User',
+            subscription.plan_type,
+            refund.amount,
+            refund.currency
+          )
+        } else {
+          // Send request confirmation for user-initiated refunds
+          await EmailService.sendRefundRequestConfirmation(
+            userProfile.email,
+            userProfile.username || 'User',
+            subscription.plan_type,
+            refund.amount,
+            refund.currency,
+            refund.id
+          )
+        }
       }
     } catch (emailError) {
       logger.warn({ error: emailError, refundId: refund.id }, 'Failed to send refund confirmation email')
     }
 
+    const successMessage = isAdminInitiated 
+      ? 'Refund has been approved and processed successfully. The user will receive an email confirmation.'
+      : 'Refund request submitted successfully. You will receive an email confirmation shortly.'
+
     res.json({
       success: true,
       refund,
-      message: 'Refund request submitted successfully. You will receive an email confirmation shortly.'
+      message: successMessage
     })
   } catch (error: any) {
     logger.error({ error, userId: req.user!.id }, 'Error requesting refund')
@@ -250,7 +277,7 @@ router.post('/admin/process/:refundId', requireAuth, async (req: AuthRequest, re
       return res.status(400).json({ error: 'Refund has already been processed' })
     }
 
-    const newStatus = action === 'approve' ? 'processed' : 'rejected'
+    const newStatus = action === 'approve' ? 'approved' : 'rejected'
 
     // Update refund status
     const { data: updatedRefund, error: updateError } = await supabase
@@ -306,6 +333,90 @@ router.post('/admin/process/:refundId', requireAuth, async (req: AuthRequest, re
     logger.error({ error, refundId: req.params.refundId }, 'Error processing refund')
     res.status(400).json({ 
       error: error.message || 'Failed to process refund'
+    })
+  }
+})
+
+// Admin: Process payment for approved refund
+router.post('/admin/process-payment/:refundId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    // TODO: Add admin role check
+    const { refundId } = req.params
+    const adminUserId = req.user!.id
+
+    // Get the refund record
+    const { data: refund, error: fetchError } = await supabase
+      .from('refunds')
+      .select(`
+        *,
+        subscription:subscriptions(*),
+        user:profiles!refunds_user_id_fkey(username, email)
+      `)
+      .eq('id', refundId)
+      .single()
+
+    if (fetchError || !refund) {
+      return res.status(404).json({ error: 'Refund not found' })
+    }
+
+    if (refund.status !== 'approved') {
+      return res.status(400).json({ error: 'Refund must be approved before processing payment' })
+    }
+
+    // Process the actual refund through payment gateway
+    try {
+      const { PaymentGateway } = await import('../services/payment.service.js')
+      const paymentResult = await PaymentGateway.processRefund(
+        refund.subscription.external_subscription_id || refund.subscription_id,
+        refund.amount,
+        refund.currency
+      )
+
+      // Update refund status to processed
+      const { data: updatedRefund, error: updateError } = await supabase
+        .from('refunds')
+        .update({
+          status: 'processed',
+          external_refund_id: paymentResult.id,
+          admin_notes: `${refund.admin_notes || ''}\nPayment processed: ${paymentResult.id}`
+        })
+        .eq('id', refundId)
+        .select()
+        .single()
+
+      if (updateError) {
+        logger.error({ updateError, refundId }, 'Failed to update refund to processed')
+        return res.status(500).json({ error: 'Failed to update refund status' })
+      }
+
+      logger.info({ refundId, paymentResult, adminUserId }, 'Refund payment processed successfully')
+
+      res.json({
+        success: true,
+        refund: updatedRefund,
+        paymentResult,
+        message: 'Refund payment processed successfully'
+      })
+
+    } catch (paymentError) {
+      // Mark refund as failed if payment processing fails
+      const errorMessage = paymentError instanceof Error ? paymentError.message : 'Unknown payment error'
+      await supabase
+        .from('refunds')
+        .update({
+          status: 'failed',
+          admin_notes: `${refund.admin_notes || ''}\nPayment processing failed: ${errorMessage}`
+        })
+        .eq('id', refundId)
+
+      logger.error({ paymentError, refundId }, 'Payment processing failed')
+      return res.status(500).json({ error: `Payment processing failed: ${errorMessage}` })
+    }
+
+  } catch (error: any) {
+    logger.error({ error, refundId: req.params.refundId }, 'Error processing refund payment')
+    res.status(400).json({ 
+      error: error.message || 'Failed to process refund payment'
     })
   }
 })
