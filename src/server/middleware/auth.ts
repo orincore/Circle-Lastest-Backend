@@ -139,3 +139,4 @@ export async function requireAdmin(req: AuthRequest, res: Response, next: NextFu
     return res.status(StatusCodes.FORBIDDEN).json({ error: 'Admin access denied' })
   }
 }
+
