@@ -6,6 +6,7 @@ import { logger } from '../config/logger.js'
 export interface AuthRequest extends Request {
   user?: { id: string; email: string; username: string; role?: string }
   token?: string
+  adminRole?: { id: string; role: string; is_active: boolean }
 }
 
 // Track failed authentication attempts for rate limiting

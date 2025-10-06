@@ -1,34 +1,38 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
+import { supabase } from '../config/supabase.js'
 // Apply admin authentication to all routes
 const router = Router()
 
 // Admin middleware - protect all routes
 router.use(requireAuth)
 
-// Admin user configuration
-const ADMIN_USERS = [
-  'admin@circle.com',
-  'support@circle.com',
-  'orincore@gmail.com'
-]
-
-// Admin auth middleware
+// Admin auth middleware using admin_roles table
 const requireAdminAuth = async (req: AuthRequest, res: any, next: any) => {
   try {
-    const user = req.user!
-    const isAdmin = ADMIN_USERS.includes(user.email) || 
-                   ADMIN_USERS.includes(user.id) ||
-                   user.role === 'admin'
+    const userId = req.user!.id
 
-    if (!isAdmin) {
+    // Check admin_roles table for active admin role
+    const { data: adminRole, error } = await supabase
+      .from('admin_roles')
+      .select('id, role, is_active')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('revoked_at', null)
+      .single()
+
+    if (error || !adminRole) {
       return res.status(403).json({ 
         error: 'Access denied',
-        message: 'Admin privileges required' 
+        message: 'Admin privileges required. You must have an active admin role.' 
       })
     }
+
+    // Add admin role info to request for downstream use
+    req.adminRole = adminRole
     next()
   } catch (error) {
+    console.error('Admin auth error:', error)
     res.status(500).json({ error: 'Authentication failed' })
   }
 }
@@ -43,20 +47,23 @@ import AnalyticsInsightsService from '../services/ai/analytics-insights.service.
 import ProactiveSupportService from '../services/ai/proactive-support.service.js'
 import EscalationSystemService from '../services/ai/escalation-system.service.js'
 import MultilingualSupportService from '../services/ai/multilingual-support.service.js'
-import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
 
 // Admin verification endpoint
 router.get('/verify-admin', async (req: AuthRequest, res) => {
   try {
-    const user = req.user!
+    const userId = req.user!.id
     
-    // Check if user is admin
-    const isAdmin = ADMIN_USERS.includes(user.email) || 
-                   ADMIN_USERS.includes(user.id) ||
-                   user.role === 'admin'
+    // Check admin_roles table for active admin role
+    const { data: adminRole, error } = await supabase
+      .from('admin_roles')
+      .select('id, role, granted_at, is_active')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('revoked_at', null)
+      .single()
 
-    if (!isAdmin) {
+    if (error || !adminRole) {
       return res.status(403).json({ 
         error: 'Access denied',
         message: 'You do not have admin privileges',
@@ -68,9 +75,14 @@ router.get('/verify-admin', async (req: AuthRequest, res) => {
       success: true, 
       isAdmin: true,
       user: {
-        id: user.id,
-        email: user.email,
-        role: user.role || 'admin'
+        id: req.user!.id,
+        email: req.user!.email,
+        role: adminRole.role
+      },
+      adminRole: {
+        id: adminRole.id,
+        role: adminRole.role,
+        grantedAt: adminRole.granted_at
       }
     })
   } catch (error) {
