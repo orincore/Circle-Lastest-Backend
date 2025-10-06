@@ -50,6 +50,7 @@ import paymentRouter from './routes/payment.routes.js'
 import refundRouter from './routes/refund.routes.js'
 import revenueRouter from './routes/revenue.routes.js'
 import aiSupportRouter from './routes/ai-support.routes.js'
+import aiAdminRouter from './routes/ai-admin.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -227,6 +228,7 @@ app.use('/api/payment', paymentRouter)
 app.use('/api/refunds', refundRouter)
 app.use('/api/revenue', revenueRouter)
 app.use('/api/ai-support', aiSupportRouter)
+app.use('/api/ai-admin', aiAdminRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 

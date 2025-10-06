@@ -2,6 +2,7 @@ import { supabase } from '../../config/supabase.js'
 import { logger } from '../../config/logger.js'
 import { TogetherAIService, type AIMessage, type AIResponse } from './together-ai.service.js'
 import { RefundPolicyService } from './refund-policy.service.js'
+import { AdminActionsService } from './admin-actions.service.js'
 
 export interface Conversation {
   id: string
@@ -196,7 +197,7 @@ How can I help you today?`,
     }
   }
 
-  // Generate AI response with business logic
+  // Generate AI response with business logic and admin actions
   private static async generateAIResponse(conversation: Conversation): Promise<AIResponse> {
     try {
       const lastUserMessage = conversation.messages
@@ -207,20 +208,93 @@ How can I help you today?`,
         throw new Error('No user message found')
       }
 
-      // Check for refund requests and apply policy
-      if (this.isRefundRequest(lastUserMessage.content)) {
-        const refundResponse = await RefundPolicyService.handleRefundRequest(
-          lastUserMessage.content,
-          conversation.userContext,
-          conversation.refundExplanationCount
-        )
+      const messageContent = lastUserMessage.content.toLowerCase()
 
-        if (refundResponse) {
-          return refundResponse
+      // Handle admin actions if user is authenticated
+      if (conversation.userId) {
+        // Check subscription status
+        if (this.isSubscriptionInquiry(messageContent)) {
+          const result = await AdminActionsService.checkSubscriptionStatus(conversation.userId)
+          return {
+            message: result.message + (result.data?.hasActiveSubscription ? 
+              `\n\nYour ${result.data.activeSubscription.plan_type} plan costs ${result.data.activeSubscription.price_paid} ${result.data.activeSubscription.currency} and started on ${new Date(result.data.activeSubscription.started_at).toLocaleDateString()}.` : 
+              '\n\nWould you like to upgrade to a premium plan?'),
+            confidence: 0.95,
+            intent: 'subscription_inquiry',
+            requiresEscalation: false,
+            conversationEnded: false
+          }
+        }
+
+        // Handle refund requests with automatic processing
+        if (this.isRefundRequest(messageContent)) {
+          // Check if user wants automatic refund processing
+          if (this.isRefundProcessingRequest(messageContent)) {
+            const result = await AdminActionsService.processRefund(conversation.userId, 'AI Assistant - User requested refund')
+            return {
+              message: result.message + (result.success ? 
+                '\n\nYour subscription has been cancelled and the refund will appear in your account within 3-5 business days. You can continue using Circle with a free account.' :
+                '\n\nWould you like me to check your refund eligibility?'),
+              confidence: 0.95,
+              intent: 'refund',
+              requiresEscalation: !result.success,
+              conversationEnded: result.success
+            }
+          }
+
+          // Check refund eligibility
+          const eligibilityResult = await AdminActionsService.checkRefundEligibility(conversation.userId)
+          if (eligibilityResult.success && eligibilityResult.data?.eligible) {
+            return {
+              message: `${eligibilityResult.message}\n\nWould you like me to process your refund automatically? Just say "yes, process my refund" and I'll handle everything for you right now.`,
+              confidence: 0.95,
+              intent: 'refund',
+              requiresEscalation: false,
+              conversationEnded: false
+            }
+          } else {
+            // Use existing refund policy service for ineligible cases
+            const refundResponse = await RefundPolicyService.handleRefundRequest(
+              lastUserMessage.content,
+              conversation.userContext,
+              conversation.refundExplanationCount
+            )
+            if (refundResponse) {
+              return refundResponse
+            }
+          }
+        }
+
+        // Handle subscription cancellation
+        if (this.isCancellationRequest(messageContent)) {
+          const result = await AdminActionsService.cancelSubscription(conversation.userId, 'AI Assistant - User requested cancellation')
+          return {
+            message: result.message + (result.success ? 
+              '\n\nYour subscription will not renew, but you can continue using your premium features until the end of your current billing period.' : ''),
+            confidence: 0.95,
+            intent: 'cancellation',
+            requiresEscalation: !result.success,
+            conversationEnded: result.success
+          }
+        }
+
+        // Handle refund history requests
+        if (this.isRefundHistoryRequest(messageContent)) {
+          const result = await AdminActionsService.getRefundHistory(conversation.userId)
+          return {
+            message: result.message + (result.data?.refunds?.length > 0 ? 
+              '\n\n' + result.data.refunds.map((r: any) => 
+                `• ${r.amount} ${r.currency} - ${r.status} (${new Date(r.requestedAt).toLocaleDateString()})`
+              ).join('\n') : ''),
+            confidence: 0.95,
+            intent: 'refund_history',
+            requiresEscalation: false,
+            conversationEnded: false
+          }
         }
       }
 
-      // Generate AI response using Together AI
+      // Generate AI response using Together AI for other queries
       const aiResponse = await TogetherAIService.generateResponse(
         conversation.messages,
         conversation.userContext
@@ -239,6 +313,39 @@ How can I help you today?`,
         conversationEnded: false
       }
     }
+  }
+
+  // Helper methods for intent detection
+  private static isSubscriptionInquiry(message: string): boolean {
+    const subscriptionKeywords = [
+      'subscription', 'plan', 'billing', 'active subscription', 
+      'my subscription', 'current plan', 'premium', 'account status'
+    ]
+    return subscriptionKeywords.some(keyword => message.includes(keyword))
+  }
+
+  private static isRefundProcessingRequest(message: string): boolean {
+    const processingKeywords = [
+      'yes, process my refund', 'process refund', 'yes process', 
+      'go ahead', 'do it', 'yes please', 'confirm refund'
+    ]
+    return processingKeywords.some(keyword => message.includes(keyword))
+  }
+
+  private static isCancellationRequest(message: string): boolean {
+    const cancellationKeywords = [
+      'cancel subscription', 'cancel my subscription', 'stop subscription',
+      'end subscription', 'unsubscribe', 'cancel plan'
+    ]
+    return cancellationKeywords.some(keyword => message.includes(keyword))
+  }
+
+  private static isRefundHistoryRequest(message: string): boolean {
+    const historyKeywords = [
+      'refund history', 'previous refunds', 'past refunds', 
+      'refund status', 'my refunds'
+    ]
+    return historyKeywords.some(keyword => message.includes(keyword))
   }
 
   // Check if message is a refund request
