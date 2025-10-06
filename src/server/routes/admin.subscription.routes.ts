@@ -97,6 +97,41 @@ router.put('/:subscriptionId', requireAuth, requireAdmin, async (req: AdminReque
       return res.status(404).json({ error: 'Subscription not found' })
     }
 
+    // Send sponsored subscription email if status changed to active or plan upgraded
+    if ((status === 'active' || plan_type) && data.status === 'active') {
+      // Get user details for email
+      const { data: userProfile, error: profileError } = await supabase
+        .from('profiles')
+        .select('email, username')
+        .eq('id', data.user_id)
+        .single()
+
+      if (userProfile && userProfile.email) {
+        console.log('📧 Attempting to send sponsored subscription email...')
+        try {
+          await EmailService.sendSponsoredSubscriptionEmail(
+            userProfile.email,
+            userProfile.username || 'User',
+            data.plan_type,
+            data.expires_at
+          )
+          logger.info({ 
+            subscriptionId,
+            userId: data.user_id,
+            email: userProfile.email,
+            planType: data.plan_type
+          }, 'Sponsored subscription email sent by admin update')
+        } catch (emailError) {
+          logger.error({ 
+            error: emailError,
+            subscriptionId,
+            userId: data.user_id
+          }, 'Failed to send sponsored subscription email on admin update')
+          // Don't fail the update if email fails
+        }
+      }
+    }
+
     logger.info({ 
       subscriptionId, 
       adminId: req.user!.id, 
