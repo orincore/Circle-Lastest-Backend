@@ -200,16 +200,22 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
     logger.info({ userId, plan_type, paymentSubscriptionId: paymentSubscription.id }, 'User subscribed to premium')
 
     // Send subscription confirmation email
+    console.log('📧 Starting email sending process for user:', userId)
     try {
       // Get user details for email
+      console.log('📧 Fetching user profile for email...')
       const { data: userProfile, error: userError } = await supabase
         .from('profiles')
         .select('email, first_name, last_name')
         .eq('id', userId)
         .single()
 
+      console.log('📧 User profile fetch result:', { userProfile, userError })
+
       if (!userError && userProfile) {
+        console.log('📧 User profile found, initializing email service...')
         const subscriptionEmailService = SubscriptionEmailService.getInstance()
+        
         const emailData = {
           userEmail: userProfile.email,
           userName: `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'User',
@@ -223,10 +229,23 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
           receiptUrl: `${process.env.FRONTEND_URL || 'https://circle.orincore.com'}/profile/subscription`
         }
 
-        await subscriptionEmailService.sendSubscriptionConfirmationEmail(emailData)
-        logger.info({ userEmail: userProfile.email, subscriptionId: subscription.id }, 'Subscription confirmation email sent')
+        console.log('📧 Email data prepared:', emailData)
+        console.log('📧 Calling sendSubscriptionConfirmationEmail...')
+        
+        const emailResult = await subscriptionEmailService.sendSubscriptionConfirmationEmail(emailData)
+        console.log('📧 Email send result:', emailResult)
+        
+        if (emailResult) {
+          logger.info({ userEmail: userProfile.email, subscriptionId: subscription.id }, 'Subscription confirmation email sent successfully')
+        } else {
+          logger.error({ userEmail: userProfile.email, subscriptionId: subscription.id }, 'Subscription confirmation email failed to send')
+        }
+      } else {
+        console.log('📧 User profile not found or error occurred:', userError)
+        logger.error({ userId, userError }, 'Failed to fetch user profile for email')
       }
     } catch (emailError) {
+      console.error('📧 Email sending error:', emailError)
       logger.error({ error: emailError, userId }, 'Failed to send subscription confirmation email')
       // Don't fail the subscription creation if email fails
     }

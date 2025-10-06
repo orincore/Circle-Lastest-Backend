@@ -164,10 +164,79 @@ export class SubscriptionEmailService {
    */
   async sendSubscriptionConfirmationEmail(data: SubscriptionEmailData): Promise<boolean> {
     try {
+      console.log('📧 [CONFIRMATION] Starting email send process...')
+      console.log('📧 [CONFIRMATION] Email data received:', {
+        userEmail: data.userEmail,
+        userName: data.userName,
+        planType: data.planType,
+        amount: data.amount
+      })
+      
+      // First try a simple test email to verify SMTP is working
+      try {
+        console.log('📧 [CONFIRMATION] Testing SMTP connection...')
+        const testResult = await this.transporter.sendMail({
+          from: `"Circle Team" <${process.env.SMTP_FROM_EMAIL || 'noreply@circle.orincore.com'}>`,
+          to: data.userEmail,
+          subject: '✅ Circle Premium Subscription Confirmed',
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h1 style="color: #7C2B86;">🎉 Welcome to Circle Premium!</h1>
+              <p>Hi ${data.userName},</p>
+              <p>Your Circle ${this.getPlanDisplayName(data.planType)} subscription is now active!</p>
+              <p><strong>Subscription Details:</strong></p>
+              <ul>
+                <li>Plan: ${this.getPlanDisplayName(data.planType)}</li>
+                <li>Amount: $${data.amount} ${data.currency}</li>
+                <li>Payment Method: ${data.paymentMethod}</li>
+                <li>Start Date: ${new Date(data.startDate).toLocaleDateString()}</li>
+                ${data.expiryDate ? `<li>Next Billing: ${new Date(data.expiryDate).toLocaleDateString()}</li>` : ''}
+              </ul>
+              <p>Your premium features are now active! Start exploring all the benefits of Circle Premium.</p>
+              <p>Best regards,<br>The Circle Team</p>
+            </div>
+          `,
+        })
+        
+        console.log('📧 [CONFIRMATION] Simple email sent successfully:', testResult)
+        logger.info({ userEmail: data.userEmail, messageId: testResult.messageId }, 'Subscription confirmation email sent successfully')
+        return true
+        
+      } catch (simpleEmailError) {
+        console.error('📧 [CONFIRMATION] Simple email failed:', simpleEmailError)
+        // Continue with template-based approach
+      }
+      
       logger.info({ userEmail: data.userEmail, planType: data.planType }, 'Sending subscription confirmation email')
 
       const templatePath = path.join(this.templatesPath, 'subscription-confirmation.html')
-      let template = await fs.readFile(templatePath, 'utf-8')
+      console.log('📧 Loading confirmation template from:', templatePath)
+      
+      let template: string
+      try {
+        template = await fs.readFile(templatePath, 'utf-8')
+        console.log('📧 Confirmation template loaded successfully, length:', template.length)
+      } catch (templateError: any) {
+        console.error('📧 Failed to load confirmation template:', templateError)
+        // Fallback to simple HTML email
+        template = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h1 style="color: #7C2B86;">🎉 Welcome to Circle Premium!</h1>
+            <p>Hi ${data.userName},</p>
+            <p>Thank you for subscribing to Circle ${this.getPlanDisplayName(data.planType)}!</p>
+            <p><strong>Subscription Details:</strong></p>
+            <ul>
+              <li>Plan: ${this.getPlanDisplayName(data.planType)}</li>
+              <li>Amount: $${data.amount} ${data.currency}</li>
+              <li>Start Date: ${new Date(data.startDate).toLocaleDateString()}</li>
+              ${data.expiryDate ? `<li>Next Billing: ${new Date(data.expiryDate).toLocaleDateString()}</li>` : ''}
+            </ul>
+            <p>Your premium features are now active! Start exploring all the benefits of Circle Premium.</p>
+            <p>Best regards,<br>The Circle Team</p>
+          </div>
+        `
+        console.log('📧 Using fallback confirmation template')
+      }
 
       // Replace template variables
       const replacements = {
