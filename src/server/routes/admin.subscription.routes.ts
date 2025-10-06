@@ -1,13 +1,14 @@
 import express from 'express'
 import { SubscriptionService } from '../services/subscription.service.js'
-import { requireAuth, requireAdmin, type AuthRequest } from '../middleware/auth.js'
+import { requireAuth } from '../middleware/auth.js'
+import { requireAdmin, type AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
 import { logger } from '../config/logger.js'
 import { supabase } from '../config/supabase.js'
 
 const router = express.Router()
 
 // Get all subscriptions with user info (admin only)
-router.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+router.get('/', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const { data: subscriptions, error } = await supabase
       .from('subscriptions')
@@ -42,7 +43,7 @@ router.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
 })
 
 // Get subscription statistics (admin only)
-router.get('/stats', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+router.get('/stats', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const stats = await SubscriptionService.getSubscriptionStats()
     res.json(stats)
@@ -53,7 +54,7 @@ router.get('/stats', requireAuth, requireAdmin, async (req: AuthRequest, res) =>
 })
 
 // Update subscription (admin only)
-router.put('/:subscriptionId', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+router.put('/:subscriptionId', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const { subscriptionId } = req.params
     const { plan_type, status, expires_at } = req.body
@@ -112,7 +113,7 @@ router.put('/:subscriptionId', requireAuth, requireAdmin, async (req: AuthReques
 })
 
 // Cancel subscription (admin only)
-router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const { subscriptionId } = req.params
 
@@ -164,7 +165,7 @@ router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: Au
 })
 
 // Create subscription (admin only)
-router.post('/create', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+router.post('/create', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const { 
       user_id, 
@@ -250,7 +251,7 @@ router.post('/create', requireAuth, requireAdmin, async (req: AuthRequest, res) 
 })
 
 // Delete subscription (admin only) - permanent deletion
-router.delete('/:subscriptionId', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+router.delete('/:subscriptionId', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const { subscriptionId } = req.params
 
@@ -292,7 +293,7 @@ router.delete('/:subscriptionId', requireAuth, requireAdmin, async (req: AuthReq
 })
 
 // Get subscription history for a user (admin only)
-router.get('/user/:userId/history', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+router.get('/user/:userId/history', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const { userId } = req.params
 
