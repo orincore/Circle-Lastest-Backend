@@ -1,7 +1,7 @@
 import { supabase } from '../../config/supabase.js'
 import { logger } from '../../config/logger.js'
 import { TogetherAIService, type AIMessage, type AIResponse } from './together-ai.service.js'
-import { RefundPolicyService } from './refund-policy.service.js'
+import { RefundPolicyService } from './refund-policy.service'
 
 export interface Conversation {
   id: string
@@ -37,6 +37,19 @@ export class ConversationService {
     initialMessage?: string
   ): Promise<Conversation> {
     try {
+      // Debug logging for sessionId
+      logger.info({ 
+        sessionId, 
+        sessionIdType: typeof sessionId, 
+        sessionIdLength: sessionId?.length,
+        userId, 
+        initialMessage 
+      }, 'Starting new conversation')
+
+      if (!sessionId) {
+        throw new Error('Session ID is required to start a conversation')
+      }
+
       const conversation: Conversation = {
         id: `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         userId,
@@ -264,6 +277,22 @@ How can I help you today?`,
   // Save conversation to database
   private static async saveConversation(conversation: Conversation): Promise<void> {
     try {
+      // Debug logging to check sessionId
+      logger.info({ 
+        conversationId: conversation.id, 
+        sessionId: conversation.sessionId,
+        sessionIdType: typeof conversation.sessionId,
+        sessionIdLength: conversation.sessionId?.length 
+      }, 'Saving conversation with sessionId')
+
+      if (!conversation.sessionId) {
+        logger.error({ 
+          conversationId: conversation.id, 
+          conversation: JSON.stringify(conversation, null, 2) 
+        }, 'Missing sessionId in conversation')
+        throw new Error('Session ID is required but missing from conversation')
+      }
+
       const conversationData = {
         id: conversation.id,
         user_id: conversation.userId,
@@ -276,6 +305,10 @@ How can I help you today?`,
         created_at: conversation.createdAt.toISOString(),
         updated_at: conversation.updatedAt.toISOString()
       }
+
+      logger.info({ 
+        conversationData: { ...conversationData, messages: '[MESSAGES]', user_context: '[CONTEXT]' } 
+      }, 'Upserting conversation data')
 
       const { error } = await supabase
         .from('ai_conversations')
