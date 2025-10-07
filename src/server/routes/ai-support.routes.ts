@@ -31,10 +31,20 @@ router.post('/conversation/start', chatRateLimit, async (req, res) => {
       return res.status(400).json({ error: 'Session ID is required' })
     }
 
-    // Use enhanced conversation service for better admin actions integration
-    const conversation = userId 
-      ? await EnhancedConversationService.startEnhancedConversation(sessionId, userId, initialMessage)
-      : await ConversationService.startConversation(sessionId, userId, initialMessage)
+    // Always try to use enhanced conversation service first
+    let conversation
+    if (userId) {
+      try {
+        conversation = await EnhancedConversationService.startEnhancedConversation(sessionId, userId, initialMessage)
+        console.log('✅ Started enhanced conversation for user:', userId)
+      } catch (error: any) {
+        console.log('❌ Enhanced conversation failed, falling back to basic:', error?.message || error)
+        conversation = await ConversationService.startConversation(sessionId, userId, initialMessage)
+      }
+    } else {
+      console.log('⚠️ No userId provided, using basic conversation service')
+      conversation = await ConversationService.startConversation(sessionId, userId, initialMessage)
+    }
 
     res.json({
       success: true,
@@ -70,9 +80,12 @@ router.post('/conversation/:conversationId/message', chatRateLimit, async (req, 
     let result
     try {
       result = await EnhancedConversationService.addEnhancedMessage(conversationId, message.trim())
+      console.log('✅ Enhanced message processed successfully')
     } catch (enhancedError: any) {
-      if (enhancedError?.message === 'Conversation not found') {
+      console.log('❌ Enhanced message failed:', enhancedError?.message)
+      if (enhancedError?.message === 'Conversation not found' || enhancedError?.message?.includes('not found')) {
         // Fallback to basic conversation service
+        console.log('🔄 Falling back to basic conversation service')
         result = await ConversationService.addMessage(conversationId, message.trim())
       } else {
         throw enhancedError
