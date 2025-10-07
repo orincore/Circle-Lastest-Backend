@@ -1,7 +1,9 @@
 import express from 'express'
 import { ConversationService } from '../services/ai/conversation.service.js'
+import EnhancedConversationService from '../services/ai/enhanced-conversation.service.js'
 import { TogetherAIService } from '../services/ai/together-ai.service.js'
 import { RefundPolicyService } from '../services/ai/refund-policy.service.js'
+import { AdminActionsService } from '../services/ai/admin-actions.service.js'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { logger } from '../config/logger.js'
 import rateLimit from 'express-rate-limit'
@@ -29,18 +31,19 @@ router.post('/conversation/start', chatRateLimit, async (req, res) => {
       return res.status(400).json({ error: 'Session ID is required' })
     }
 
-    const conversation = await ConversationService.startConversation(
-      sessionId,
-      userId,
-      initialMessage
-    )
+    // Use enhanced conversation service for better admin actions integration
+    const conversation = userId 
+      ? await EnhancedConversationService.startEnhancedConversation(sessionId, userId, initialMessage)
+      : await ConversationService.startConversation(sessionId, userId, initialMessage)
 
     res.json({
       success: true,
       conversation: {
         id: conversation.id,
         messages: conversation.messages,
-        status: conversation.status
+        status: conversation.status,
+        intent: conversation.intent,
+        ...(userId && 'personality' in conversation ? { personality: conversation.personality } : {})
       }
     })
   } catch (error) {
@@ -63,14 +66,27 @@ router.post('/conversation/:conversationId/message', chatRateLimit, async (req, 
       return res.status(400).json({ error: 'Message too long (max 1000 characters)' })
     }
 
-    const result = await ConversationService.addMessage(conversationId, message.trim())
+    // Try enhanced conversation service first, fallback to basic service
+    let result
+    try {
+      result = await EnhancedConversationService.addEnhancedMessage(conversationId, message.trim())
+    } catch (enhancedError: any) {
+      if (enhancedError?.message === 'Conversation not found') {
+        // Fallback to basic conversation service
+        result = await ConversationService.addMessage(conversationId, message.trim())
+      } else {
+        throw enhancedError
+      }
+    }
 
     res.json({
       success: true,
       conversation: {
         id: result.conversation.id,
         messages: result.conversation.messages.slice(-10), // Return last 10 messages
-        status: result.conversation.status
+        status: result.conversation.status,
+        intent: result.conversation.intent,
+        conversationEnded: ('conversationState' in result.conversation) ? result.conversation.conversationState?.conversationEnded || false : false
       },
       aiResponse: result.aiResponse
     })
@@ -149,43 +165,64 @@ router.post('/conversation/:conversationId/escalate', async (req, res) => {
   }
 })
 
+// Process refund (for authenticated users)
+router.post('/refund/process', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { reason = 'User requested refund via customer service' } = req.body
+
+    logger.info({ userId, reason }, 'Processing refund request')
+
+    const result = await AdminActionsService.processRefund(userId, reason)
+
+    res.json({
+      success: result.success,
+      message: result.message,
+      data: result.data,
+      actionTaken: result.actionTaken
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error processing refund')
+    res.status(500).json({ error: 'Failed to process refund' })
+  }
+})
+
+// Cancel subscription (for authenticated users)
+router.post('/subscription/cancel', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { reason = 'User requested cancellation via customer service' } = req.body
+
+    logger.info({ userId, reason }, 'Processing subscription cancellation')
+
+    const result = await AdminActionsService.cancelSubscription(userId, reason)
+
+    res.json({
+      success: result.success,
+      message: result.message,
+      data: result.data,
+      actionTaken: result.actionTaken
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error cancelling subscription')
+    res.status(500).json({ error: 'Failed to cancel subscription' })
+  }
+})
+
 // Check refund eligibility (for authenticated users)
 router.get('/refund/eligibility', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
 
-    // Get user's latest subscription
-    const { supabase } = await import('../config/supabase.js')
-    const { data: subscription, error } = await supabase
-      .from('subscriptions')
-      .select('started_at, plan_type, price_paid, currency, status')
-      .eq('user_id', userId)
-      .eq('status', 'active')
-      .order('started_at', { ascending: false })
-      .limit(1)
-      .single()
+    logger.info({ userId }, 'Checking refund eligibility')
 
-    if (error || !subscription) {
-      return res.json({
-        success: true,
-        eligible: false,
-        message: 'No active subscription found'
-      })
-    }
-
-    const eligibility = RefundPolicyService.validateRefundEligibility(subscription.started_at)
+    const result = await AdminActionsService.checkRefundEligibility(userId)
 
     res.json({
-      success: true,
-      eligible: eligibility.eligible,
-      daysRemaining: eligibility.daysRemaining,
-      message: eligibility.message,
-      subscription: {
-        planType: subscription.plan_type,
-        startDate: subscription.started_at,
-        amount: subscription.price_paid,
-        currency: subscription.currency
-      }
+      success: result.success,
+      eligible: result.data?.eligible || false,
+      message: result.message,
+      data: result.data
     })
   } catch (error) {
     logger.error({ error, userId: req.user!.id }, 'Error checking refund eligibility')
