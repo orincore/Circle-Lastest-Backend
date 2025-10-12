@@ -151,8 +151,8 @@ export class AdminActionsService {
         .from('subscriptions')
         .update({ 
           status: 'cancelled',
-          cancelled_at: new Date().toISOString(),
-          cancellation_reason: 'refund_processed'
+          cancelled_at: new Date().toISOString()
+          // cancellation_reason field doesn't exist in schema
         })
         .eq('id', subscription.id)
 
@@ -223,8 +223,9 @@ export class AdminActionsService {
         .from('subscriptions')
         .update({ 
           status: 'cancelled',
-          cancelled_at: new Date().toISOString(),
-          cancellation_reason: reason
+          cancelled_at: new Date().toISOString()
+          // cancellation_reason field doesn't exist in schema
+          // reason is logged in the service call
         })
         .eq('id', activeSubscription.id)
 
