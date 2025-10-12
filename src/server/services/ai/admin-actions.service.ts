@@ -76,6 +76,14 @@ export class AdminActionsService {
       const { activeSubscription, daysSinceStart } = subscriptionResult.data
       const isEligible = daysSinceStart <= 7
 
+      // Determine refund amount - use price_paid or default based on plan type
+      let refundAmount = activeSubscription.price_paid
+      if (!refundAmount || refundAmount === 0) {
+        // Fallback to default plan prices if price_paid is not set
+        refundAmount = activeSubscription.plan_type === 'premium' ? 9.99 : 19.99
+        logger.warn({ userId, subscriptionId: activeSubscription.id }, 'price_paid is null, using default plan price')
+      }
+
       return {
         success: true,
         message: isEligible 
@@ -85,8 +93,8 @@ export class AdminActionsService {
           eligible: isEligible,
           daysSinceStart,
           subscription: activeSubscription,
-          refundAmount: activeSubscription.price_paid,
-          currency: activeSubscription.currency
+          refundAmount: refundAmount,
+          currency: activeSubscription.currency || 'USD'
         }
       }
     } catch (error) {
