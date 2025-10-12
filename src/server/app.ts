@@ -51,6 +51,7 @@ import refundRouter from './routes/refund.routes.js'
 import revenueRouter from './routes/revenue.routes.js'
 import aiSupportRouter from './routes/ai-support.routes.js'
 import aiAdminRouter from './routes/ai-admin.routes.js'
+import publicStatsRouter from './routes/public-stats.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -198,6 +199,7 @@ app.get('/delete-account.html', (req, res) => {
 })
 
 app.use('/health', healthRouter)
+app.use('/api/public', publicStatsRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/auth', emailVerificationRouter)
 app.use('/api/auth', passwordResetRouter)
