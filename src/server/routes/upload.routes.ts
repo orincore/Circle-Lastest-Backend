@@ -75,12 +75,12 @@ router.post('/profile-photo', requireAuth, upload.single('photo'), async (req: A
       Key: key,
       Body: buffer,
       ContentType: contentType,
-      ACL: 'public-read' as const,
+      // ACL removed - bucket uses bucket policy for public access instead
     };
 
     await s3Client.send(new PutObjectCommand(uploadParams));
 
-    // Generate URL
+    // Generate URL (bucket should have public read policy configured)
     const url = `https://${BUCKET_NAME}/${key}`;
 
     console.log(`✅ Profile photo uploaded successfully: ${url}`);
@@ -138,13 +138,13 @@ router.post('/media', requireAuth, upload.single('file'), async (req: AuthReques
       Key: key,
       Body: buffer,
       ContentType: contentType,
-      ACL: 'public-read' as const,
+      // ACL removed - bucket uses bucket policy for public access instead
     };
 
     await s3Client.send(new PutObjectCommand(uploadParams));
 
-    // Generate URL
-    const url = `https://${BUCKET_NAME}.s3.amazonaws.com/${key}`;
+    // Generate URL (bucket should have public read policy configured)
+    const url = `https://${BUCKET_NAME}/${key}`;
 
     // For videos, generate thumbnail (optional - can be done async)
     let thumbnail = null;
