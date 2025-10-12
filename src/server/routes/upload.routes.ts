@@ -36,6 +36,66 @@ const upload = multer({
 });
 
 /**
+ * Upload profile photo to S3
+ */
+router.post('/profile-photo', requireAuth, upload.single('photo'), async (req: AuthRequest, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const userId = req.user!.id;
+    const fileExtension = path.extname(req.file.originalname) || '.jpg';
+    const fileName = `avatar-${Date.now()}${fileExtension}`;
+    const key = `Circle/avatars/${userId}/${fileName}`;
+
+    let buffer = req.file.buffer;
+    let contentType = req.file.mimetype;
+
+    // Compress and resize profile photo
+    try {
+      buffer = await sharp(req.file.buffer)
+        .resize(800, 800, {
+          fit: 'cover',
+          position: 'center',
+        })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      
+      contentType = 'image/jpeg';
+      console.log(`✅ Profile photo compressed: ${buffer.length / 1024} KB`);
+    } catch (error) {
+      console.error('Image compression failed:', error);
+      // Continue with original buffer if compression fails
+    }
+
+    // Upload to S3
+    const uploadParams = {
+      Bucket: BUCKET_NAME,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+      ACL: 'public-read' as const,
+    };
+
+    await s3Client.send(new PutObjectCommand(uploadParams));
+
+    // Generate URL
+    const url = `https://${BUCKET_NAME}/${key}`;
+
+    console.log(`✅ Profile photo uploaded successfully: ${url}`);
+
+    res.json({
+      success: true,
+      url,
+    });
+  } catch (error) {
+    console.error('Profile photo upload error:', error);
+    res.status(500).json({ error: 'Failed to upload profile photo' });
+  }
+});
+
+/**
  * Upload media to S3
  */
 router.post('/media', requireAuth, upload.single('file'), async (req: AuthRequest, res) => {
