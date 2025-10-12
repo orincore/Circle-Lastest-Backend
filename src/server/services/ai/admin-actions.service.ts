@@ -228,6 +228,29 @@ export class AdminActionsService {
         }
       }
 
+      // Send cancellation confirmation email
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('email, username')
+          .eq('id', userId)
+          .single()
+
+        if (profile?.email) {
+          // Import email service dynamically
+          const { default: EmailService } = await import('../../services/emailService.js')
+          
+          await EmailService.sendSubscriptionCancellationEmail(
+            profile.email,
+            profile.username || 'User',
+            activeSubscription.plan_type,
+            new Date().toISOString()
+          )
+        }
+      } catch (emailError) {
+        logger.warn({ error: emailError, userId }, 'Failed to send cancellation confirmation email')
+      }
+
       return {
         success: true,
         message: `✅ Subscription cancelled successfully. Your ${activeSubscription.plan_type} plan has been cancelled and will not renew.`,

@@ -212,6 +212,75 @@ How can I help you today?`,
 
       // Handle admin actions if user is authenticated
       if (conversation.userId) {
+        // Handle cancellation confirmation (must be before general cancellation check)
+        if (this.isCancellationConfirmation(messageContent)) {
+          const eligibilityResult = await AdminActionsService.checkRefundEligibility(conversation.userId)
+          
+          if (eligibilityResult.success && eligibilityResult.data?.eligible) {
+            // Process refund for cancellations within 7 days
+            const result = await AdminActionsService.processRefund(conversation.userId, 'AI Assistant - User confirmed cancellation with refund')
+            return {
+              message: result.success ? 
+                `✅ **Cancellation and Refund Processed Successfully!**
+
+Your subscription has been cancelled and your refund is being processed.
+
+📧 **Confirmation Email Sent**
+You'll receive a confirmation email with:
+• Refund details and amount
+• Expected refund timeline (3-5 business days)
+• Cancellation confirmation
+
+💰 **Refund Details:**
+• Amount: ${result.data?.amount} ${result.data?.currency}
+• Refund ID: ${result.data?.refundId}
+• Processing time: 3-5 business days
+
+🎉 **What's Next:**
+• You can continue using Circle with a free account
+• Your premium features are now deactivated
+• No future charges will be made
+
+Is there anything else I can help you with?` :
+                `I encountered an issue processing your refund. Please contact our support team at contact@orincore.com for immediate assistance.`,
+              confidence: 0.95,
+              intent: 'refund_processed',
+              requiresEscalation: !result.success,
+              conversationEnded: result.success
+            }
+          } else {
+            // Cancel without refund (after 7 days)
+            const result = await AdminActionsService.cancelSubscription(conversation.userId, 'AI Assistant - User confirmed cancellation')
+            return {
+              message: result.success ? 
+                `✅ **Subscription Cancelled Successfully!**
+
+Your subscription has been cancelled as requested.
+
+📧 **Confirmation Email Sent**
+You'll receive a confirmation email with cancellation details.
+
+ℹ️ **Important Information:**
+• Your premium features remain active until the end of your current billing period
+• No refund is available (subscription is older than 7 days)
+• Your subscription will NOT auto-renew
+• No future charges will be made
+
+🎉 **What's Next:**
+• Continue enjoying premium features until your billing period ends
+• After that, you'll automatically switch to a free account
+• You can resubscribe anytime if you change your mind
+
+Is there anything else I can help you with?` :
+                `I encountered an issue cancelling your subscription. Please contact our support team at contact@orincore.com for assistance.`,
+              confidence: 0.95,
+              intent: 'cancellation_processed',
+              requiresEscalation: !result.success,
+              conversationEnded: result.success
+            }
+          }
+        }
+
         // Check subscription status
         if (this.isSubscriptionInquiry(messageContent)) {
           const result = await AdminActionsService.checkSubscriptionStatus(conversation.userId)
@@ -242,25 +311,63 @@ How can I help you today?`,
             }
           }
 
-          // Check refund eligibility
+          // Check refund eligibility and provide detailed information
           const eligibilityResult = await AdminActionsService.checkRefundEligibility(conversation.userId)
+          const subscriptionResult = await AdminActionsService.checkSubscriptionStatus(conversation.userId)
+          
           if (eligibilityResult.success && eligibilityResult.data?.eligible) {
+            const { daysSinceStart, subscription, refundAmount, currency } = eligibilityResult.data
             return {
-              message: `${eligibilityResult.message}\n\nWould you like me to process your refund automatically? Just say "yes, process my refund" and I'll handle everything for you right now.`,
+              message: `I can help you with a refund! Here's your subscription information:
+
+📋 **Subscription Details:**
+• Plan: ${subscription.plan_type}
+• Amount Paid: ${refundAmount} ${currency}
+• Started: ${new Date(subscription.started_at).toLocaleDateString()}
+• Days Since Start: ${daysSinceStart} days
+
+✅ **Refund Eligibility:** You are eligible for a full refund!
+• Our refund policy allows refunds within 7 days of subscription
+• You subscribed ${daysSinceStart} days ago (within the 7-day window)
+• Refund amount: ${refundAmount} ${currency}
+
+💡 **What happens next:**
+1. Your subscription will be cancelled immediately
+2. You'll receive a full refund of ${refundAmount} ${currency}
+3. Refund will appear in 3-5 business days
+4. You can continue using Circle with a free account
+
+Would you like me to process your refund now? Just say "yes, process my refund" and I'll handle everything for you.`,
               confidence: 0.95,
               intent: 'refund',
               requiresEscalation: false,
               conversationEnded: false
             }
           } else {
-            // Use existing refund policy service for ineligible cases
-            const refundResponse = await RefundPolicyService.handleRefundRequest(
-              lastUserMessage.content,
-              conversation.userContext,
-              conversation.refundExplanationCount
-            )
-            if (refundResponse) {
-              return refundResponse
+            // Provide detailed information for ineligible refunds
+            const { daysSinceStart, subscription } = eligibilityResult.data || {}
+            return {
+              message: `I understand you'd like a refund. Let me check your subscription details:
+
+📋 **Subscription Information:**
+${subscription ? `• Plan: ${subscription.plan_type}
+• Amount Paid: ${subscription.price_paid} ${subscription.currency}
+• Started: ${new Date(subscription.started_at).toLocaleDateString()}
+• Days Since Start: ${daysSinceStart} days` : '• No active subscription found'}
+
+❌ **Refund Eligibility:** Unfortunately, you're not eligible for a refund.
+• Our refund policy allows refunds within 7 days of subscription
+${daysSinceStart ? `• You subscribed ${daysSinceStart} days ago (outside the 7-day window)` : ''}
+
+📝 **Your Options:**
+1. **Cancel Subscription:** I can cancel your subscription so it won't renew, but you'll keep access until the end of your billing period
+2. **Contact Support:** For special circumstances, you can contact our support team at contact@orincore.com
+
+Would you like me to cancel your subscription for you?`,
+              confidence: 0.95,
+              intent: 'refund_ineligible',
+              requiresEscalation: false,
+              conversationEnded: false
             }
           }
         }
@@ -269,31 +376,71 @@ How can I help you today?`,
         if (this.isCancellationRequest(messageContent)) {
           // First check if user is eligible for refund (within 7 days)
           const eligibilityResult = await AdminActionsService.checkRefundEligibility(conversation.userId)
+          const subscriptionResult = await AdminActionsService.checkSubscriptionStatus(conversation.userId)
+          
+          if (!subscriptionResult.success || !subscriptionResult.data?.hasActiveSubscription) {
+            return {
+              message: `I checked your account and you don't have an active subscription to cancel. You're currently using Circle with a free account.
+
+If you have any other questions or need help with something else, I'm here to assist!`,
+              confidence: 0.95,
+              intent: 'no_subscription',
+              requiresEscalation: false,
+              conversationEnded: false
+            }
+          }
           
           if (eligibilityResult.success && eligibilityResult.data?.eligible) {
-            // Process refund automatically for cancellations within 7 days
-            const refundResult = await AdminActionsService.processRefund(conversation.userId, 'AI Assistant - Cancellation with refund (within 7 days)')
+            const { daysSinceStart, subscription, refundAmount, currency } = eligibilityResult.data
             
             return {
-              message: refundResult.success ? 
-                `✅ Subscription cancelled and refund processed! Since you subscribed within the last 7 days, I've automatically processed your refund of ${refundResult.data?.amount} ${refundResult.data?.currency}.\n\nYour refund will appear in your account within 3-5 business days. You can continue using Circle with a free account.` :
-                `I've cancelled your subscription, but there was an issue processing your refund. Please contact our support team for assistance with your refund.`,
+              message: `I can help you cancel your subscription! Since you subscribed recently, you're eligible for a full refund.
+
+📋 **Your Subscription:**
+• Plan: ${subscription.plan_type}
+• Amount Paid: ${refundAmount} ${currency}
+• Started: ${new Date(subscription.started_at).toLocaleDateString()} (${daysSinceStart} days ago)
+
+✅ **Good News:** You're within our 7-day refund window!
+
+💡 **If I cancel now:**
+1. Your subscription will be cancelled immediately
+2. You'll receive a FULL REFUND of ${refundAmount} ${currency}
+3. Refund will appear in 3-5 business days
+4. You can continue using Circle with a free account
+
+Would you like me to proceed with the cancellation and refund? Just say "yes, cancel and refund" to confirm.`,
               confidence: 0.95,
-              intent: 'cancellation_with_refund',
-              requiresEscalation: !refundResult.success,
-              conversationEnded: refundResult.success
+              intent: 'cancellation_with_refund_available',
+              requiresEscalation: false,
+              conversationEnded: false
             }
           } else {
             // Regular cancellation without refund (after 7 days)
-            const result = await AdminActionsService.cancelSubscription(conversation.userId, 'AI Assistant - User requested cancellation')
+            const { daysSinceStart, subscription } = eligibilityResult.data || {}
+            
             return {
-              message: result.success ? 
-                `✅ Subscription cancelled successfully. Since your subscription is older than 7 days, no refund is available according to our refund policy.\n\nYour subscription will not renew, but you can continue using your premium features until the end of your current billing period.` :
-                result.message,
+              message: `I can help you cancel your subscription. Let me explain what will happen:
+
+📋 **Your Subscription:**
+• Plan: ${subscription?.plan_type || 'Unknown'}
+• Started: ${subscription ? new Date(subscription.started_at).toLocaleDateString() : 'Unknown'} (${daysSinceStart || 'Unknown'} days ago)
+
+ℹ️ **Refund Status:** No refund available
+• Our refund policy allows refunds within 7 days of subscription
+• You subscribed ${daysSinceStart || 'more than 7'} days ago (outside the refund window)
+
+💡 **If I cancel now:**
+1. Your subscription will be cancelled
+2. You'll keep premium access until the end of your current billing period
+3. Your subscription will NOT auto-renew
+4. No charges will be made after the current period ends
+
+Would you like me to proceed with the cancellation? Say "yes, cancel my subscription" to confirm.`,
               confidence: 0.95,
-              intent: 'cancellation',
-              requiresEscalation: !result.success,
-              conversationEnded: result.success
+              intent: 'cancellation_no_refund',
+              requiresEscalation: false,
+              conversationEnded: false
             }
           }
         }
@@ -347,9 +494,20 @@ How can I help you today?`,
   private static isRefundProcessingRequest(message: string): boolean {
     const processingKeywords = [
       'yes, process my refund', 'process refund', 'yes process', 
-      'go ahead', 'do it', 'yes please', 'confirm refund'
+      'go ahead', 'do it', 'yes please', 'confirm refund',
+      'yes, cancel and refund', 'cancel and refund', 'proceed with refund',
+      'yes refund', 'process it', 'yes do it'
     ]
     return processingKeywords.some(keyword => message.includes(keyword))
+  }
+
+  private static isCancellationConfirmation(message: string): boolean {
+    const confirmationKeywords = [
+      'yes, cancel my subscription', 'yes cancel', 'confirm cancellation',
+      'proceed with cancellation', 'yes, cancel and refund', 'cancel and refund',
+      'yes cancel and refund', 'confirm cancel', 'yes please cancel'
+    ]
+    return confirmationKeywords.some(keyword => message.includes(keyword))
   }
 
   private static isCancellationRequest(message: string): boolean {
