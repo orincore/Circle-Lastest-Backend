@@ -124,8 +124,8 @@ export class AdminActionsService {
           reason: reason,
           status: 'approved',
           requested_at: new Date().toISOString(),
-          processed_at: new Date().toISOString(),
-          processed_by: 'ai_assistant'
+          processed_at: new Date().toISOString()
+          // processed_by removed - field expects UUID, not string
         })
         .select()
         .single()

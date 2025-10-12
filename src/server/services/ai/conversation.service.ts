@@ -531,8 +531,46 @@ Would you like me to proceed with the cancellation? Say "yes, cancel my subscrip
 
   // Check if message is a refund request
   private static isRefundRequest(message: string): boolean {
-    const refundKeywords = ['refund', 'money back', 'cancel subscription', 'return money', 'get my money']
-    const lowerMessage = message.toLowerCase()
+    const lowerMessage = message.toLowerCase().trim()
+    
+    // Negative patterns - user doesn't want refund
+    // Only match if these are the primary intent, not just containing "no"
+    const negativePatterns = [
+      "don't want refund",
+      "don't need refund",
+      "skip refund",
+      "no thanks",
+      "i don't want"
+    ]
+    
+    // Check for negative patterns - but only if they're not followed by positive intent
+    const hasNegativeIntent = negativePatterns.some(pattern => lowerMessage.includes(pattern))
+    const hasPositiveRefundIntent = lowerMessage.includes('want refund') || 
+                                     lowerMessage.includes('need refund') ||
+                                     lowerMessage.includes('i want my')
+    
+    // If there's positive intent, ignore negative patterns
+    if (hasNegativeIntent && !hasPositiveRefundIntent) {
+      return false
+    }
+    
+    // Positive refund request patterns
+    const refundKeywords = [
+      'refund',
+      'money back',
+      'return money',
+      'get my money',
+      'want refund',
+      'need refund',
+      'i want my refund',
+      'want my refund',
+      'need my refund',
+      'get refund',
+      'request refund',
+      'give me refund',
+      'my money back'
+    ]
+    
     return refundKeywords.some(keyword => lowerMessage.includes(keyword))
   }
 
