@@ -31,7 +31,6 @@ function getOtherUserId(friendship: FriendshipRecord, currentUserId: string): st
 }
 
 export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, userId: string) {
-  console.log('👥 Setting up simplified friend request handlers for user:', userId);
 
   // ==========================================
   // SEND FRIEND REQUEST
@@ -41,7 +40,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const senderId = userId;
       const { receiverId } = data;
 
-      console.log('📤 Friend request:', senderId, '→', receiverId);
 
       // Validate
       if (!receiverId || senderId === receiverId) {
@@ -162,7 +160,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
 
         // Confirm to sender
         socket.emit('friend:request:sent', { request: updated });
-        console.log('✅ Friend request reactivated:', updated.id);
         return;
       }
 
@@ -220,7 +217,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
 
       // Confirm to sender
       socket.emit('friend:request:sent', { request: newRequest });
-      console.log('✅ Friend request sent:', newRequest.id);
 
     } catch (error: any) {
       console.error('❌ Error sending friend request:', error);
@@ -239,7 +235,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
   socket.on('friend:request:accept', async (data: { requestId: string }) => {
     try {
       const { requestId } = data;
-      console.log('✅ Accepting friend request:', requestId);
 
       // Get the friendship record
       const { data: friendship, error: fetchError } = await supabase
@@ -309,7 +304,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         friend: senderProfile
       });
 
-      console.log('✅ Friend request accepted:', requestId);
 
     } catch (error) {
       console.error('❌ Error accepting friend request:', error);
@@ -323,7 +317,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
   socket.on('friend:request:decline', async (data: { requestId: string }) => {
     try {
       const { requestId } = data;
-      console.log('❌ Declining friend request:', requestId);
 
       // Get the friendship record
       const { data: friendship, error: fetchError } = await supabase
@@ -369,7 +362,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
 
       // Confirm to receiver
       socket.emit('friend:request:declined', { requestId });
-      console.log('✅ Friend request declined:', requestId);
 
     } catch (error) {
       console.error('❌ Error declining friend request:', error);
@@ -385,7 +377,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const senderId = userId;
       const { receiverId } = data;
 
-      console.log('🚫 Cancelling friend request:', senderId, '→', receiverId);
 
       const { user1_id, user2_id } = getOrderedUserIds(senderId, receiverId);
 
@@ -430,7 +421,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         success: true 
       });
 
-      console.log('✅ Friend request cancelled:', friendship.id);
 
     } catch (error) {
       console.error('❌ Error cancelling friend request:', error);
@@ -443,7 +433,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
   // ==========================================
   socket.on('friend:requests:get', async () => {
     try {
-      console.log('📋 Getting pending friend requests for:', userId);
 
       // Get all pending requests where user is the receiver
       const { data: requests, error } = await supabase
@@ -463,7 +452,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       }
 
       socket.emit('friend:requests:list', { requests: requests || [] });
-      console.log(`✅ Sent ${requests?.length || 0} pending requests`);
 
     } catch (error) {
       console.error('❌ Error getting friend requests:', error);
@@ -477,7 +465,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
   socket.on('friend:unfriend', async (data: { friendId: string }) => {
     try {
       const { friendId } = data;
-      console.log('💔 Unfriending:', userId, '↔', friendId);
 
       const { user1_id, user2_id } = getOrderedUserIds(userId, friendId);
 
@@ -511,7 +498,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         success: true
       });
 
-      console.log('✅ Unfriended:', updated.id);
 
     } catch (error) {
       console.error('❌ Error unfriending:', error);
@@ -524,7 +510,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
   // ==========================================
   socket.on('friend:requests:get_pending', async () => {
     try {
-      console.log('📋 Getting pending friend requests for user:', userId);
 
       // Query friendships table for pending requests where user is the receiver
       const { data: friendships, error } = await supabase
@@ -573,7 +558,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         });
 
         socket.emit('friend:requests:pending_list', { requests: requestsWithSenders });
-        console.log('✅ Sent pending requests:', requestsWithSenders.length);
       } else {
         socket.emit('friend:requests:pending_list', { requests: [] });
       }

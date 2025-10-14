@@ -8,29 +8,22 @@ const router = Router()
 router.get('/stats', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    console.log('🔍 Fetching Circle stats for user:', userId)
+    //console.log('🔍 Fetching Circle stats for user:', userId)
     
     // Update user stats first to ensure they're current
-    console.log('📊 Updating user stats...')
+    //console.log('📊 Updating user stats...')
     await CirclePointsService.updateUserStats(userId)
     
     // Get comprehensive stats
-    console.log('📈 Fetching user stats...')
+    //console.log('📈 Fetching user stats...')
     const stats = await CirclePointsService.getUserStats(userId)
     
     if (!stats) {
-      console.log('❌ No stats found for user:', userId)
+      //console.log('❌ No stats found for user:', userId)
       return res.status(404).json({ error: 'User stats not found' })
     }
     
-    console.log('✅ User stats retrieved:', {
-      circle_points: stats.circle_points,
-      total_matches: stats.total_matches,
-      total_friends: stats.total_friends,
-      messages_sent: stats.messages_sent,
-      messages_received: stats.messages_received,
-      profile_visits_received: stats.profile_visits_received
-    })
+    
     
     // Get performance message and suggestions
     const performanceMessage = await CirclePointsService.getPerformanceMessage(stats, userId)
@@ -138,7 +131,7 @@ router.get('/activities', requireAuth, async (req: AuthRequest, res) => {
 router.post('/initialize', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    console.log('🚀 Initializing Circle points for user:', userId)
+    //console.log('🚀 Initializing Circle points for user:', userId)
     
     // Record profile completion activity
     await CirclePointsService.recordActivity({
@@ -156,7 +149,7 @@ router.post('/initialize', requireAuth, async (req: AuthRequest, res) => {
       metadata: { initialization: true, timestamp: new Date().toISOString() }
     })
     
-    console.log('✅ User initialized with basic activities')
+    //console.log('✅ User initialized with basic activities')
     
     res.json({ 
       success: true, 

@@ -9,11 +9,9 @@ const supabase = createClient(
 );
 
 async function updateFriendshipsConstraint() {
-  console.log('🔄 Updating friendships status constraint...');
   
   try {
     // Verify the constraint was updated
-    console.log('🔍 Verifying current constraint...');
     const { data: constraints, error: verifyError } = await supabase
       .rpc('exec_sql', {
         sql: `SELECT 
@@ -24,13 +22,10 @@ async function updateFriendshipsConstraint() {
       });
     
     if (verifyError) {
-      console.log('⚠️ Verify error:', verifyError);
     } else {
-      console.log('✅ Current constraint:', constraints);
     }
     
     // Test that we can now use 'inactive' status
-    console.log('🧪 Testing inactive status...');
     const { data: testData, error: testError } = await supabase
       .from('friendships')
       .select('status')
@@ -38,12 +33,9 @@ async function updateFriendshipsConstraint() {
       .limit(1);
     
     if (testError) {
-      console.log('⚠️ Test query error:', testError);
     } else {
-      console.log('✅ Inactive status query works:', testData?.length || 0, 'inactive friendships found');
     }
     
-    console.log('🎉 Constraint verification completed!');
     
   } catch (error) {
     console.error('❌ Verification failed:', error);

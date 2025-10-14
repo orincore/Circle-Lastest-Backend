@@ -44,7 +44,7 @@ function isUserInActiveProposal(userId: string): boolean {
 export async function startSearch(userId: string) {
   // Don't allow users to start searching if they're already in an active proposal
   if (isUserInActiveProposal(userId)) {
-    console.log(`User ${userId} is already in an active proposal, cannot start new search`)
+    //console.log(`User ${userId} is already in an active proposal, cannot start new search`)
     return { searching: false, error: 'Already in an active match proposal' }
   }
   
@@ -52,7 +52,7 @@ export async function startSearch(userId: string) {
   searching.delete(userId)
   
   searching.set(userId, { userId, startedAt: Date.now() })
-  console.log(`User ${userId} started searching for matches`)
+  //console.log(`User ${userId} started searching for matches`)
   
   // attempt immediate pairing
   await tryPair(userId)
@@ -193,7 +193,7 @@ async function tryPair(userId: string) {
 
   // Don't try to pair users who are already in active proposals
   if (isUserInActiveProposal(userId)) {
-    console.log(`User ${userId} is already in an active proposal, skipping pairing`)
+    //console.log(`User ${userId} is already in an active proposal, skipping pairing`)
     return
   }
 
@@ -206,7 +206,7 @@ async function tryPair(userId: string) {
     
     // Skip users who are already in active proposals
     if (isUserInActiveProposal(otherId)) {
-      console.log(`User ${otherId} is already in an active proposal, skipping`)
+      //console.log(`User ${otherId} is already in an active proposal, skipping`)
       continue
     }
     
@@ -238,7 +238,7 @@ async function tryPair(userId: string) {
     
     // Double-check that neither user is in an active proposal before creating new one
     if (isUserInActiveProposal(userId) || isUserInActiveProposal(otherId)) {
-      console.log(`One of the users (${userId}, ${otherId}) is already in an active proposal, aborting pairing`)
+      //console.log(`One of the users (${userId}, ${otherId}) is already in an active proposal, aborting pairing`)
       return
     }
     
@@ -257,7 +257,7 @@ async function tryPair(userId: string) {
     searching.delete(userId)
     searching.delete(otherId)
     
-    console.log(`Created proposal ${id} between users ${userId} and ${otherId}`)
+    //console.log(`Created proposal ${id} between users ${userId} and ${otherId}`)
     
     // Notify both users a proposal is ready
     try {
@@ -289,7 +289,7 @@ export async function heartbeat() {
   // Clean up expired proposals and put users back in searching if needed
   for (const [id, p] of proposals.entries()) {
     if (p.expiresAt < now) {
-      console.log(`Proposal ${id} expired, putting users back in searching`)
+      //console.log(`Proposal ${id} expired, putting users back in searching`)
       proposals.delete(id)
       // Put both users back in searching if they're not already matched
       if (!p.acceptedA || !p.acceptedB) {

@@ -12,11 +12,11 @@ export function sanitizeInput(req: Request, res: Response, next: NextFunction) {
   try {
     // Only sanitize body for POST/PUT/PATCH requests
     if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && typeof req.body === 'object') {
-      console.log('🔍 [Security] Before sanitization:', JSON.stringify(req.body, null, 2));
-      console.log('🔍 [Security] Username before:', req.body.username);
+      //console.log('🔍 [Security] Before sanitization:', JSON.stringify(req.body, null, 2));
+      //console.log('🔍 [Security] Username before:', req.body.username);
       req.body = sanitizeObject(req.body)
-      console.log('🔍 [Security] After sanitization:', JSON.stringify(req.body, null, 2));
-      console.log('🔍 [Security] Username after:', req.body.username);
+      //console.log('🔍 [Security] After sanitization:', JSON.stringify(req.body, null, 2));
+      //console.log('🔍 [Security] Username after:', req.body.username);
     }
 
     // Sanitize query parameters (but be lenient)
@@ -51,15 +51,15 @@ function sanitizeObject(obj: any): any {
     // Sanitize key to prevent prototype pollution
     const safeKey = sanitizeString(key)
     if (key === 'username') {
-      console.log('🔍 [Security] Processing username key:', { originalKey: key, safeKey, value });
+      //console.log('🔍 [Security] Processing username key:', { originalKey: key, safeKey, value });
     }
     if (safeKey !== '__proto__' && safeKey !== 'constructor' && safeKey !== 'prototype') {
       sanitized[safeKey] = sanitizeObject(value)
       if (key === 'username') {
-        console.log('🔍 [Security] Username added to sanitized object:', sanitized[safeKey]);
+        //console.log('🔍 [Security] Username added to sanitized object:', sanitized[safeKey]);
       }
     } else if (key === 'username') {
-      console.log('🔍 [Security] Username key was BLOCKED by security filter!');
+      //console.log('🔍 [Security] Username key was BLOCKED by security filter!');
     }
   }
   return sanitized

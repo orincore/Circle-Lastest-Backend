@@ -63,7 +63,7 @@ router.post('/profile-photo', requireAuth, upload.single('photo'), async (req: A
         .toBuffer();
       
       contentType = 'image/jpeg';
-      console.log(`✅ Profile photo compressed: ${buffer.length / 1024} KB`);
+      //console.log(`✅ Profile photo compressed: ${buffer.length / 1024} KB`);
     } catch (error) {
       console.error('Image compression failed:', error);
       // Continue with original buffer if compression fails
@@ -83,7 +83,7 @@ router.post('/profile-photo', requireAuth, upload.single('photo'), async (req: A
     // Generate URL (bucket should have public read policy configured)
     const url = `https://${BUCKET_NAME}/${key}`;
 
-    console.log(`✅ Profile photo uploaded successfully: ${url}`);
+    //console.log(`✅ Profile photo uploaded successfully: ${url}`);
 
     res.json({
       success: true,
@@ -125,7 +125,7 @@ router.post('/media', requireAuth, upload.single('file'), async (req: AuthReques
           .toBuffer();
         
         contentType = 'image/jpeg';
-        console.log(`✅ Image compressed: ${buffer.length / 1024} KB`);
+        //console.log(`✅ Image compressed: ${buffer.length / 1024} KB`);
       } catch (error) {
         console.error('Image compression failed:', error);
         // Continue with original buffer if compression fails
@@ -154,7 +154,7 @@ router.post('/media', requireAuth, upload.single('file'), async (req: AuthReques
       thumbnail = null;
     }
 
-    console.log(`✅ Media uploaded successfully: ${url}`);
+    //console.log(`✅ Media uploaded successfully: ${url}`);
 
     res.json({
       success: true,

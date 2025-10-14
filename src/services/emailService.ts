@@ -20,7 +20,7 @@ class EmailService {
       if (error) {
         console.error('❌ Email service connection failed:', error);
       } else {
-        console.log('✅ Email service ready to send messages');
+        //console.log('✅ Email service ready to send messages');
       }
     });
   }
@@ -43,7 +43,7 @@ class EmailService {
       };
 
       const info = await this.transporter.sendMail(mailOptions);
-      console.log('✅ Email sent:', info.messageId);
+      //console.log('✅ Email sent:', info.messageId);
       return { success: true, messageId: info.messageId };
     } catch (error) {
       console.error('❌ Failed to send email:', error);

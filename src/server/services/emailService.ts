@@ -13,13 +13,7 @@ class EmailService {
   private transporter: nodemailer.Transporter
 
   constructor() {
-    // Debug email configuration
-    console.log('📧 Email service initializing with config:', {
-      host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
-      port: process.env.SMTP_PORT || '587',
-      user: process.env.SMTP_USER ? '***configured***' : 'NOT SET',
-      pass: process.env.SMTP_PASSWORD ? '***configured***' : 'NOT SET'
-    })
+    
 
     // Configure email transporter using SMTP (same as campaigns)
     this.transporter = nodemailer.createTransport({
@@ -37,7 +31,7 @@ class EmailService {
       if (error) {
         console.error('❌ Email service connection failed:', error)
       } else {
-        console.log('✅ Email service ready to send messages')
+        //console.log('✅ Email service ready to send messages')
       }
     })
   }
@@ -63,7 +57,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ OTP email sent:', result.messageId)
+      //console.log('✅ OTP email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send OTP email:', error)
@@ -214,7 +208,7 @@ class EmailService {
       if (error) {
         console.error('Failed to cleanup expired OTPs:', error)
       } else {
-        console.log('✅ Expired OTPs cleaned up')
+        //console.log('✅ Expired OTPs cleaned up')
       }
     } catch (error) {
       console.error('Cleanup OTPs error:', error)
@@ -488,7 +482,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Password reset email sent:', result.messageId)
+      //console.log('✅ Password reset email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send password reset email:', error)
@@ -510,7 +504,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Password reset confirmation email sent:', result.messageId)
+      //console.log('✅ Password reset confirmation email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send password reset confirmation email:', error)
@@ -532,7 +526,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Welcome email sent:', result.messageId)
+      //console.log('✅ Welcome email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send welcome email:', error)
@@ -866,7 +860,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Sponsored subscription email sent:', result.messageId)
+      //console.log('✅ Sponsored subscription email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send sponsored subscription email:', error)
@@ -878,16 +872,11 @@ class EmailService {
    * Send subscription cancellation email
    */
   async sendSubscriptionCancellationEmail(email: string, name: string, planType: string, cancelledAt?: string): Promise<boolean> {
-    console.log('📧 sendSubscriptionCancellationEmail called with:', {
-      email,
-      name,
-      planType,
-      hasCancelledAt: !!cancelledAt
-    })
+    
 
     try {
       const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
-      console.log('📧 Using from address:', defaultFrom)
+      //console.log('📧 Using from address:', defaultFrom)
       
       const mailOptions = {
         from: defaultFrom,
@@ -896,16 +885,11 @@ class EmailService {
         html: this.getSubscriptionCancellationTemplate(name, planType, cancelledAt),
       }
 
-      console.log('📧 Mail options prepared:', {
-        from: mailOptions.from,
-        to: mailOptions.to,
-        subject: mailOptions.subject,
-        htmlLength: mailOptions.html.length
-      })
+      
 
-      console.log('📧 Attempting to send cancellation email via transporter...')
+      //console.log('📧 Attempting to send cancellation email via transporter...')
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Subscription cancellation email sent successfully:', result.messageId)
+      //console.log('✅ Subscription cancellation email sent successfully:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send subscription cancellation email:', error)
@@ -924,16 +908,11 @@ class EmailService {
    * Send subscription expiration email
    */
   async sendSubscriptionExpirationEmail(email: string, name: string, planType: string, expiredAt?: string): Promise<boolean> {
-    console.log('📧 sendSubscriptionExpirationEmail called with:', {
-      email,
-      name,
-      planType,
-      hasExpiredAt: !!expiredAt
-    })
+   
 
     try {
       const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
-      console.log('📧 Using from address:', defaultFrom)
+      //console.log('📧 Using from address:', defaultFrom)
       
       const mailOptions = {
         from: defaultFrom,
@@ -942,16 +921,11 @@ class EmailService {
         html: this.getSubscriptionExpirationTemplate(name, planType, expiredAt),
       }
 
-      console.log('📧 Mail options prepared:', {
-        from: mailOptions.from,
-        to: mailOptions.to,
-        subject: mailOptions.subject,
-        htmlLength: mailOptions.html.length
-      })
+      
 
-      console.log('📧 Attempting to send expiration email via transporter...')
+      //console.log('📧 Attempting to send expiration email via transporter...')
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Subscription expiration email sent successfully:', result.messageId)
+      //console.log('✅ Subscription expiration email sent successfully:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send subscription expiration email:', error)
@@ -970,18 +944,11 @@ class EmailService {
    * Send subscription confirmation email (user subscribed)
    */
   async sendSubscriptionConfirmationEmail(email: string, name: string, planType: string, amount: number, currency: string, expiresAt?: string): Promise<boolean> {
-    console.log('📧 sendSubscriptionConfirmationEmail called with:', {
-      email,
-      name,
-      planType,
-      amount,
-      currency,
-      hasExpiresAt: !!expiresAt
-    })
+    
 
     try {
       const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
-      console.log('📧 Using from address:', defaultFrom)
+      //console.log('📧 Using from address:', defaultFrom)
       
       const mailOptions = {
         from: defaultFrom,
@@ -990,16 +957,11 @@ class EmailService {
         html: this.getSubscriptionConfirmationTemplate(name, planType, amount, currency, expiresAt),
       }
 
-      console.log('📧 Mail options prepared:', {
-        from: mailOptions.from,
-        to: mailOptions.to,
-        subject: mailOptions.subject,
-        htmlLength: mailOptions.html.length
-      })
+      
 
-      console.log('📧 Attempting to send email via transporter...')
+      //console.log('📧 Attempting to send email via transporter...')
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Subscription confirmation email sent successfully:', result.messageId)
+      //console.log('✅ Subscription confirmation email sent successfully:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send subscription confirmation email:', error)
@@ -1033,7 +995,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Login alert email sent:', result.messageId)
+      //console.log('✅ Login alert email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send login alert email:', error)
@@ -1385,7 +1347,7 @@ class EmailService {
       const welcomeSent = await this.sendWelcomeEmail(email, name)
       
       // Log signup completion
-      console.log(`🎉 User ${name} (${email}) completed signup successfully`)
+      //console.log(`🎉 User ${name} (${email}) completed signup successfully`)
       
       return welcomeSent
     } catch (error) {
@@ -1567,12 +1529,7 @@ class EmailService {
       : 'Your access details will be available in your account.'
 
     // Debug template variables
-    console.log('📧 Sponsored template variables:', {
-      name,
-      planType,
-      planName,
-      expiryText
-    })
+   
 
     return `
     <!DOCTYPE html>
@@ -1857,16 +1814,7 @@ class EmailService {
       ? `Your subscription renews on ${new Date(expiresAt).toLocaleDateString()}.`
       : 'Your subscription details are available in your account.'
 
-    // Debug template variables
-    console.log('📧 Template variables:', {
-      name,
-      planType,
-      planName,
-      amount,
-      formattedAmount,
-      currency,
-      expiryText
-    })
+    
 
     return `
     <!DOCTYPE html>
@@ -2171,14 +2119,7 @@ class EmailService {
       ? `Your subscription was cancelled on ${new Date(cancelledAt).toLocaleDateString()}.`
       : 'Your subscription has been cancelled.'
 
-    // Debug template variables
-    console.log('📧 Cancellation template variables:', {
-      name,
-      planType,
-      planName,
-      cancelText
-    })
-
+   
     return `
     <!DOCTYPE html>
     <html>
@@ -2374,13 +2315,7 @@ class EmailService {
       ? `Your subscription expired on ${new Date(expiredAt).toLocaleDateString()}.`
       : 'Your subscription has expired.'
 
-    // Debug template variables
-    console.log('📧 Expiration template variables:', {
-      name,
-      planType,
-      planName,
-      expiredText
-    })
+    
 
     return `
     <!DOCTYPE html>
@@ -2616,7 +2551,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Refund request confirmation email sent:', result.messageId)
+      //console.log('✅ Refund request confirmation email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send refund request confirmation email:', error)
@@ -2646,7 +2581,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Refund approval email sent:', result.messageId)
+      //console.log('✅ Refund approval email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send refund approval email:', error)
@@ -2685,7 +2620,7 @@ class EmailService {
       }
 
       await this.transporter.sendMail(mailOptions)
-      console.log('✅ Support escalation email sent successfully to:', supportEmail)
+      //console.log('✅ Support escalation email sent successfully to:', supportEmail)
       return true
     } catch (error) {
       console.error('❌ Failed to send support escalation email:', error)
@@ -2713,7 +2648,7 @@ class EmailService {
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ Refund rejection email sent:', result.messageId)
+      //console.log('✅ Refund rejection email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send refund rejection email:', error)

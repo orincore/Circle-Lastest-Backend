@@ -132,9 +132,9 @@ router.post('/verify-reset-otp', resetVerifyLimit, async (req, res) => {
     const { email, otp } = parse.data
 
     // Verify OTP
-    console.log('🔍 Verifying reset OTP:', { email, otp })
+    //console.log('🔍 Verifying reset OTP:', { email, otp })
     const verifyResult = await emailService.verifyOTP(email, otp)
-    console.log('🔍 OTP verification result:', verifyResult)
+    //console.log('🔍 OTP verification result:', verifyResult)
     
     if (!verifyResult.success) {
       return res.status(400).json({ error: verifyResult.error })
@@ -149,7 +149,7 @@ router.post('/verify-reset-otp', resetVerifyLimit, async (req, res) => {
       .eq('verified', true)
       .single()
 
-    console.log('🔍 Verified record in database:', verifiedRecord)
+    //console.log('🔍 Verified record in database:', verifiedRecord)
 
     return res.json({
       success: true,
@@ -188,13 +188,6 @@ router.post('/reset-password', async (req, res) => {
       .gte('verified_at', new Date(Date.now() - 30 * 60 * 1000).toISOString()) // Valid for 30 minutes (increased)
       .single()
 
-    console.log('🔍 OTP Record lookup:', { 
-      email, 
-      resetToken, 
-      found: !!otpRecord, 
-      error: otpError?.message,
-      record: otpRecord 
-    })
 
     if (!otpRecord) {
       // Try to find any OTP record for debugging
@@ -205,15 +198,15 @@ router.post('/reset-password', async (req, res) => {
         .eq('otp', resetToken)
         .single()
 
-      console.log('🔍 Any OTP record for debugging:', anyOtpRecord)
+      //console.log('🔍 Any OTP record for debugging:', anyOtpRecord)
 
       // If we have an OTP record but it's not verified, try to verify it again
       if (anyOtpRecord && !anyOtpRecord.verified) {
-        console.log('🔄 Attempting to re-verify OTP for password reset')
+        //console.log('🔄 Attempting to re-verify OTP for password reset')
         const verifyResult = await emailService.verifyOTP(email, resetToken)
         
         if (verifyResult.success) {
-          console.log('✅ OTP re-verification successful, proceeding with password reset')
+          //console.log('✅ OTP re-verification successful, proceeding with password reset')
           // Continue with password reset
         } else {
           return res.status(400).json({ 
@@ -282,7 +275,7 @@ router.post('/reset-password', async (req, res) => {
       // Don't fail the request if email fails
     }
 
-    console.log(`✅ Password reset successful for user: ${email}`)
+    //console.log(`✅ Password reset successful for user: ${email}`)
 
     return res.json({
       success: true,

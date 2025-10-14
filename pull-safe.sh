@@ -40,7 +40,7 @@ print_info() {
 show_header() {
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║   Circle Backend Safe Deployment Script       ║${NC}"
+    echo -e "${GREEN}║    Circle Backend Safe Deployment Script       ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
     echo ""
     print_info "Deployment started at: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -216,7 +216,7 @@ DEPLOYMENT_DURATION=$((DEPLOYMENT_END_TIME - DEPLOYMENT_START_TIME))
 # Success message
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║     Deployment Completed Successfully         ║${NC}"
+echo -e "${GREEN}║      Deployment Completed Successfully         ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
 echo ""
 print_success "Deployment completed in ${DEPLOYMENT_DURATION} seconds"

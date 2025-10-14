@@ -134,7 +134,7 @@ router.post('/verify-otp', otpVerifyLimit, async (req, res) => {
         email, 
         userProfile.first_name || 'User'
       )
-      console.log(`🎉 Welcome email sent to ${userProfile.first_name} (${email}) after email verification`)
+      //console.log(`🎉 Welcome email sent to ${userProfile.first_name} (${email}) after email verification`)
     }
 
     return res.json({

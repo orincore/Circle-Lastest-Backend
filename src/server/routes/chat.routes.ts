@@ -58,7 +58,7 @@ async function emitUnreadCountUpdate(chatId: string, userId: string) {
     
     const unreadCount = msgIds.filter(id => !readIds.includes(id)).length
     
-    console.log(`📊 Emitting unread count update: chat ${chatId}, user ${userId}, count ${unreadCount}`)
+    //console.log(`📊 Emitting unread count update: chat ${chatId}, user ${userId}, count ${unreadCount}`)
     emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
     
   } catch (error) {
@@ -188,7 +188,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     
     // Emit real-time message to other user for chat list updates
     try {
-      console.log(`📨 Emitting message to user ${otherUserId} for chat ${chatId}`)
+      //console.log(`📨 Emitting message to user ${otherUserId} for chat ${chatId}`)
       emitToUser(otherUserId, 'chat:message', {
         message: {
           id: msg.id,
@@ -215,7 +215,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         }
       })
       
-      console.log(`✅ Message emitted successfully to both users`)
+      //console.log(`✅ Message emitted successfully to both users`)
       
       // Emit unread count update to the receiver
       await emitUnreadCountUpdate(chatId, otherUserId)
@@ -322,10 +322,10 @@ router.get('/:chatId/mute', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { chatId } = req.params
     const userId = req.user!.id
-    console.log('Getting mute setting for:', { userId, chatId })
+    //console.log('Getting mute setting for:', { userId, chatId })
     const setting = await getChatMuteSetting(userId, chatId)
     const muted = await isChatMuted(userId, chatId)
-    console.log('Mute setting result:', { userId, chatId, muted, setting })
+    //console.log('Mute setting result:', { userId, chatId, muted, setting })
     res.json({ 
       isMuted: muted,
       setting: setting 
@@ -343,14 +343,14 @@ router.post('/:chatId/mute', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
     const { isMuted, mutedUntil } = req.body
     
-    console.log('Setting mute status:', { userId, chatId, isMuted, mutedUntil })
+    //console.log('Setting mute status:', { userId, chatId, isMuted, mutedUntil })
     
     if (typeof isMuted !== 'boolean') {
       return res.status(400).json({ error: 'isMuted must be a boolean' })
     }
     
     const setting = await setChatMuteSetting(userId, chatId, isMuted, mutedUntil)
-    console.log('Mute setting saved:', setting)
+    //console.log('Mute setting saved:', setting)
     res.json({ setting })
   } catch (error) {
     console.error('Set mute setting error:', error)

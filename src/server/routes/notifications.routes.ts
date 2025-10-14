@@ -17,7 +17,7 @@ router.post('/register-token', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Token is required' });
     }
 
-    console.log(`📱 Registering push token for user ${userId}:`, { token, deviceType, deviceName });
+    //console.log(`📱 Registering push token for user ${userId}:`, { token, deviceType, deviceName });
 
     // Check if token already exists for this user
     const { data: existingToken } = await supabase
@@ -41,7 +41,7 @@ router.post('/register-token', requireAuth, async (req: AuthRequest, res) => {
         .eq('id', existingToken.id);
 
       if (updateError) throw updateError;
-      console.log('✅ Push token updated');
+      //console.log('✅ Push token updated');
     } else {
       // Insert new token
       const { error: insertError } = await supabase
@@ -55,7 +55,7 @@ router.post('/register-token', requireAuth, async (req: AuthRequest, res) => {
         });
 
       if (insertError) throw insertError;
-      console.log('✅ Push token registered');
+      //console.log('✅ Push token registered');
     }
 
     res.json({ success: true, message: 'Push token registered successfully' });

@@ -29,7 +29,7 @@ const router = express.Router()
  */
 router.get('/check', requireAuth, async (req: AuthRequest, res) => {
   try {
-    console.log('🔍 Admin check - User ID:', req.user?.id)
+    //console.log('🔍 Admin check - User ID:', req.user?.id)
     const userId = req.user!.id
 
     // Check admin_roles table for active admin role
@@ -41,17 +41,17 @@ router.get('/check', requireAuth, async (req: AuthRequest, res) => {
       .is('revoked_at', null)
       .single()
 
-    console.log('🔍 Admin check - Query result:', { adminRole, error })
+    //console.log('🔍 Admin check - Query result:', { adminRole, error })
 
     if (error || !adminRole) {
-      console.log('❌ Admin check - User is not an admin')
+      //console.log('❌ Admin check - User is not an admin')
       return res.json({
         isAdmin: false,
         role: null
       })
     }
 
-    console.log('✅ Admin check - User is admin:', adminRole.role)
+    //console.log('✅ Admin check - User is admin:', adminRole.role)
     return res.json({
       isAdmin: true,
       role: adminRole.role,

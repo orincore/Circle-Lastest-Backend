@@ -27,7 +27,6 @@ interface VoiceCallRecord {
 // Helper function to create call record in database
 async function createCallRecord(callId: string, callerId: string, receiverId: string, callType: 'webrtc' | 'audio-fallback'): Promise<VoiceCallRecord | null> {
   try {
-    console.log('📝 Creating call record:', { callId, callerId, receiverId, callType });
     
     const { data, error } = await supabase
       .from('voice_calls')
@@ -46,7 +45,6 @@ async function createCallRecord(callId: string, callerId: string, receiverId: st
       return null;
     }
 
-    console.log('✅ Call record created successfully:', data);
     return data;
   } catch (error) {
     console.error('❌ Exception creating call record:', error);
@@ -108,18 +106,12 @@ async function getActiveCallsFromDB(userId: string): Promise<VoiceCallRecord[]> 
 }
 
 export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userId: string) {
-  console.log('🎙️ Setting up voice call handlers for user:', userId);
 
   // Start a voice call
   socket.on('voice:start-call', async (data: { receiverId: string; callType?: string }) => {
     try {
-      console.log('📞 Voice call started by:', userId, 'to:', data.receiverId);
-      console.log('📞 BACKEND DEBUG: Received voice:start-call event');
-      console.log('📞 BACKEND DEBUG: Event data:', data);
-      console.log('📞 BACKEND DEBUG: Socket user ID:', userId);
-
+      
       // Check if users are friends (optional - you might want to allow calls to non-friends)
-      console.log('🔍 Checking friendship between:', userId, 'and', data.receiverId);
       // Accept both 'active' and 'accepted' status for compatibility
       const { data: friendship, error: friendshipError } = await supabase
         .from('friendships')
@@ -129,7 +121,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         .limit(1)
         .maybeSingle();
 
-      console.log('🔍 Friendship query result:', { friendship, friendshipError });
 
       if (!friendship) {
         console.warn('⚠️ No active friendship found between users');
@@ -137,7 +128,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         return;
       }
 
-      console.log('✅ Friendship verified, proceeding with call');
 
       // Get caller info from profiles table
       const { data: callerInfo } = await supabase
@@ -149,8 +139,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       const callId = `call_${userId}_${data.receiverId}_${Date.now()}`;
       const callType = (data.callType as 'webrtc' | 'audio-fallback') || 'webrtc';
       
-      console.log('📞 Generated call ID:', callId);
-      console.log('📞 Call type:', callType);
       
       // Create call record in database
       const callRecord = await createCallRecord(callId, userId, data.receiverId, callType);
@@ -160,7 +148,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         return;
       }
       
-      console.log('✅ Call record created, proceeding with call setup');
 
       // Update status to ringing
       await updateCallStatus(callId, 'ringing');
@@ -177,15 +164,12 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         callType
       };
 
-      console.log('📞 Emitting voice:incoming-call to receiver:', data.receiverId);
-      console.log('📞 Call data being sent:', callData);
+   
       
       // Enhanced receiver connection check with multiple verification methods
-      console.log('🔍 COMPREHENSIVE RECEIVER CHECK for:', data.receiverId);
       
       // Method 1: Check sockets in user room
       const receiverSockets = await io.in(data.receiverId).fetchSockets();
-      console.log('📞 Method 1 - Receiver sockets in room:', receiverSockets.length);
       
       // Method 2: Check all connected sockets for this user
       const allSockets = await io.fetchSockets();
@@ -193,13 +177,10 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         const socketUserId = (s.data as any)?.userId || (s.data as any)?.user?.id;
         return socketUserId === data.receiverId;
       });
-      console.log('📞 Method 2 - All user sockets found:', userSockets.length);
       
       // Method 3: Check socket rooms for debugging
       if (userSockets.length > 0) {
         const socketRooms = Array.from(userSockets[0].rooms);
-        console.log('📞 Method 3 - Socket rooms:', socketRooms);
-        console.log('📞 Method 3 - Is in user room:', socketRooms.includes(data.receiverId));
       }
       
       // Use the more comprehensive check
@@ -218,20 +199,12 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
           callId 
         });
         
-        console.log('❌ Call failed - receiver offline:', callId);
         return;
       } else {
-        console.log('✅ Receiver is online! Socket details:', {
-          roomSockets: receiverSockets.length,
-          userSockets: userSockets.length,
-          socketIds: effectiveReceiverSockets.map(s => s.id),
-          rooms: effectiveReceiverSockets[0] ? Array.from(effectiveReceiverSockets[0].rooms) : []
-        });
         
         // Ensure receiver is in their user room (fix any room issues)
         for (const receiverSocket of userSockets) {
           if (!receiverSocket.rooms.has(data.receiverId)) {
-            console.log('🔧 Fixing missing room membership for socket:', receiverSocket.id);
             receiverSocket.join(data.receiverId);
           }
         }
@@ -247,7 +220,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         receiverOnline: true 
       });
 
-      console.log('✅ Voice call initiated and notification sent:', callId);
 
     } catch (error) {
       console.error('❌ Error starting voice call:', error);
@@ -258,20 +230,14 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   // Accept a voice call
   socket.on('voice:accept-call', async (data: { callId: string; callType?: string }) => {
     try {
-      console.log('✅ Voice call accepted:', data.callId, 'by:', userId);
-      console.log('🔍 BACKEND DEBUG: Received voice:accept-call event');
-      console.log('🔍 BACKEND DEBUG: Event data:', data);
-      console.log('🔍 BACKEND DEBUG: Socket user ID:', userId);
-
+    
       // Get call from database
-      console.log('🔍 Looking for call in database:', data.callId);
       const { data: call, error } = await supabase
         .from('voice_calls')
         .select('*')
         .eq('call_id', data.callId)
         .single();
 
-      console.log('📞 Database query result:', { call, error });
 
       if (error || !call) {
         console.error('❌ Call not found in database:', {
@@ -296,17 +262,13 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       }
 
       // Notify both parties that call is accepted
-      console.log('🔍 BACKEND DEBUG: Emitting voice:call-accepted to caller:', call.caller_id);
-      console.log('🔍 BACKEND DEBUG: Call acceptance data:', {
-        callId: data.callId,
-        acceptedBy: userId,
-        callType: call.call_type
-      });
+      //console.log('🔍 BACKEND DEBUG: Emitting voice:call-accepted to caller:', call.caller_id);
+      
       
       // Check if caller is connected
       const callerSockets = await io.in(call.caller_id).fetchSockets();
-      console.log('🔍 BACKEND DEBUG: Caller sockets found:', callerSockets.length);
-      console.log('🔍 BACKEND DEBUG: Caller socket IDs:', callerSockets.map((s: any) => s.id));
+      //console.log('🔍 BACKEND DEBUG: Caller sockets found:', callerSockets.length);
+      //console.log('🔍 BACKEND DEBUG: Caller socket IDs:', callerSockets.map((s: any) => s.id));
       
       io.to(call.caller_id).emit('voice:call-accepted', {
         callId: data.callId,
@@ -320,8 +282,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         callType: call.call_type
       });
 
-      console.log('✅ Voice call connected:', data.callId);
-      console.log('🔍 BACKEND DEBUG: Call acceptance completed successfully');
 
     } catch (error) {
       console.error('❌ Error accepting voice call:', error);
@@ -334,7 +294,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   // Decline a voice call (receiver declines OR caller cancels)
   socket.on('voice:decline-call', async (data: { callId: string }) => {
     try {
-      console.log('❌ Voice call declined/cancelled:', data.callId, 'by:', userId);
 
       // Get call from database
       const { data: call, error } = await supabase
@@ -368,7 +327,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       // Notify the other party
       if (isCaller) {
         // Caller cancelled - notify receiver
-        console.log('📞 Caller cancelled call, notifying receiver:', call.receiver_id);
         io.to(call.receiver_id).emit('voice:call-declined', {
           callId: data.callId,
           declinedBy: userId,
@@ -376,7 +334,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         });
       } else {
         // Receiver declined - notify caller
-        console.log('📞 Receiver declined call, notifying caller:', call.caller_id);
         io.to(call.caller_id).emit('voice:call-declined', {
           callId: data.callId,
           declinedBy: userId,
@@ -384,7 +341,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         });
       }
 
-      console.log('❌ Voice call declined/cancelled:', data.callId, 'reason:', endReason);
 
     } catch (error) {
       console.error('❌ Error declining voice call:', error);
@@ -395,7 +351,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   // End a voice call
   socket.on('voice:end-call', async (data: { callId: string; duration?: number }) => {
     try {
-      console.log('📞 Voice call ended:', data.callId, 'by:', userId);
 
       // Get call from database
       const { data: call, error } = await supabase
@@ -429,7 +384,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         duration: data.duration || 0
       });
 
-      console.log('📞 Voice call ended:', data.callId);
 
     } catch (error) {
       console.error('❌ Error ending voice call:', error);
@@ -440,7 +394,7 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   // WebRTC signaling
   socket.on('voice:offer', async (data: { callId: string; offer: any }) => {
     try {
-      console.log('📨 WebRTC offer received:', data.callId, 'from user:', userId);
+      //console.log('📨 WebRTC offer received:', data.callId, 'from user:', userId);
       
       const { data: call, error } = await supabase
         .from('voice_calls')
@@ -448,10 +402,10 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         .eq('call_id', data.callId)
         .single();
 
-      console.log('📞 Call lookup for offer:', { call, error, callId: data.callId });
+      //console.log('📞 Call lookup for offer:', { call, error, callId: data.callId });
 
       if (call && call.caller_id === userId) {
-        console.log('📨 Forwarding offer to receiver:', call.receiver_id);
+        //console.log('📨 Forwarding offer to receiver:', call.receiver_id);
         io.to(call.receiver_id).emit('voice:offer', {
           callId: data.callId,
           offer: data.offer
@@ -466,7 +420,7 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
 
   socket.on('voice:answer', async (data: { callId: string; answer: any }) => {
     try {
-      console.log('📨 WebRTC answer received:', data.callId, 'from user:', userId);
+      //console.log('📨 WebRTC answer received:', data.callId, 'from user:', userId);
       
       const { data: call, error } = await supabase
         .from('voice_calls')
@@ -474,10 +428,8 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         .eq('call_id', data.callId)
         .single();
 
-      console.log('📞 Call lookup for answer:', { call, error, callId: data.callId });
 
       if (call && call.receiver_id === userId) {
-        console.log('📨 Forwarding answer to caller:', call.caller_id);
         io.to(call.caller_id).emit('voice:answer', {
           callId: data.callId,
           answer: data.answer
@@ -492,7 +444,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
 
   socket.on('voice:ice-candidate', async (data: { callId: string; candidate: any }) => {
     try {
-      console.log('📡 ICE candidate received:', data.callId, 'from user:', userId);
       
       const { data: call, error } = await supabase
         .from('voice_calls')
@@ -500,11 +451,9 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         .eq('call_id', data.callId)
         .single();
 
-      console.log('📞 Call lookup for ICE candidate:', { call, error, callId: data.callId });
 
       if (call) {
         const otherUserId = call.caller_id === userId ? call.receiver_id : call.caller_id;
-        console.log('📡 Forwarding ICE candidate to:', otherUserId);
         io.to(otherUserId).emit('voice:ice-candidate', {
           callId: data.callId,
           candidate: data.candidate
@@ -541,7 +490,6 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
 
   // Handle disconnection
   socket.on('disconnect', async () => {
-    console.log('🔌 User disconnected during voice call:', userId);
     
     try {
       // End any active calls for this user
@@ -611,7 +559,6 @@ export async function cleanupOldCalls(): Promise<number> {
 
     const cleanedCount = data?.length || 0;
     if (cleanedCount > 0) {
-      console.log(`🧹 Cleaned up ${cleanedCount} old calls`);
     }
 
     return cleanedCount;
@@ -630,14 +577,11 @@ export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
   
   // Test user room subscription
   socket.on('test:user-room', async (data) => {
-    console.log('🧪 Test user room event from:', userId, 'data:', data);
     
     if (userId) {
       // Check if user is in their own room
       const userSockets = await io.in(userId).fetchSockets();
-      console.log('🧪 User sockets in room', userId, ':', userSockets.length);
-      console.log('🧪 Socket IDs:', userSockets.map((s: any) => s.id));
-      console.log('🧪 Current socket ID:', socket.id);
+  
       
       // Test emitting to the user's room
       io.to(userId).emit('voice:test', {
@@ -657,37 +601,22 @@ export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
   
   // Debug handler to check socket authentication and room membership
   socket.on('debug:socket-info', async (data) => {
-    console.log('🔍 DEBUG: Socket info request from:', userId, 'data:', data);
     
     // Check socket authentication
     const socketUserId = (socket.data as any).user?.id;
     const socketAuth = (socket.data as any).user;
     
-    console.log('🔍 DEBUG: Socket authentication details:', {
-      socketId: socket.id,
-      authenticatedUserId: socketUserId,
-      requestedUserId: data.requestedUserId,
-      userIdMatch: socketUserId === data.requestedUserId,
-      hasUserData: !!socketAuth,
-      userDataKeys: socketAuth ? Object.keys(socketAuth) : []
-    });
+   
     
     // Check room membership
     if (socketUserId) {
       const userSockets = await io.in(socketUserId).fetchSockets();
-      console.log('🔍 DEBUG: Room membership check:', {
-        userId: socketUserId,
-        socketsInRoom: userSockets.length,
-        socketIds: userSockets.map((s: any) => s.id),
-        currentSocketInRoom: userSockets.some((s: any) => s.id === socket.id)
-      });
+      
       
       // Try to manually join the room if not already joined
       if (!userSockets.some((s: any) => s.id === socket.id)) {
-        console.log('🔍 DEBUG: Socket not in user room, attempting to join...');
         try {
           socket.join(socketUserId);
-          console.log('✅ DEBUG: Successfully joined user room:', socketUserId);
         } catch (error) {
           console.error('❌ DEBUG: Failed to join user room:', error);
         }
@@ -699,7 +628,6 @@ export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
   
   // Test handler to verify events are reaching backend
   socket.on('test:backend-connection', (data) => {
-    console.log('🧪 TEST: Backend received test event from:', userId, 'data:', data);
     socket.emit('test:backend-response', {
       message: 'Backend received your test event',
       userId: userId,
@@ -709,7 +637,6 @@ export function registerTestHandlers(io: SocketIOServer, socket: Socket) {
   
   // Keep-alive handler during voice calls
   socket.on('voice:keep-alive', (data) => {
-    console.log('💓 KEEP-ALIVE: Voice call ping from:', userId, 'duration:', data.duration + 's');
     // Respond with pong to confirm connection
     socket.emit('voice:keep-alive-pong', {
       callId: data.callId,

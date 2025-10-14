@@ -29,7 +29,7 @@ export class NotificationService {
    */
   static async createNotification(notificationData: NotificationData): Promise<any> {
     try {
-      console.log('📬 Creating notification:', JSON.stringify(notificationData, null, 2));
+      //console.log('📬 Creating notification:', JSON.stringify(notificationData, null, 2));
 
       const insertData = {
         recipient_id: notificationData.recipient_id,
@@ -41,7 +41,7 @@ export class NotificationService {
         read: false
       };
       
-      console.log('📝 Inserting notification data:', JSON.stringify(insertData, null, 2));
+      //console.log('📝 Inserting notification data:', JSON.stringify(insertData, null, 2));
 
       const { data: notification, error } = await supabase
         .from('notifications')
@@ -66,7 +66,7 @@ export class NotificationService {
         return null;
       }
 
-      console.log('✅ Notification inserted successfully:', JSON.stringify(notification, null, 2));
+      //console.log('✅ Notification inserted successfully:', JSON.stringify(notification, null, 2));
 
       // Emit real-time notification to user
       try {
@@ -77,12 +77,12 @@ export class NotificationService {
             timestamp: new Date(notification.created_at)
           }
         });
-        console.log('✅ Real-time notification emitted to user:', notificationData.recipient_id);
+        //console.log('✅ Real-time notification emitted to user:', notificationData.recipient_id);
       } catch (emitError) {
         console.error('❌ Failed to emit real-time notification:', emitError);
       }
 
-      console.log('✅ Notification created successfully:', notification.id);
+      //console.log('✅ Notification created successfully:', notification.id);
       return { ...notification, sender: senderInfo };
     } catch (error) {
       console.error('❌ Failed to create notification:', error);
@@ -183,7 +183,7 @@ export class NotificationService {
    */
   static async deleteFriendRequestNotifications(userId1: string, userId2: string): Promise<boolean> {
     try {
-      console.log(`🗑️ Deleting friend request notifications between ${userId1} and ${userId2}`);
+      //console.log(`🗑️ Deleting friend request notifications between ${userId1} and ${userId2}`);
       
       // Delete notifications where userId1 is recipient and userId2 is sender
       const { error: error1 } = await supabase
@@ -210,7 +210,7 @@ export class NotificationService {
       emitToUser(userId1, 'notification:friend_request_removed', { otherUserId: userId2 });
       emitToUser(userId2, 'notification:friend_request_removed', { otherUserId: userId1 });
 
-      console.log('✅ Friend request notifications deleted successfully');
+      //console.log('✅ Friend request notifications deleted successfully');
       return true;
     } catch (error) {
       console.error('❌ Failed to delete friend request notifications:', error);
@@ -259,12 +259,7 @@ export class NotificationService {
    * Create notification for profile visit
    */
   static async notifyProfileVisit(profileOwnerId: string, visitorId: string, visitorName: string): Promise<void> {
-    console.log('👁️ Creating profile visit notification...');
-    console.log('📝 Profile visit data:', JSON.stringify({
-      profileOwnerId,
-      visitorId,
-      visitorName
-    }, null, 2));
+    
     
     try {
       await this.createNotification({
@@ -275,7 +270,7 @@ export class NotificationService {
         message: `${visitorName} visited your profile`,
         data: { action: 'profile_visit' }
       });
-      console.log('✅ Profile visit notification created successfully');
+      //console.log('✅ Profile visit notification created successfully');
     } catch (error) {
       console.error('❌ Failed to create profile visit notification:', error);
       throw error;
@@ -360,7 +355,7 @@ export class NotificationService {
         });
       });
 
-      console.log(`✅ Created ${notifications.length} new user notifications`);
+      //console.log(`✅ Created ${notifications.length} new user notifications`);
     } catch (error) {
       console.error('❌ Failed to create new user notifications:', error);
     }

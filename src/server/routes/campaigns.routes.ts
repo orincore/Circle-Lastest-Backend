@@ -233,7 +233,7 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
     
     if (campaign.type === 'email') {
       // Send email campaigns
-      console.log(`📧 Sending email campaign to ${users.length} users`)
+      //console.log(`📧 Sending email campaign to ${users.length} users`)
       
       for (const user of users) {
         try {
@@ -266,7 +266,7 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       }
     } else if (campaign.type === 'push_notification') {
       // Send push notification campaigns
-      console.log(`📱 Sending push notification campaign to ${users.length} users`)
+      //console.log(`📱 Sending push notification campaign to ${users.length} users`)
       
       for (const user of users) {
         try {
@@ -318,7 +318,7 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       }
     } else if (campaign.type === 'in_app') {
       // In-app notifications (future implementation)
-      console.log(`📲 In-app notifications not yet implemented`)
+      //console.log(`📲 In-app notifications not yet implemented`)
     }
 
     // Save interaction records
@@ -344,7 +344,7 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       .update({ status: 'sent' })
       .eq('id', id)
 
-    console.log(`✅ Campaign ${id} sent to ${sentCount}/${users.length} users`)
+    //console.log(`✅ Campaign ${id} sent to ${sentCount}/${users.length} users`)
 
     res.json({ 
       success: true, 

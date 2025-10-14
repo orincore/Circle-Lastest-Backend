@@ -82,7 +82,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res) => {
       })
     }
 
-    console.log(`📝 Report submitted: ${reporterId} reported ${reportedUserId} for ${reportType}`)
+    //console.log(`📝 Report submitted: ${reporterId} reported ${reportedUserId} for ${reportType}`)
 
     return res.status(201).json({
       success: true,

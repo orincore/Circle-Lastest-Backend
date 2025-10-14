@@ -16,7 +16,6 @@ const supabase = createClient(
 
 async function setupFriendSystem() {
   try {
-    console.log('🚀 Setting up friend system tables...');
     
     // Read the SQL file
     const sqlPath = join(__dirname, '../migrations/create_friend_system_tables.sql');
@@ -28,7 +27,6 @@ async function setupFriendSystem() {
       .map(stmt => stmt.trim())
       .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
     
-    console.log(`📝 Found ${statements.length} SQL statements to execute`);
     
     // Execute each statement
     for (let i = 0; i < statements.length; i++) {
@@ -40,7 +38,6 @@ async function setupFriendSystem() {
       }
       
       try {
-        console.log(`⚡ Executing statement ${i + 1}/${statements.length}...`);
         
         const { error } = await supabase.rpc('exec_sql', { sql: statement });
         
@@ -55,7 +52,6 @@ async function setupFriendSystem() {
             console.warn(`⚠️ Statement ${i + 1} failed:`, error.message);
           }
         } else {
-          console.log(`✅ Statement ${i + 1} executed successfully`);
         }
       } catch (err) {
         console.warn(`⚠️ Statement ${i + 1} failed:`, err.message);
@@ -63,7 +59,6 @@ async function setupFriendSystem() {
     }
     
     // Verify tables exist
-    console.log('\n🔍 Verifying table creation...');
     
     const { data: friendRequestsTest, error: frError } = await supabase
       .from('friend_requests')
@@ -76,19 +71,14 @@ async function setupFriendSystem() {
       .limit(1);
     
     if (!frError) {
-      console.log('✅ friend_requests table exists and is accessible');
     } else {
-      console.log('❌ friend_requests table issue:', frError.message);
     }
     
     if (!fError) {
-      console.log('✅ friendships table exists and is accessible');
     } else {
-      console.log('❌ friendships table issue:', fError.message);
     }
     
     // Test the Socket.IO query that was failing
-    console.log('\n🧪 Testing the failing query...');
     
     const { data: testQuery, error: testError } = await supabase
       .from('friend_requests')
@@ -101,20 +91,9 @@ async function setupFriendSystem() {
       .limit(1);
     
     if (!testError) {
-      console.log('✅ Socket.IO query works correctly');
-      console.log(`📊 Found ${testQuery?.length || 0} pending requests for test user`);
     } else {
-      console.log('❌ Socket.IO query still failing:', testError.message);
     }
-    
-    console.log('\n🎉 Friend system setup completed!');
-    console.log('\n📋 Summary:');
-    console.log('- friend_requests table: Stores pending/accepted/declined friend requests');
-    console.log('- friendships table: Stores active friendships between users');
-    console.log('- Proper foreign key relationships to profiles table');
-    console.log('- Row Level Security (RLS) policies for data protection');
-    console.log('- Indexes for query performance');
-    console.log('- Helper functions for common operations');
+   
     
   } catch (error) {
     console.error('❌ Error setting up friend system:', error);

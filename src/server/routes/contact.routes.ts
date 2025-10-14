@@ -68,14 +68,7 @@ router.post('/', contactRateLimit, async (req: Request, res: Response) => {
     // Get client IP for logging
     const clientIP = req.ip || 'unknown';
     
-    console.log('📧 Contact form submission:', {
-      name: name.trim(),
-      email: email.trim(),
-      subject: subject.trim(),
-      messageLength: message.trim().length,
-      clientIP,
-      timestamp: new Date().toISOString()
-    });
+    
 
     // Store contact form data (in production, you would save to database)
     const contactData = {
@@ -92,7 +85,7 @@ router.post('/', contactRateLimit, async (req: Request, res: Response) => {
     
     // TODO: Send email notifications
     // In production, integrate with email service (SendGrid, AWS SES, etc.)
-    console.log('📧 Contact form data ready for processing:', contactData);
+    //console.log('📧 Contact form data ready for processing:', contactData);
 
     // Return success response
     res.status(200).json({

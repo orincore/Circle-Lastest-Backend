@@ -119,7 +119,7 @@ router.post('/photos', requireAuth, upload.single('photo'), async (req: AuthRequ
         .jpeg({ quality: 80 })
         .toBuffer();
       
-      console.log(`✅ Photo compressed: ${buffer.length / 1024} KB`);
+      //console.log(`✅ Photo compressed: ${buffer.length / 1024} KB`);
     } catch (error) {
       console.error('Image compression failed:', error);
       // Continue with original buffer if compression fails
@@ -162,7 +162,7 @@ router.post('/photos', requireAuth, upload.single('photo'), async (req: AuthRequ
       return res.status(500).json({ error: 'Failed to save photo' });
     }
 
-    console.log(`✅ Photo uploaded successfully: ${photoUrl}`);
+    //console.log(`✅ Photo uploaded successfully: ${photoUrl}`);
 
     res.json({
       success: true,
@@ -218,7 +218,7 @@ router.delete('/photos', requireAuth, async (req: AuthRequest, res) => {
         Bucket: BUCKET_NAME,
         Key: key,
       }));
-      console.log(`✅ Photo deleted from S3: ${key}`);
+      //console.log(`✅ Photo deleted from S3: ${key}`);
     } catch (s3Error) {
       console.error('Error deleting from S3:', s3Error);
       // Continue with database deletion even if S3 fails
@@ -235,7 +235,7 @@ router.delete('/photos', requireAuth, async (req: AuthRequest, res) => {
       return res.status(500).json({ error: 'Failed to delete photo' });
     }
 
-    console.log(`✅ Photo deleted successfully: ${photoUrl}`);
+    //console.log(`✅ Photo deleted successfully: ${photoUrl}`);
 
     res.json({
       success: true,

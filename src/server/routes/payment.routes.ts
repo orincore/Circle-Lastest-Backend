@@ -191,13 +191,8 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
       )
 
       // Send subscription confirmation email
-      console.log('📧 Attempting to send subscription confirmation email...')
-      console.log('📧 Email details:', {
-        email: req.user!.email,
-        username: req.user!.username,
-        planType: plan_type,
-        amount: amount / 100
-      })
+      //console.log('📧 Attempting to send subscription confirmation email...')
+      
       
       try {
         const emailResult = await EmailService.sendSubscriptionConfirmationEmail(
@@ -209,7 +204,7 @@ router.post('/subscribe', requireAuth, async (req: AuthRequest, res) => {
           expiresAt.toISOString()
         )
         
-        console.log('📧 Email service result:', emailResult)
+        //console.log('📧 Email service result:', emailResult)
         
         if (emailResult) {
           logger.info({ 
@@ -300,7 +295,7 @@ router.post('/cancel-subscription', requireAuth, async (req: AuthRequest, res) =
 
     // Send cancellation email if immediately cancelled
     if (!cancel_at_period_end && subscription && req.user!.email) {
-      console.log('📧 Attempting to send subscription cancellation email...')
+      //console.log('📧 Attempting to send subscription cancellation email...')
       try {
         const emailResult = await EmailService.sendSubscriptionCancellationEmail(
           req.user!.email,

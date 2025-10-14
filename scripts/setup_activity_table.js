@@ -1,7 +1,6 @@
 import { supabase } from '../src/server/config/supabase.js'
 
 async function setupActivityTable() {
-  console.log('🔧 Setting up activity_feed table...')
   
   try {
     // Check if table exists by trying to select from it
@@ -11,7 +10,6 @@ async function setupActivityTable() {
       .limit(1)
 
     if (error && error.code === '42P01') {
-      console.log('📋 Table does not exist, creating it...')
       
       // Create the table using raw SQL
       const { error: createError } = await supabase.rpc('exec_sql', {
@@ -33,17 +31,13 @@ async function setupActivityTable() {
 
       if (createError) {
         console.error('❌ Failed to create table:', createError)
-        console.log('💡 Please run the migration manually:')
-        console.log('   psql -h localhost -U postgres -d circle_dev -f migrations/create_activity_feed_table.sql')
         return
       }
 
-      console.log('✅ Table created successfully')
     } else if (error) {
       console.error('❌ Error checking table:', error)
       return
     } else {
-      console.log('✅ Table already exists')
     }
 
     // Test inserting a sample activity
@@ -69,7 +63,6 @@ async function setupActivityTable() {
       return
     }
 
-    console.log('✅ Test activity inserted successfully')
 
     // Clean up test activity
     await supabase
@@ -77,8 +70,6 @@ async function setupActivityTable() {
       .delete()
       .eq('id', testActivity.id)
 
-    console.log('🧹 Test activity cleaned up')
-    console.log('🎉 Activity feed table is ready!')
 
   } catch (error) {
     console.error('❌ Setup failed:', error)
@@ -88,7 +79,6 @@ async function setupActivityTable() {
 
 // Run the setup
 setupActivityTable().then(() => {
-  console.log('✅ Setup completed')
   process.exit(0)
 }).catch(error => {
   console.error('❌ Setup failed:', error)

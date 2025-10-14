@@ -131,7 +131,7 @@ export class CirclePointsService {
       // Recalculate and update Circle points
       await this.updateCirclePoints(activity.user_id)
       
-      console.log(`✅ Recorded activity: ${activity.activity_type} for user ${activity.user_id} (${basePoints} → ${scaledPoints} points, ${activityLevel})`)
+      //console.log(`✅ Recorded activity: ${activity.activity_type} for user ${activity.user_id} (${basePoints} → ${scaledPoints} points, ${activityLevel})`)
       
     } catch (error) {
       console.error('Error in recordActivity:', error)
@@ -163,7 +163,7 @@ export class CirclePointsService {
    */
   static async updateUserStats(userId: string): Promise<void> {
     try {
-      console.log('🔄 Calling update_user_stats function for user:', userId)
+      //console.log('🔄 Calling update_user_stats function for user:', userId)
       
       const { data, error } = await supabase
         .rpc('update_user_stats', { user_uuid: userId })
@@ -173,7 +173,7 @@ export class CirclePointsService {
         throw error
       }
       
-      console.log('✅ User stats updated successfully for user:', userId)
+      //console.log('✅ User stats updated successfully for user:', userId)
       
     } catch (error) {
       console.error('❌ Error in updateUserStats:', error)
@@ -186,7 +186,7 @@ export class CirclePointsService {
    */
   static async getUserStats(userId: string): Promise<UserStats | null> {
     try {
-      console.log('📊 Fetching user stats from database for user:', userId)
+      //console.log('📊 Fetching user stats from database for user:', userId)
       
       const { data, error } = await supabase
         .from('profiles')
@@ -208,7 +208,7 @@ export class CirclePointsService {
         return null
       }
       
-      console.log('📈 Raw database stats:', data)
+      //console.log('📈 Raw database stats:', data)
       
       return data as UserStats
     } catch (error) {
@@ -249,7 +249,7 @@ export class CirclePointsService {
           return
         }
         
-        console.log(`✅ Updated profile visit count to ${existingVisit.visit_count + 1} for visitor ${visitorId} → visited ${visitedUserId}`)
+        //console.log(`✅ Updated profile visit count to ${existingVisit.visit_count + 1} for visitor ${visitorId} → visited ${visitedUserId}`)
       } else {
         // Create new visit record
         const { error } = await supabase
@@ -267,7 +267,7 @@ export class CirclePointsService {
           return
         }
         
-        console.log(`✅ Created new profile visit record for visitor ${visitorId} → visited ${visitedUserId}`)
+        //console.log(`✅ Created new profile visit record for visitor ${visitorId} → visited ${visitedUserId}`)
       }
       
       // Award points to the visited user
@@ -391,7 +391,7 @@ export class CirclePointsService {
         }
       }
       
-      console.log(`✅ Batch updated Circle points for ${userIds.length} users`)
+      //console.log(`✅ Batch updated Circle points for ${userIds.length} users`)
       
     } catch (error) {
       console.error('Error in batchUpdateCirclePoints:', error)

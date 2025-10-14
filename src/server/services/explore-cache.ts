@@ -17,7 +17,7 @@ class ExploreCache {
       expiresAt: now + this.CACHE_DURATION
     };
     this.cache.set(key, entry);
-    console.log(`Cache set for key: ${key}, expires at: ${new Date(entry.expiresAt).toISOString()}`);
+    //console.log(`Cache set for key: ${key}, expires at: ${new Date(entry.expiresAt).toISOString()}`);
   }
 
   get(key: string): any | null {
@@ -30,11 +30,11 @@ class ExploreCache {
     if (now > entry.expiresAt) {
       // Cache expired, remove it
       this.cache.delete(key);
-      console.log(`Cache expired for key: ${key}`);
+      //console.log(`Cache expired for key: ${key}`);
       return null;
     }
 
-    console.log(`Cache hit for key: ${key}, age: ${Math.round((now - entry.timestamp) / 1000 / 60)} minutes`);
+    //console.log(`Cache hit for key: ${key}, age: ${Math.round((now - entry.timestamp) / 1000 / 60)} minutes`);
     return entry.data;
   }
 
@@ -55,7 +55,7 @@ class ExploreCache {
 
   clear(): void {
     this.cache.clear();
-    console.log('Cache cleared');
+    //console.log('Cache cleared');
   }
 
   // Invalidate cache for a specific user
@@ -68,7 +68,7 @@ class ExploreCache {
       }
     }
     if (removedCount > 0) {
-      console.log(`Cache invalidated for user ${userId}: removed ${removedCount} entries`);
+      //console.log(`Cache invalidated for user ${userId}: removed ${removedCount} entries`);
     }
   }
 
@@ -85,7 +85,7 @@ class ExploreCache {
     }
 
     if (removedCount > 0) {
-      console.log(`Cache cleanup: removed ${removedCount} expired entries`);
+      //console.log(`Cache cleanup: removed ${removedCount} expired entries`);
     }
   }
 
@@ -131,7 +131,7 @@ export async function getCachedOrFetch<T>(
   }
 
   // Cache miss, fetch fresh data
-  console.log(`Cache miss for key: ${cacheKey}, fetching fresh data`);
+  //console.log(`Cache miss for key: ${cacheKey}, fetching fresh data`);
   const freshData = await fetchFunction();
   
   // Store in cache

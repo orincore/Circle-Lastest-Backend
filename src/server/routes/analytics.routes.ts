@@ -98,7 +98,7 @@ router.post('/track', analyticsLimit, async (req, res) => {
       return res.status(500).json({ error: 'Failed to store analytics data' })
     }
 
-    console.log(`📊 Stored ${events.length} analytics events`)
+    //console.log(`📊 Stored ${events.length} analytics events`)
 
     return res.json({
       success: true,
@@ -144,7 +144,7 @@ router.post('/app-version', analyticsLimit, async (req, res) => {
       return res.status(500).json({ error: 'Failed to store version data' })
     }
 
-    console.log(`📱 Tracked app version: ${versionData.version} (${versionData.platform})`)
+    //console.log(`📱 Tracked app version: ${versionData.version} (${versionData.platform})`)
 
     return res.json({
       success: true,
@@ -200,7 +200,7 @@ router.post('/crash-report', async (req, res) => {
       return res.status(500).json({ error: 'Failed to store crash report' })
     }
 
-    console.log(`💥 Stored crash report: ${crashData.error.name} - ${crashData.error.message}`)
+    //console.log(`💥 Stored crash report: ${crashData.error.name} - ${crashData.error.message}`)
 
     return res.json({
       success: true,

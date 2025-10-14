@@ -16,7 +16,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   const ip = req.ip || req.socket.remoteAddress || 'unknown'
   
   try {
-    console.log('🔐 Auth middleware - Path:', req.path, 'Method:', req.method)
+    //console.log('🔐 Auth middleware - Path:', req.path, 'Method:', req.method)
     
     // Check for rate limiting on failed attempts
     const attempts = failedAttempts.get(ip)
@@ -28,11 +28,11 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     }
 
     const header = req.headers.authorization || ''
-    console.log('🔐 Auth header present:', !!header, 'Starts with Bearer:', header.startsWith('Bearer '))
+    //console.log('🔐 Auth header present:', !!header, 'Starts with Bearer:', header.startsWith('Bearer '))
     
     // Validate authorization header format
     if (!header.startsWith('Bearer ')) {
-      console.log('❌ Auth failed: Invalid header format')
+      //console.log('❌ Auth failed: Invalid header format')
       recordFailedAttempt(ip)
       return res.status(StatusCodes.UNAUTHORIZED).json({ 
         error: 'Invalid authorization header format. Expected: Bearer <token>' 
@@ -55,17 +55,17 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     }
 
     const payload = verifyJwt<{ sub: string; email: string; username: string }>(token)
-    console.log('🔐 JWT payload:', payload ? 'Valid' : 'Invalid', payload?.sub ? `User: ${payload.sub}` : '')
+    //console.log('🔐 JWT payload:', payload ? 'Valid' : 'Invalid', payload?.sub ? `User: ${payload.sub}` : '')
     
     if (!payload || !payload.sub) {
-      console.log('❌ Auth failed: Invalid token or missing sub')
+      //console.log('❌ Auth failed: Invalid token or missing sub')
       recordFailedAttempt(ip)
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid token' })
     }
 
     // Validate payload structure
     if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
-      console.log('❌ Auth failed: Invalid payload structure')
+      //console.log('❌ Auth failed: Invalid payload structure')
       recordFailedAttempt(ip)
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid token payload' })
     }
@@ -80,7 +80,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     }
     req.token = token
     
-    console.log('✅ Auth successful - User ID:', payload.sub)
+    //console.log('✅ Auth successful - User ID:', payload.sub)
     return next()
   } catch (e) {
     recordFailedAttempt(ip)
@@ -133,7 +133,7 @@ export async function requireAdmin(req: AuthRequest, res: Response, next: NextFu
     // Attach admin role to request
     req.user = { ...req.user, role: adminRole.role }
     
-    console.log('✅ Admin auth successful - User ID:', req.user.id, 'Role:', adminRole.role)
+    //console.log('✅ Admin auth successful - User ID:', req.user.id, 'Role:', adminRole.role)
     return next()
   } catch (e) {
     logger.error({ userId: req.user?.id, error: e }, 'Admin authorization error')

@@ -16,7 +16,6 @@ import EmailService from '../src/server/services/emailService.js'
 config()
 
 async function sendExpirationEmails() {
-  console.log('🔍 Checking for expired subscriptions...')
   
   try {
     // Get expired subscriptions that haven't been notified yet
@@ -35,11 +34,9 @@ async function sendExpirationEmails() {
     }
     
     if (!expiredSubscriptions || expiredSubscriptions.length === 0) {
-      console.log('✅ No expired subscriptions found that need notification')
       return
     }
     
-    console.log(`📧 Found ${expiredSubscriptions.length} expired subscriptions to notify`)
     
     let emailsSent = 0
     let emailsFailed = 0
@@ -48,11 +45,9 @@ async function sendExpirationEmails() {
       const { profiles: profile } = subscription
       
       if (!profile?.email) {
-        console.log(`⚠️ Skipping subscription ${subscription.id} - no email found`)
         continue
       }
       
-      console.log(`📧 Sending expiration email to ${profile.email} for ${subscription.plan_type}`)
       
       try {
         // Send expiration email
@@ -74,10 +69,8 @@ async function sendExpirationEmails() {
             })
             .eq('id', subscription.id)
           
-          console.log(`✅ Expiration email sent to ${profile.email}`)
           emailsSent++
         } else {
-          console.log(`❌ Failed to send expiration email to ${profile.email}`)
           emailsFailed++
         }
         
@@ -90,10 +83,6 @@ async function sendExpirationEmails() {
       await new Promise(resolve => setTimeout(resolve, 1000))
     }
     
-    console.log('\n📊 Expiration Email Summary:')
-    console.log(`✅ Emails sent: ${emailsSent}`)
-    console.log(`❌ Emails failed: ${emailsFailed}`)
-    console.log(`📧 Total processed: ${expiredSubscriptions.length}`)
     
   } catch (error) {
     console.error('❌ Error checking expired subscriptions:', error)
@@ -102,11 +91,9 @@ async function sendExpirationEmails() {
 }
 
 async function main() {
-  console.log('🚀 Starting expiration email job...\n')
   
   await sendExpirationEmails()
   
-  console.log('\n✨ Expiration email job completed!')
 }
 
 // Run the script

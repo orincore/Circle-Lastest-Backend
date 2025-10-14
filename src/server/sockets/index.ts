@@ -211,7 +211,7 @@ export function initSocket(server: Server) {
             console.error('Error fetching sender info:', senderError)
           }
           
-          console.log('Sender info from DB:', senderInfo) // Debug log
+          //console.log('Sender info from DB:', senderInfo) // Debug log
           
           const senderName = senderInfo 
             ? (senderInfo.first_name && senderInfo.last_name 
@@ -219,7 +219,7 @@ export function initSocket(server: Server) {
                 : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
             : 'Someone'
             
-          console.log('Resolved sender name:', senderName) // Debug log
+          //console.log('Resolved sender name:', senderName) // Debug log
           
           if (members) {
             members.forEach((member: { user_id: string }) => {

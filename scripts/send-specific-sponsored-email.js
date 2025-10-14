@@ -16,9 +16,7 @@ config()
 const SUBSCRIPTION_ID = '176e12ba-83a8-45a3-bad3-47a60798fe3b'
 
 async function sendSponsoredEmailForLoggedSubscription() {
-  console.log('🚀 Sending sponsored email for subscription from logs...')
-  console.log(`📋 Subscription ID: ${SUBSCRIPTION_ID}`)
-  console.log('')
+ 
   
   try {
     // Get subscription with user profile
@@ -36,23 +34,16 @@ async function sendSponsoredEmailForLoggedSubscription() {
     }
     
     if (!subscription) {
-      console.log('❌ Subscription not found')
       return
     }
     
     const { profiles: profile } = subscription
     
     if (!profile?.email) {
-      console.log('❌ No email found for user')
       return
     }
     
-    console.log(`📧 Sending sponsored subscription email...`)
-    console.log(`   📧 To: ${profile.email}`)
-    console.log(`   👤 User: ${profile.username || 'Unknown'}`)
-    console.log(`   📋 Plan: ${subscription.plan_type}`)
-    console.log(`   📅 Expires: ${subscription.expires_at}`)
-    console.log('')
+    
     
     // Send sponsored subscription email
     const emailResult = await EmailService.sendSponsoredSubscriptionEmail(
@@ -63,15 +54,7 @@ async function sendSponsoredEmailForLoggedSubscription() {
     )
     
     if (emailResult) {
-      console.log('✅ Sponsored subscription email sent successfully!')
-      console.log('')
-      console.log('🎁 The user should receive an email with:')
-      console.log('   - "Surprise, [Name]! 🎉" subject line')
-      console.log('   - Gift notification with premium features')
-      console.log('   - "Sponsored by Circle Team" branding')
-      console.log('   - Same beautiful design as confirmation emails')
     } else {
-      console.log('❌ Failed to send sponsored subscription email')
     }
     
   } catch (error) {
@@ -81,5 +64,4 @@ async function sendSponsoredEmailForLoggedSubscription() {
 
 // Run the script
 sendSponsoredEmailForLoggedSubscription().then(() => {
-  console.log('\n✨ Script completed!')
-}).catch(console.error)
+ }).catch(console.error)

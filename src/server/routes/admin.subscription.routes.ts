@@ -107,7 +107,7 @@ router.put('/:subscriptionId', requireAuth, requireAdmin, async (req: AdminReque
         .single()
 
       if (userProfile && userProfile.email) {
-        console.log('📧 Attempting to send sponsored subscription email...')
+        //console.log('📧 Attempting to send sponsored subscription email...')
         try {
           await EmailService.sendSponsoredSubscriptionEmail(
             userProfile.email,

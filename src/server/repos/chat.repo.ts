@@ -291,13 +291,6 @@ export async function getChatMessages(chatId: string, limit = 30, before?: strin
   // Debug: Log media messages
   const mediaMessages = (data || []).filter(msg => msg.media_url || msg.media_type)
   if (mediaMessages.length > 0) {
-    console.log('📱 Found media messages in database:', mediaMessages.map(msg => ({
-      id: msg.id,
-      text: msg.text,
-      media_url: msg.media_url,
-      media_type: msg.media_type,
-      thumbnail: msg.thumbnail
-    })))
   }
   
   return (data || []) as (ChatMessage & { reactions: MessageReaction[]; receipts: { user_id: string; status: string }[] })[]
@@ -323,7 +316,7 @@ export async function insertMessage(
   if (mediaType) messageData.media_type = mediaType
   if (thumbnail) messageData.thumbnail = thumbnail
   
-  console.log('📝 Inserting message with data:', messageData)
+  //console.log('📝 Inserting message with data:', messageData)
   
   const { data, error } = await supabase
     .from('messages')
@@ -336,7 +329,7 @@ export async function insertMessage(
     throw error
   }
   
-  console.log('✅ Message inserted successfully:', data)
+  //console.log('✅ Message inserted successfully:', data)
 
   // Update chat last_message_at (best-effort)
   try {
@@ -351,7 +344,7 @@ export async function insertMessage(
 
 export async function insertReceipt(messageId: string, userId: string, status: 'delivered' | 'read') {
   try {
-    console.log(`📝 Inserting ${status} receipt for message ${messageId} by user ${userId}`);
+    //console.log(`📝 Inserting ${status} receipt for message ${messageId} by user ${userId}`);
     
     // Use upsert to handle duplicates gracefully without errors
     const { error } = await supabase
@@ -376,7 +369,7 @@ export async function insertReceipt(messageId: string, userId: string, status: '
       
       throw error;
     } else {
-      console.log(`✅ Receipt processed successfully (inserted or already exists)`);
+      //console.log(`✅ Receipt processed successfully (inserted or already exists)`);
     }
   } catch (error) {
     // Handle network errors gracefully
@@ -531,7 +524,7 @@ export async function getChatMuteSetting(userId: string, chatId: string): Promis
       console.error('Error getting chat mute setting:', error)
       // If table doesn't exist, return null (not muted)
       if (error.code === '42P01') { // Table doesn't exist
-        console.log('chat_mute_settings table does not exist, treating as not muted')
+        //console.log('chat_mute_settings table does not exist, treating as not muted')
         return null
       }
       throw error
@@ -574,12 +567,12 @@ export async function setChatMuteSetting(userId: string, chatId: string, isMuted
 }
 
 export async function isChatMuted(userId: string, chatId: string): Promise<boolean> {
-  console.log('Checking if chat is muted:', { userId, chatId })
+  //console.log('Checking if chat is muted:', { userId, chatId })
   const setting = await getChatMuteSetting(userId, chatId)
-  console.log('Retrieved mute setting:', setting)
+  //console.log('Retrieved mute setting:', setting)
   
   if (!setting) {
-    console.log('No mute setting found, chat is not muted')
+    //console.log('No mute setting found, chat is not muted')
     return false
   }
   
@@ -589,13 +582,13 @@ export async function isChatMuted(userId: string, chatId: string): Promise<boole
     const now = new Date()
     if (now > mutedUntil) {
       // Mute period expired, update setting
-      console.log('Mute period expired, updating setting')
+      //console.log('Mute period expired, updating setting')
       await setChatMuteSetting(userId, chatId, false)
       return false
     }
   }
   
-  console.log('Final mute status:', setting.is_muted)
+  //console.log('Final mute status:', setting.is_muted)
   return setting.is_muted
 }
 

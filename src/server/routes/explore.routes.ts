@@ -7,7 +7,7 @@ const router = Router()
 
 // Helper function to get all sections data
 async function getAllSectionsLogic(currentUserId: string) {
-  console.log('Fetching fresh explore data for user:', currentUserId)
+  //console.log('Fetching fresh explore data for user:', currentUserId)
   
   // Get current user's profile for compatibility calculation
   const { data: currentUser, error: currentUserError } = await supabase
@@ -185,13 +185,6 @@ async function getAllSectionsLogic(currentUserId: string) {
     usedUserIds.add(user.id)
   })
 
-  console.log('User distribution:', {
-    total: usersWithScores.length,
-    compatible: distributedUsers.compatibleUsers.length,
-    new: distributedUsers.newUsers.length,
-    top: distributedUsers.topUsers.length,
-    used: usedUserIds.size
-  })
 
   return distributedUsers
 }
@@ -418,8 +411,8 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
     const currentUserId = req.user!.id
     const { userId } = req.params
 
-    console.log('Getting user profile for userId:', userId)
-    console.log('Requested by currentUserId:', currentUserId)
+    //console.log('Getting user profile for userId:', userId)
+    //console.log('Requested by currentUserId:', currentUserId)
 
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required' })
@@ -446,7 +439,7 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       .eq('id', userId)
       .single()
 
-    console.log('Supabase query result:', { userProfile, error })
+    //console.log('Supabase query result:', { userProfile, error })
 
     if (error) {
       console.error('Error fetching user profile:', error)
@@ -460,7 +453,7 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
     }
     
     if (!userProfile) {
-      console.log('No user profile found for userId:', userId)
+      //console.log('No user profile found for userId:', userId)
       return res.status(404).json({ error: 'User not found' })
     }
 
@@ -533,7 +526,7 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       }
     }
 
-    console.log('Returning user data:', userData)
+    //console.log('Returning user data:', userData)
     res.json({ user: userData })
   } catch (error) {
     console.error('Get user profile error:', error)

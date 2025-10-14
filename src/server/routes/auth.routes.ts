@@ -54,9 +54,7 @@ router.get('/username-available', async (req, res) => {
 })
 
 router.post('/signup', async (req, res) => {
-  console.log('🔍 [Backend] Raw request body received:', JSON.stringify(req.body, null, 2));
-  console.log('🔍 [Backend] Username in body:', req.body.username);
-  console.log('🔍 [Backend] All body keys:', Object.keys(req.body));
+ 
   
   const parse = signupSchema.safeParse(req.body)
   if (!parse.success) {
@@ -72,14 +70,7 @@ router.post('/signup', async (req, res) => {
   let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username, instagramUsername } = parse.data
 
   // Debug: Log the parsed data to see what we're receiving
-  console.log('📝 Parsed signup data:', {
-    firstName,
-    lastName,
-    about: about || '(empty)',
-    instagramUsername,
-    interests: interests?.length || 0,
-    needs: needs?.length || 0
-  })
+  
 
   const normalizedEmail = email.trim().toLowerCase()
   const cleanInstagramUsername = instagramUsername ? instagramUsername.trim().replace('@', '') : ''
@@ -122,19 +113,14 @@ router.post('/signup', async (req, res) => {
     password_hash
   }
   
-  console.log('💾 Creating profile with data:', {
-    ...profileData,
-    password_hash: '[HIDDEN]',
-    about: profileData.about,
-    instagram_username: profileData.instagram_username
-  })
+  
   
   const profile = await createProfile(profileData)
 
   // Track user joined activity for live feed
   try {
     await trackUserJoined(profile)
-    console.log('✅ Tracked user joined activity for live feed')
+    //console.log('✅ Tracked user joined activity for live feed')
   } catch (error) {
     console.error('❌ Failed to track user joined activity:', error)
   }
@@ -158,7 +144,7 @@ router.post('/signup', async (req, res) => {
         newUserName,
         matchIds
       );
-      console.log(`✅ Sent new user notifications to ${matchIds.length} potential matches`);
+      //console.log(`✅ Sent new user notifications to ${matchIds.length} potential matches`);
     }
   } catch (error) {
     console.error('❌ Failed to send new user notifications:', error);
@@ -227,8 +213,8 @@ router.post('/login', async (req, res) => {
   emailService.sendLoginAlert(user.email, user.first_name || 'User', loginInfo)
     .catch(error => console.error('Failed to send login alert:', error))
   
-  console.log('🔍 [Login] User email_verified field:', user.email_verified);
-  console.log('🔍 [Login] User object keys:', Object.keys(user));
+  //console.log('🔍 [Login] User email_verified field:', user.email_verified);
+  //console.log('🔍 [Login] User object keys:', Object.keys(user));
   
   const loginResponse = {
     access_token,
@@ -250,7 +236,7 @@ router.post('/login', async (req, res) => {
     }
   };
   
-  console.log('🔍 [Login] Response emailVerified:', loginResponse.user.emailVerified);
+  //console.log('🔍 [Login] Response emailVerified:', loginResponse.user.emailVerified);
   
   return res.json(loginResponse)
 })

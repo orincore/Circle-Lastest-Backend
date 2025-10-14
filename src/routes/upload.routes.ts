@@ -35,12 +35,7 @@ router.post(
         return res.status(400).json({ error: 'No file uploaded' })
       }
 
-      console.log('📸 Uploading profile photo:', {
-        userId,
-        fileName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
-      })
+     
 
       // Upload to S3
       const result = await S3Service.uploadProfilePhoto(
@@ -49,7 +44,6 @@ router.post(
         req.file.mimetype
       )
 
-      console.log('✅ Profile photo uploaded to S3:', result)
 
       // Update user profile in database
       const { error: updateError } = await supabase
@@ -71,7 +65,6 @@ router.post(
         return res.status(500).json({ error: 'Failed to update profile' })
       }
 
-      console.log('✅ Profile updated with new photo URL')
 
       return res.json({
         success: true,
@@ -104,12 +97,7 @@ router.post(
         return res.status(400).json({ error: 'No file uploaded' })
       }
 
-      console.log('📎 Uploading media:', {
-        userId,
-        fileName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
-      })
+      
 
       // Determine media type from request or mimetype
       const mediaType = req.body.type || (req.file.mimetype.startsWith('image/') ? 'image' : 'video')
@@ -122,7 +110,6 @@ router.post(
         req.file.mimetype
       )
 
-      console.log('✅ Media uploaded to S3:', result)
 
       return res.json({
         success: true,
@@ -161,13 +148,7 @@ router.post(
         return res.status(400).json({ error: 'Chat ID is required' })
       }
 
-      console.log('📎 Uploading chat media:', {
-        userId,
-        chatId,
-        fileName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
-      })
+    
 
       // Verify user is part of the chat
       const { data: chatMember } = await supabase
@@ -189,7 +170,6 @@ router.post(
         req.file.mimetype
       )
 
-      console.log('✅ Chat media uploaded to S3:', result)
 
       return res.json({
         success: true,
@@ -221,7 +201,6 @@ router.delete('/:key(*)', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'File key is required' })
     }
 
-    console.log('🗑️ Deleting file:', { userId, key })
 
     // Verify the file belongs to the user (check if key contains userId)
     if (!key.includes(userId)) {
@@ -230,7 +209,6 @@ router.delete('/:key(*)', requireAuth, async (req: AuthRequest, res) => {
 
     await S3Service.deleteFile(key)
 
-    console.log('✅ File deleted from S3')
 
     return res.json({
       success: true,
@@ -256,7 +234,6 @@ router.get('/presigned-url', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'File key is required' })
     }
 
-    console.log('🔗 Generating presigned URL for:', key)
 
     const url = await S3Service.getPresignedUrl(key)
 

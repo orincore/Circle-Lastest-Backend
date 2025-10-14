@@ -81,7 +81,6 @@ export const resolvers = {
     nearbyUsers: async (_: any, { latitude, longitude, radiusKm, limit }: any, ctx: any) => {
       if (!ctx?.user?.id) throw new Error('Unauthorized')
       
-      console.log('🗺️ Finding nearby users for:', ctx.user.id, 'at:', latitude, longitude, 'radius:', radiusKm)
       const users = await findNearbyUsers({
         latitude,
         longitude,
@@ -90,7 +89,6 @@ export const resolvers = {
         limit: limit || 100
       })
       
-      console.log('📍 Found', users.length, 'nearby users (invisible users filtered out)')
       const invisibleCount = users.filter(u => u.invisible_mode === true).length
       if (invisibleCount > 0) {
         console.warn('⚠️ WARNING:', invisibleCount, 'invisible users still in results!')
@@ -142,10 +140,8 @@ export const resolvers = {
       if (typeof input.instagramUsername === 'string') allowed.instagram_username = input.instagramUsername
       if (typeof input.invisibleMode === 'boolean') {
         allowed.invisible_mode = input.invisibleMode
-        console.log('🔒 Setting invisible_mode to:', input.invisibleMode, 'for user:', ctx.user.id)
       }
 
-      console.log('📝 Updating profile with:', allowed)
       const { data, error } = await supabase
         .from(TABLE)
         .update(allowed)
@@ -153,7 +149,6 @@ export const resolvers = {
         .select('*')
         .single()
       if (error) throw error
-      console.log('✅ Profile updated, invisible_mode:', data.invisible_mode)
       
       // Track interests update activity for live feed if interests were updated
       if (Array.isArray(input.interests)) {
@@ -191,7 +186,6 @@ export const resolvers = {
     updatePreferences: async (_: any, { input }: any, ctx: any) => {
       if (!ctx?.user?.id) throw new Error('Unauthorized')
       
-      console.log('🔄 Updating preferences for user:', ctx.user.id, 'with input:', input)
       
       const updatedProfile = await updatePreferences(ctx.user.id, {
         locationPreference: input.locationPreference,
@@ -200,7 +194,6 @@ export const resolvers = {
         relationshipDistanceFlexible: input.relationshipDistanceFlexible
       })
       
-      console.log('✅ Preferences updated successfully for user:', ctx.user.id)
       return toUser(updatedProfile)
     }
   }

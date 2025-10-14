@@ -1,7 +1,6 @@
 import { createActivity } from '../src/server/services/activityService.js'
 
 async function populateSampleActivities() {
-  console.log('🌱 Populating sample activities...')
   
   try {
     // Sample activities to show the variety of events
@@ -95,14 +94,11 @@ async function populateSampleActivities() {
       activity.timestamp = new Date(Date.now() - (i * 5 * 60 * 1000)).toISOString() // 5 minutes apart
       
       await createActivity(activity)
-      console.log(`✅ Created ${activity.type} activity`)
       
       // Small delay to avoid rate limiting
       await new Promise(resolve => setTimeout(resolve, 100))
     }
 
-    console.log('🎉 Sample activities populated successfully!')
-    console.log('📊 Users should now see these activities in their live feed')
     
   } catch (error) {
     console.error('❌ Error populating sample activities:', error)
@@ -112,7 +108,6 @@ async function populateSampleActivities() {
 
 // Run the script
 populateSampleActivities().then(() => {
-  console.log('✅ Script completed')
   process.exit(0)
 }).catch(error => {
   console.error('❌ Script failed:', error)

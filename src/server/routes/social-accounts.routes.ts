@@ -161,8 +161,8 @@ router.post('/link/spotify', requireAuth, async (req: AuthRequest, res) => {
       `state=${state}&` +
       `show_dialog=true` // Force login dialog for better mobile UX
 
-    console.log('✅ Generated Spotify OAuth URL for platform:', platform);
-    console.log('Redirect URI:', redirectUri);
+    //console.log('✅ Generated Spotify OAuth URL for platform:', platform);
+    //console.log('Redirect URI:', redirectUri);
     res.json({ authUrl, state })
   } catch (error) {
     console.error('Error starting Spotify OAuth:', error)
@@ -173,7 +173,7 @@ router.post('/link/spotify', requireAuth, async (req: AuthRequest, res) => {
 // Verify Instagram login status and fetch username from session - Updated to use profiles.instagram_username
 router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, res) => {
   try {
-    console.log('📥 Instagram session verification request received');
+    //console.log('📥 Instagram session verification request received');
     
     const { sessionData } = req.body
     const userId = req.user!.id
@@ -206,7 +206,7 @@ router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, r
     }
 
     // Update the user's profile with the Instagram username
-    console.log('💾 Updating profile with Instagram username:', username);
+    //console.log('💾 Updating profile with Instagram username:', username);
     const { error: updateError } = await supabase
       .from('profiles')
       .update({
@@ -240,18 +240,18 @@ router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, r
 // Instagram manual verification - Updated to use profiles.instagram_username
 router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
   try {
-    console.log('📥 Instagram verification request received');
-    console.log('📥 Request body:', JSON.stringify(req.body));
+    //console.log('📥 Instagram verification request received');
+    //console.log('📥 Request body:', JSON.stringify(req.body));
     
     const { username: rawUsername } = req.body
     const userId = req.user!.id
     const username = (rawUsername || '').trim().replace('@', '')
 
-    console.log('📥 Extracted username:', username);
-    console.log('📥 User ID:', userId);
+    //console.log('📥 Extracted username:', username);
+    //console.log('📥 User ID:', userId);
 
     if (!username) {
-      console.log('❌ Username validation failed: empty username');
+      //console.log('❌ Username validation failed: empty username');
       return res.status(400).json({ error: 'Instagram username is required' })
     }
 
@@ -274,7 +274,7 @@ router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Update the user's profile with the Instagram username
-    console.log('💾 Updating profile with Instagram username:', username);
+    //console.log('💾 Updating profile with Instagram username:', username);
     const { error: updateError } = await supabase
       .from('profiles')
       .update({
@@ -311,10 +311,10 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
       return res.status(500).json({ error: 'Instagram OAuth not configured' })
     }
 
-    console.log('🔍 Instagram (FB Login) OAuth Debug:');
-    console.log('- FB App ID exists:', !!INSTAGRAM_CLIENT_ID);
-    console.log('- Frontend URL:', FRONTEND_URL);
-    console.log('- Redirect URI:', `${FRONTEND_URL}/auth/instagram/callback`);
+    //console.log('🔍 Instagram (FB Login) OAuth Debug:');
+    //console.log('- FB App ID exists:', !!INSTAGRAM_CLIENT_ID);
+    //console.log('- Frontend URL:', FRONTEND_URL);
+    //console.log('- Redirect URI:', `${FRONTEND_URL}/auth/instagram/callback`);
 
     const userId = req.user!.id
     const state = generateOAuthState()
@@ -341,7 +341,7 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
       `response_type=code&` +
       `state=${encodeURIComponent(state)}`
 
-    console.log('✅ Generated Facebook Login URL for Instagram linking:', authUrl);
+    //console.log('✅ Generated Facebook Login URL for Instagram linking:', authUrl);
     res.json({ authUrl, state })
   } catch (error: any) {
     console.error('❌ Error starting Instagram OAuth (FB Login):', error)
@@ -355,11 +355,11 @@ router.post('/link/instagram', requireAuth, async (req: AuthRequest, res) => {
 
 // Handle Spotify OAuth callback
 router.post('/callback/spotify', async (req, res) => {
-  console.log('🎵 Spotify callback endpoint hit!');
+  //console.log('🎵 Spotify callback endpoint hit!');
   try {
     const { code, state, error: oauthError } = req.body
 
-    console.log('🔧 Spotify callback received:', { code: code ? 'present' : 'missing', state, error: oauthError })
+    //console.log('🔧 Spotify callback received:', { code: code ? 'present' : 'missing', state, error: oauthError })
 
     if (oauthError) {
       return res.status(400).json({ error: `OAuth error: ${oauthError}` })
@@ -372,10 +372,10 @@ router.post('/callback/spotify', async (req, res) => {
     // For expo-auth-session, we need to identify the user differently
     // Since expo-auth-session generates its own state, we'll use the authorization header
     const authHeader = req.headers.authorization
-    console.log('🔧 Auth header present:', !!authHeader)
+    //console.log('🔧 Auth header present:', !!authHeader)
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('❌ Missing or invalid authorization header')
+      //console.log('❌ Missing or invalid authorization header')
       return res.status(401).json({ error: 'Authorization token required' })
     }
     
@@ -385,11 +385,11 @@ router.post('/callback/spotify', async (req, res) => {
     let userId
     try {
       const jwt = await import('jsonwebtoken')
-      console.log('🔧 JWT_SECRET available:', !!process.env.JWT_SECRET)
+      //console.log('🔧 JWT_SECRET available:', !!process.env.JWT_SECRET)
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret') as any
       userId = decoded.userId || decoded.id
-      console.log('✅ Identified user from token:', userId)
-      console.log('🔧 Decoded token:', { userId: decoded.userId, id: decoded.id })
+      //console.log('✅ Identified user from token:', userId)
+      //console.log('🔧 Decoded token:', { userId: decoded.userId, id: decoded.id })
     } catch (error: any) {
       console.error('❌ Invalid token:', error)
       console.error('❌ Token verification failed:', error.message)
@@ -404,8 +404,8 @@ router.post('/callback/spotify', async (req, res) => {
       expiresAt: Date.now() + 10 * 60 * 1000
     }
     
-    console.log('🔧 Using expo-auth-session flow for user:', userId)
-    console.log('🔧 State data created:', stateData)
+    //console.log('🔧 Using expo-auth-session flow for user:', userId)
+    //console.log('🔧 State data created:', stateData)
 
     // Determine redirect URI based on request platform
     let redirectUri = `${FRONTEND_URL}/auth/spotify/callback`; // Default web URI
@@ -415,7 +415,7 @@ router.post('/callback/spotify', async (req, res) => {
       redirectUri = 'circle://auth/spotify/callback';
     }
     
-    console.log('🔧 Using redirect URI for token exchange:', redirectUri);
+    //console.log('🔧 Using redirect URI for token exchange:', redirectUri);
 
     // Exchange code for access token
     const tokenResponse = await axios.post('https://accounts.spotify.com/api/token', {
@@ -754,7 +754,7 @@ router.delete('/unlink/:platform', requireAuth, async (req: AuthRequest, res) =>
       return res.status(500).json({ error: 'Failed to unlink account' })
     }
 
-    console.log(`🗑️ Soft deleted ${platform} account for user ${userId}:`, existingAccount.platform_username);
+    //console.log(`🗑️ Soft deleted ${platform} account for user ${userId}:`, existingAccount.platform_username);
 
     res.json({ 
       success: true, 
@@ -807,11 +807,11 @@ router.get('/webhook/instagram', (req, res) => {
     // Check the mode and token sent are correct
     if (mode === 'subscribe' && token === INSTAGRAM_VERIFY_TOKEN) {
       // Respond with 200 OK and challenge token from the request
-      console.log('✅ Instagram webhook verified')
+      //console.log('✅ Instagram webhook verified')
       res.status(200).send(challenge)
     } else {
       // Responds with '403 Forbidden' if verify tokens do not match
-      console.log('❌ Instagram webhook verification failed')
+      //console.log('❌ Instagram webhook verification failed')
       res.sendStatus(403)
     }
   } else {
@@ -821,7 +821,7 @@ router.get('/webhook/instagram', (req, res) => {
 
 // Instagram webhook endpoint (optional - for receiving webhook events)
 router.post('/webhook/instagram', (req, res) => {
-  console.log('📥 Instagram webhook received:', req.body)
+  //console.log('📥 Instagram webhook received:', req.body)
   // Handle Instagram webhook events here if needed
   res.status(200).send('EVENT_RECEIVED')
 })
@@ -829,7 +829,7 @@ router.post('/webhook/instagram', (req, res) => {
 // Instagram deauthorize callback (required for Facebook App)
 router.post('/webhook/instagram/deauth', (req, res) => {
   try {
-    console.log('📥 Instagram deauthorize callback received:', req.body)
+    //console.log('📥 Instagram deauthorize callback received:', req.body)
     
     const { signed_request } = req.body
     
@@ -839,7 +839,7 @@ router.post('/webhook/instagram/deauth', (req, res) => {
       const payload = signed_request.split('.')[1]
       const decoded = JSON.parse(Buffer.from(payload, 'base64').toString())
       
-      console.log('User deauthorized Instagram access:', decoded.user_id)
+      //console.log('User deauthorized Instagram access:', decoded.user_id)
       
       // Optional: Mark the user's Instagram account as deauthorized in your database
       // This is useful for compliance and user privacy
@@ -855,7 +855,7 @@ router.post('/webhook/instagram/deauth', (req, res) => {
 // Instagram data deletion request callback (required for Facebook App)
 router.post('/webhook/instagram/deletion', (req, res) => {
   try {
-    console.log('📥 Instagram data deletion request received:', req.body)
+    //console.log('📥 Instagram data deletion request received:', req.body)
     
     const { signed_request } = req.body
     
@@ -864,7 +864,7 @@ router.post('/webhook/instagram/deletion', (req, res) => {
       const payload = signed_request.split('.')[1]
       const decoded = JSON.parse(Buffer.from(payload, 'base64').toString())
       
-      console.log('User requested data deletion for Instagram:', decoded.user_id)
+      //console.log('User requested data deletion for Instagram:', decoded.user_id)
       
       // Generate a confirmation code for the deletion request
       const confirmationCode = `DEL_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -874,7 +874,7 @@ router.post('/webhook/instagram/deletion', (req, res) => {
       // 2. Store the confirmation code
       // 3. Actually delete the data within the required timeframe
       
-      console.log('Generated deletion confirmation code:', confirmationCode)
+      //console.log('Generated deletion confirmation code:', confirmationCode)
       
       // Return the confirmation code and deletion URL
       res.status(200).json({

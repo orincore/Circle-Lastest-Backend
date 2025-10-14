@@ -18,7 +18,6 @@ const supabase = createClient(
 
 async function recalculateAllUserStats() {
   try {
-    console.log('🔄 Starting user stats recalculation...')
     
     // Get all user IDs
     const { data: users, error: usersError } = await supabase
@@ -30,7 +29,6 @@ async function recalculateAllUserStats() {
       return
     }
     
-    console.log(`📊 Found ${users.length} users to update`)
     
     let updated = 0
     let errors = 0
@@ -50,7 +48,6 @@ async function recalculateAllUserStats() {
             console.error(`❌ Error updating stats for ${user.first_name} ${user.last_name}:`, error)
             errors++
           } else {
-            console.log(`✅ Updated stats for ${user.first_name} ${user.last_name}`)
             updated++
           }
         } catch (error) {
@@ -65,12 +62,9 @@ async function recalculateAllUserStats() {
       }
     }
     
-    console.log(`\n📈 Stats recalculation completed:`)
-    console.log(`✅ Successfully updated: ${updated} users`)
-    console.log(`❌ Errors: ${errors} users`)
+    
     
     if (errors === 0) {
-      console.log('🎉 All user stats have been successfully recalculated!')
     }
     
   } catch (error) {
@@ -81,7 +75,6 @@ async function recalculateAllUserStats() {
 // Run the script
 recalculateAllUserStats()
   .then(() => {
-    console.log('🏁 Script completed')
     process.exit(0)
   })
   .catch((error) => {

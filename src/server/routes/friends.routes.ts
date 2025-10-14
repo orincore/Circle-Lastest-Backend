@@ -23,12 +23,12 @@ router.get('/status/:userId', requireAuth, async (req: AuthRequest, res) => {
       .in('status', ['active', 'accepted'])
       .maybeSingle()
 
-    console.log(`🔍 Checking friendship between ${currentUserId} and ${userId}:`, friendshipData);
+    //console.log(`🔍 Checking friendship between ${currentUserId} and ${userId}:`, friendshipData);
 
     if (friendshipError && friendshipError.code !== 'PGRST116' && friendshipError.code !== '42P01') {
       console.error('Error checking friendship:', friendshipError);
     } else if (friendshipData) {
-      console.log(`✅ Found active friendship, returning friends status`);
+      //console.log(`✅ Found active friendship, returning friends status`);
       return res.json({ status: 'friends' })
     }
 
@@ -63,7 +63,7 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
     const { receiverId, message } = req.body
     const senderId = req.user!.id
 
-    console.log('Sending friend request:', { senderId, receiverId, message })
+    //console.log('Sending friend request:', { senderId, receiverId, message })
 
     if (!receiverId) {
       return res.status(400).json({ error: 'Receiver ID is required' })
@@ -126,7 +126,7 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Create friend request
-    console.log('Creating friend request in database...')
+    //console.log('Creating friend request in database...')
     const { data: request, error: requestError } = await supabase
       .from('friend_requests')
       .insert({
@@ -146,7 +146,7 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
       throw requestError
     }
 
-    console.log('Friend request created successfully:', request)
+    //console.log('Friend request created successfully:', request)
     
     // Also log all requests to see what's in the database
     const { data: allRequestsAfter } = await supabase
@@ -154,7 +154,7 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
       .select('*')
       .order('created_at', { ascending: false })
     
-    console.log('All requests after creation:', allRequestsAfter)
+    //console.log('All requests after creation:', allRequestsAfter)
     res.json({ request })
   } catch (error) {
     console.error('Send friend request error:', error)
@@ -282,7 +282,7 @@ router.post('/reject/:requestId', requireAuth, async (req: AuthRequest, res) => 
 router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    console.log('Getting pending requests for user:', userId)
+    //console.log('Getting pending requests for user:', userId)
 
     // Query friendships table for pending requests where user is the receiver
     const { data: friendships, error } = await supabase
@@ -300,7 +300,7 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
     // Filter to only show requests where current user is the receiver (not the sender)
     const requests = friendships?.filter(f => f.sender_id !== userId) || []
 
-    console.log('Found requests:', requests?.length || 0)
+    //console.log('Found requests:', requests?.length || 0)
 
     // If we have requests, get sender information from profiles
     if (requests && requests.length > 0) {
@@ -367,7 +367,7 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
 router.get('/list', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    console.log('Getting friends list for user:', userId)
+    //console.log('Getting friends list for user:', userId)
 
     // First get the friendships without joins
     // Accept both 'active' and 'accepted' status
@@ -383,7 +383,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
       throw error
     }
 
-    console.log('Found friendships:', friendships?.length || 0)
+    //console.log('Found friendships:', friendships?.length || 0)
 
     if (!friendships || friendships.length === 0) {
       return res.json({ friends: [] })
@@ -394,7 +394,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
       return friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
     })
 
-    console.log('Friend user IDs:', friendUserIds)
+    //console.log('Friend user IDs:', friendUserIds)
 
     // Get friend profiles separately
     const { data: profiles, error: profilesError } = await supabase
@@ -417,7 +417,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
       return res.json({ friends })
     }
 
-    console.log('Found profiles:', profiles?.length || 0)
+    //console.log('Found profiles:', profiles?.length || 0)
 
     // Get chat IDs for each friendship
     const { data: chats, error: chatsError } = await supabase
@@ -429,7 +429,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error fetching chats:', chatsError)
     }
 
-    console.log('Found chats:', chats?.length || 0)
+    //console.log('Found chats:', chats?.length || 0)
 
     // Combine friendships with profile data and chat IDs
     const friends = friendships.map((friendship: any) => {
@@ -453,7 +453,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
       }
     })
 
-    console.log('Returning friends with chat IDs:', friends)
+    //console.log('Returning friends with chat IDs:', friends)
     res.json({ friends })
   } catch (error) {
     console.error('Get friends list error:', error)
@@ -477,7 +477,7 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
 
     if (error) throw error
 
-    console.log(`✅ Successfully unfriended: ${userId} and ${friendId}`)
+    //console.log(`✅ Successfully unfriended: ${userId} and ${friendId}`)
     res.json({ success: true })
   } catch (error) {
     console.error('Remove friend error:', error)
@@ -500,7 +500,7 @@ router.post('/block/:userId', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Cannot block yourself' })
     }
 
-    console.log('Blocking user:', { blockerId, blockedUserId, reason })
+    //console.log('Blocking user:', { blockerId, blockedUserId, reason })
 
     // Use the database function to block user and handle cleanup
     const { data: success, error } = await supabase
@@ -539,7 +539,7 @@ router.delete('/block/:userId', requireAuth, async (req: AuthRequest, res) => {
     const { userId: blockedUserId } = req.params
     const blockerId = req.user!.id
 
-    console.log('Unblocking user:', { blockerId, blockedUserId })
+    //console.log('Unblocking user:', { blockerId, blockedUserId })
 
     // Use the database function to unblock user
     const { data: success, error } = await supabase
@@ -735,7 +735,7 @@ router.post('/debug/create-request-for-user', async (req, res) => {
     
     const testSenderId = '22222222-2222-2222-2222-222222222222' // Different test sender
     
-    console.log('Creating friend request for specific user:', receiverId)
+    //console.log('Creating friend request for specific user:', receiverId)
     
     const { data: request, error } = await supabase
       .from('friend_requests')
@@ -753,7 +753,7 @@ router.post('/debug/create-request-for-user', async (req, res) => {
       return res.status(500).json({ error: error.message })
     }
 
-    console.log('Friend request created successfully:', request)
+    //console.log('Friend request created successfully:', request)
     res.json({ success: true, request })
   } catch (error: any) {
     console.error('Create request error:', error)
@@ -767,7 +767,7 @@ router.post('/debug/create-test-request', requireAuth, async (req: AuthRequest, 
     const receiverId = req.user!.id
     const testSenderId = '11111111-1111-1111-1111-111111111111' // Fake sender ID for testing
     
-    console.log('Creating test request for user:', receiverId)
+    //console.log('Creating test request for user:', receiverId)
     
     // First check if a test request already exists
     const { data: existingTest } = await supabase
@@ -797,7 +797,7 @@ router.post('/debug/create-test-request', requireAuth, async (req: AuthRequest, 
       return res.status(500).json({ error: error.message })
     }
 
-    console.log('Test request created successfully:', request)
+    //console.log('Test request created successfully:', request)
     
     // Verify it was created by querying all requests for this user
     const { data: userRequests } = await supabase
@@ -805,7 +805,7 @@ router.post('/debug/create-test-request', requireAuth, async (req: AuthRequest, 
       .select('*')
       .eq('receiver_id', receiverId)
     
-    console.log('All requests for user after test creation:', userRequests)
+    //console.log('All requests for user after test creation:', userRequests)
 
     res.json({ success: true, request, totalUserRequests: userRequests?.length || 0 })
   } catch (error: any) {
@@ -967,7 +967,7 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
   try {
     const { userId } = req.params
     
-    console.log('🔍 Fetching profile for user:', userId)
+    //console.log('🔍 Fetching profile for user:', userId)
     
     // Get user profile from profiles table
     const { data: profile, error } = await supabase
@@ -981,7 +981,7 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       return res.status(404).json({ error: 'User profile not found' })
     }
     
-    console.log('✅ Found user profile:', profile)
+    //console.log('✅ Found user profile:', profile)
     
     res.json({
       id: profile.id,

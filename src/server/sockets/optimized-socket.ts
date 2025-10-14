@@ -49,7 +49,7 @@ async function emitUnreadCountUpdate(chatId: string, userId: string) {
     
     const unreadCount = msgIds.filter(id => !readIds.includes(id)).length
     
-    console.log(`📊 Emitting unread count update: chat ${chatId}, user ${userId}, count ${unreadCount}`)
+    //console.log(`📊 Emitting unread count update: chat ${chatId}, user ${userId}, count ${unreadCount}`)
     emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
     
   } catch (error) {
@@ -316,12 +316,7 @@ export function initOptimizedSocket(server: Server) {
         
         // Verify room membership
         const isInRoom = socket.rooms.has(user.id);
-        console.log(`🏠 User ${user.id} room membership:`, {
-          socketId: socket.id,
-          userId: user.id,
-          isInRoom,
-          allRooms: Array.from(socket.rooms)
-        });
+       
         
         if (!isInRoom) {
           console.warn(`⚠️ Failed to join room ${user.id}, retrying...`);
@@ -329,7 +324,7 @@ export function initOptimizedSocket(server: Server) {
           
           // Final verification
           const retrySuccess = socket.rooms.has(user.id);
-          console.log(`🔄 Retry result for ${user.id}:`, retrySuccess);
+          //console.log(`🔄 Retry result for ${user.id}:`, retrySuccess);
         }
         
         // Check for pending matchmaking proposals when user connects
@@ -375,10 +370,10 @@ export function initOptimizedSocket(server: Server) {
     socket.on('chat:message:delivered', async ({ messageId }: { messageId: string }) => {
       resetTimeout()
       const userId: string | undefined = user?.id
-      console.log(`📨 Received delivery event for message ${messageId} from user ${userId}`)
+      //console.log(`📨 Received delivery event for message ${messageId} from user ${userId}`)
       
       if (!messageId || !userId) {
-        console.log('❌ Missing messageId or userId for delivery')
+        //console.log('❌ Missing messageId or userId for delivery')
         return
       }
 
@@ -391,17 +386,17 @@ export function initOptimizedSocket(server: Server) {
           .single()
 
         if (error || !message) {
-          console.log('❌ Message not found or error:', error)
+          //console.log('❌ Message not found or error:', error)
           return
         }
 
         // Don't mark own messages as delivered
         if (message.sender_id === userId) {
-          console.log('❌ User trying to mark own message as delivered')
+          //console.log('❌ User trying to mark own message as delivered')
           return
         }
 
-        console.log(`✅ Adding delivery receipt for message ${messageId}`)
+        //console.log(`✅ Adding delivery receipt for message ${messageId}`)
         
         // Add delivery receipt - use insertReceipt function which handles conflicts properly
         try {
@@ -411,7 +406,7 @@ export function initOptimizedSocket(server: Server) {
           return
         }
 
-        console.log(`✅ Delivery receipt added, notifying sender ${message.sender_id}`)
+        //console.log(`✅ Delivery receipt added, notifying sender ${message.sender_id}`)
 
         // Notify sender
         io.to(message.sender_id).emit('chat:message:delivery_receipt', {
@@ -429,10 +424,10 @@ export function initOptimizedSocket(server: Server) {
     socket.on('chat:message:read', async ({ messageId }: { messageId: string }) => {
       resetTimeout()
       const userId: string | undefined = user?.id
-      console.log(`👁️ Received read event for message ${messageId} from user ${userId}`)
+      //console.log(`👁️ Received read event for message ${messageId} from user ${userId}`)
       
       if (!messageId || !userId) {
-        console.log('❌ Missing messageId or userId for read')
+        //console.log('❌ Missing messageId or userId for read')
         return
       }
 
@@ -445,17 +440,17 @@ export function initOptimizedSocket(server: Server) {
           .single()
 
         if (error || !message) {
-          console.log('❌ Message not found or error:', error)
+          //console.log('❌ Message not found or error:', error)
           return
         }
 
         // Don't mark own messages as read
         if (message.sender_id === userId) {
-          console.log('❌ User trying to mark own message as read')
+          //console.log('❌ User trying to mark own message as read')
           return
         }
 
-        console.log(`✅ Adding read receipt for message ${messageId}`)
+        //console.log(`✅ Adding read receipt for message ${messageId}`)
 
         // Add read receipt - use insertReceipt function which handles conflicts properly
         try {
@@ -465,7 +460,7 @@ export function initOptimizedSocket(server: Server) {
           return
         }
 
-        console.log(`✅ Read receipt added, notifying sender ${message.sender_id}`)
+        //console.log(`✅ Read receipt added, notifying sender ${message.sender_id}`)
 
         // Notify sender
         io.to(message.sender_id).emit('chat:message:read_receipt', {
@@ -513,10 +508,10 @@ export function initOptimizedSocket(server: Server) {
     socket.on('friend:status:get', async ({ userId: targetUserId }: { userId: string }) => {
       resetTimeout()
       const currentUserId: string | undefined = user?.id
-      console.log(`👤 Getting friend status between ${currentUserId} and ${targetUserId}`)
+      //console.log(`👤 Getting friend status between ${currentUserId} and ${targetUserId}`)
       
       if (!currentUserId || !targetUserId) {
-        console.log('❌ Missing currentUserId or targetUserId')
+        //console.log('❌ Missing currentUserId or targetUserId')
         socket.emit('friend:status:response', { error: 'Missing required parameters' })
         return
       }
@@ -544,23 +539,23 @@ export function initOptimizedSocket(server: Server) {
         
         if (friendshipData) {
           if (friendshipData.status === 'active' || friendshipData.status === 'accepted') {
-            console.log('✅ Users are friends')
+            //console.log('✅ Users are friends')
             status = 'friends'
           } else if (friendshipData.status === 'pending') {
             // Check who sent the request
             if (friendshipData.sender_id === currentUserId) {
               // Current user sent the request
-              console.log('✅ Current user sent friend request')
+              //console.log('✅ Current user sent friend request')
               status = 'pending_sent'
             } else {
               // Current user received the request
-              console.log('✅ Current user received friend request')
+              //console.log('✅ Current user received friend request')
               status = 'pending_received'
             }
           }
         }
         
-        console.log('✅ Friend status:', status)
+        //console.log('✅ Friend status:', status)
         socket.emit('friend:status:response', { 
           status,
           requestId: friendshipData?.id // Include request ID for accept/decline
@@ -582,10 +577,10 @@ export function initOptimizedSocket(server: Server) {
     socket.on('message:request:cancel', async ({ receiverId }: { receiverId: string }) => {
       resetTimeout()
       const senderId: string | undefined = user?.id
-      console.log(`🚫 Cancelling message request from ${senderId} to ${receiverId}`)
+      //console.log(`🚫 Cancelling message request from ${senderId} to ${receiverId}`)
       
       if (!senderId || !receiverId) {
-        console.log('❌ Missing senderId or receiverId for message cancel')
+        //console.log('❌ Missing senderId or receiverId for message cancel')
         socket.emit('message:request:error', { error: 'Missing required parameters' })
         return
       }
@@ -621,7 +616,7 @@ export function initOptimizedSocket(server: Server) {
             return
           }
 
-          console.log(`✅ Message request cancelled`)
+          //console.log(`✅ Message request cancelled`)
 
           // Notify receiver that message request was cancelled
           io.to(receiverId).emit('message:request:cancelled', {
@@ -649,10 +644,10 @@ export function initOptimizedSocket(server: Server) {
     socket.on('notifications:get', async () => {
       resetTimeout()
       const userId: string | undefined = user?.id
-      console.log(`📋 Getting notifications for user ${userId}`)
+      //console.log(`📋 Getting notifications for user ${userId}`)
       
       if (!userId) {
-        console.log('❌ Missing userId for notifications')
+        //console.log('❌ Missing userId for notifications')
         return
       }
 
@@ -673,7 +668,7 @@ export function initOptimizedSocket(server: Server) {
           return
         }
 
-        console.log(`✅ Found ${friendRequests?.length || 0} notifications for user ${userId}`)
+        //console.log(`✅ Found ${friendRequests?.length || 0} notifications for user ${userId}`)
 
         // Send notifications list to user
         socket.emit('notifications:list', {
@@ -728,10 +723,10 @@ export function initOptimizedSocket(server: Server) {
     socket.on('chat:clear', async ({ chatId }: { chatId: string }) => {
       resetTimeout()
       const userId: string | undefined = user?.id
-      console.log(`🗑️ Clearing chat ${chatId} for user ${userId}`)
+      //console.log(`🗑️ Clearing chat ${chatId} for user ${userId}`)
       
       if (!userId || !chatId) {
-        console.log('❌ Missing userId or chatId for chat clear')
+        //console.log('❌ Missing userId or chatId for chat clear')
         socket.emit('chat:clear:error', { error: 'Missing required parameters' })
         return
       }
@@ -745,7 +740,7 @@ export function initOptimizedSocket(server: Server) {
 
       try {
         // Verify user is a member of this chat
-        console.log(`🔍 Checking membership for user ${userId} in chat ${chatId}`)
+        //console.log(`🔍 Checking membership for user ${userId} in chat ${chatId}`)
         
         const { data: membership, error: memberError } = await supabase
           .from('chat_members')
@@ -754,11 +749,11 @@ export function initOptimizedSocket(server: Server) {
           .eq('user_id', userId)
           .single()
 
-        console.log('🔍 Membership query result:', { membership, memberError })
+        //console.log('🔍 Membership query result:', { membership, memberError })
 
         if (memberError || !membership) {
-          console.log('❌ User not found in chat_members table')
-          console.log('🔍 Let me check all members of this chat:')
+          //console.log('❌ User not found in chat_members table')
+          //console.log('🔍 Let me check all members of this chat:')
           
           // Debug: Check all members of this chat
           const { data: allMembers } = await supabase
@@ -766,10 +761,10 @@ export function initOptimizedSocket(server: Server) {
             .select('user_id, chat_id')
             .eq('chat_id', chatId)
           
-          console.log('👥 All members of chat:', allMembers)
+          //console.log('👥 All members of chat:', allMembers)
           
           // Fallback: Check if user has sent messages in this chat
-          console.log('🔍 Checking if user has messages in this chat as fallback...')
+          //console.log('🔍 Checking if user has messages in this chat as fallback...')
           const { data: userMessages, error: messageError } = await supabase
             .from('messages')
             .select('id')
@@ -777,18 +772,18 @@ export function initOptimizedSocket(server: Server) {
             .eq('sender_id', userId)
             .limit(1)
           
-          console.log('📨 User messages in chat:', { userMessages, messageError })
+          //console.log('📨 User messages in chat:', { userMessages, messageError })
           
           if (!userMessages || userMessages.length === 0) {
-            console.log('❌ User has no messages in this chat either - not authorized')
+            //console.log('❌ User has no messages in this chat either - not authorized')
             socket.emit('chat:clear:error', { error: 'Not authorized to clear this chat' })
             return
           }
           
-          console.log('✅ User has messages in this chat - allowing clear operation')
+          //console.log('✅ User has messages in this chat - allowing clear operation')
         }
 
-        console.log('✅ User is authorized to clear this chat')
+        //console.log('✅ User is authorized to clear this chat')
 
         // Create user-specific chat deletion record instead of deleting messages for everyone
         // This allows the chat to be cleared for the user who initiated it, but remain visible for others
@@ -832,7 +827,7 @@ export function initOptimizedSocket(server: Server) {
           }
         }
 
-        console.log(`✅ Chat ${chatId} cleared successfully for user ${userId} (user-specific deletion)`)
+        //console.log(`✅ Chat ${chatId} cleared successfully for user ${userId} (user-specific deletion)`)
 
         // Notify only the user who cleared the chat
         socket.emit('chat:clear:success', { 
@@ -841,7 +836,7 @@ export function initOptimizedSocket(server: Server) {
         })
 
         // Do NOT notify other users - the chat remains visible for them
-        console.log('ℹ️ Chat cleared only for requesting user, other users still see the chat')
+        //console.log('ℹ️ Chat cleared only for requesting user, other users still see the chat')
 
       } catch (error) {
         console.error('❌ Error clearing chat:', error)
@@ -1044,14 +1039,7 @@ export function initOptimizedSocket(server: Server) {
           return
         }
         
-        console.log('📤 Socket received message data:', { 
-          chatId, 
-          userId, 
-          text: text?.trim() || '', 
-          mediaUrl, 
-          mediaType, 
-          thumbnail 
-        })
+        
         
         const row = await insertMessage(
           chatId, 
@@ -1191,7 +1179,7 @@ export function initOptimizedSocket(server: Server) {
         })
         
         if (directInsertError) {
-          console.log('🔄 Direct SQL failed, using fallback batch method...')
+          //console.log('🔄 Direct SQL failed, using fallback batch method...')
           
           // Fallback: Get only unread messages to minimize operations
           const { data: unreadMessages, error: messagesError } = await supabase
@@ -1227,9 +1215,9 @@ export function initOptimizedSocket(server: Server) {
             return
           }
           
-          console.log(`✅ Fallback: Marked ${unreadMessages.length} unread messages`)
+          //console.log(`✅ Fallback: Marked ${unreadMessages.length} unread messages`)
         } else {
-          console.log('✅ Direct SQL: All messages marked as read efficiently')
+          //console.log('✅ Direct SQL: All messages marked as read efficiently')
         }
         
         // Emit minimal events for real-time updates
@@ -1371,22 +1359,22 @@ export function initOptimizedSocket(server: Server) {
     // Profile Visit: Handle profile visit notifications
     socket.on('profile:visit', async ({ profileOwnerId, visitorId, visitorName }: { profileOwnerId: string, visitorId: string, visitorName: string }) => {
       resetTimeout()
-      console.log(`👁️ Profile visit: ${visitorName} (${visitorId}) visited ${profileOwnerId}'s profile`)
+      //console.log(`👁️ Profile visit: ${visitorName} (${visitorId}) visited ${profileOwnerId}'s profile`)
       
       if (!profileOwnerId || !visitorId || !visitorName) {
-        console.log('❌ Missing required parameters for profile visit')
+        //console.log('❌ Missing required parameters for profile visit')
         return
       }
 
       if (profileOwnerId === visitorId) {
-        console.log('❌ User cannot visit their own profile')
+        //console.log('❌ User cannot visit their own profile')
         return
       }
 
       try {
         // Create notification for profile owner
         await NotificationService.notifyProfileVisit(profileOwnerId, visitorId, visitorName)
-        console.log(`✅ Profile visit notification created for ${profileOwnerId}`)
+        //console.log(`✅ Profile visit notification created for ${profileOwnerId}`)
         
         // Track profile visit activity for live feed
         const { data: visitor } = await supabase
@@ -1460,14 +1448,10 @@ export function initOptimizedSocket(server: Server) {
       socket.on('verify-room-membership', () => {
         if (user?.id) {
           const isInRoom = socket.rooms.has(user.id);
-          console.log(`🏠 Room membership verification for ${user.id}:`, {
-            socketId: socket.id,
-            isInRoom,
-            allRooms: Array.from(socket.rooms)
-          });
+          
           
           if (!isInRoom) {
-            console.log(`🔧 Fixing room membership for ${user.id}`);
+            //console.log(`🔧 Fixing room membership for ${user.id}`);
             socket.join(user.id);
           }
           
@@ -1483,7 +1467,7 @@ export function initOptimizedSocket(server: Server) {
       // Handle connection state refresh for voice calls
       socket.on('refresh-connection-state', () => {
         if (user?.id) {
-          console.log(`🔄 Refreshing connection state for ${user.id}`);
+          //console.log(`🔄 Refreshing connection state for ${user.id}`);
           
           // Ensure user is in their room
           if (!socket.rooms.has(user.id)) {
