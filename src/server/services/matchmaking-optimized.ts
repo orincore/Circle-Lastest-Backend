@@ -7,6 +7,7 @@ import { logger } from '../config/logger.js'
 import { CirclePointsService } from './circle-points.service.js'
 import { NotificationService } from './notificationService.js'
 import { trackUserMatched, trackChatStarted } from './activityService.js'
+import { CompatibilityService } from './compatibility.service.js'
 
 // Redis client for distributed state management
 const redis = new Redis({
@@ -345,8 +346,6 @@ function isGenderCompatible(user1: CachedProfile, user2: CachedProfile): boolean
 
 // Advanced matching algorithm with smart gender and location scoring
 function calculateCompatibilityScore(user1: CachedProfile, user2: CachedProfile, distance?: number): number {
-  let score = 0
-  
   // Gender compatibility check (critical factor)
   if (!isGenderCompatible(user1, user2)) {
     logger.debug({ 
@@ -360,29 +359,26 @@ function calculateCompatibilityScore(user1: CachedProfile, user2: CachedProfile,
     return -1000 // Incompatible gender preferences - reject match
   }
   
-  // Age compatibility (closer ages get higher scores)
-  const ageDiff = Math.abs((user1.age ?? 25) - (user2.age ?? 25))
-  if (ageDiff <= 2) score += 15
-  else if (ageDiff <= 5) score += 10
-  else if (ageDiff <= 10) score += 5
-  else if (ageDiff <= 15) score += 2
-  else score -= ageDiff * 0.3
+  // Use enhanced compatibility service for better scoring
+  const compatibility = CompatibilityService.calculateEnhancedCompatibility(
+    {
+      age: user1.age,
+      interests: user1.interests,
+      needs: user1.needs
+    },
+    {
+      age: user2.age,
+      interests: user2.interests,
+      needs: user2.needs
+    },
+    distance
+  )
   
-  // Interest overlap (strong compatibility indicator)
-  const user1Interests = Array.isArray(user1.interests) ? user1.interests : []
-  const user2Interests = Array.isArray(user2.interests) ? user2.interests : []
-  const commonInterests = user1Interests.filter(i => user2Interests.includes(i))
-  score += commonInterests.length * 4
+  let score = compatibility.score
   
-  // Needs compatibility (relationship type alignment)
-  const user1Needs = Array.isArray(user1.needs) ? user1.needs.map(n => n.toLowerCase()) : []
-  const user2Needs = Array.isArray(user2.needs) ? user2.needs.map(n => n.toLowerCase()) : []
-  const commonNeeds = user1Needs.filter(n => user2Needs.includes(n))
-  score += commonNeeds.length * 6 // Higher weight for matching relationship goals
-  
-  // Friendship bonus (friendship is highly compatible)
-  const bothWantFriendship = user1Needs.includes('friendship') && user2Needs.includes('friendship')
-  if (bothWantFriendship) score += 10
+  // Get needs for additional checks
+  const user1Needs = Array.isArray(user1.needs) ? user1.needs.map((n: string) => n.toLowerCase()) : []
+  const user2Needs = Array.isArray(user2.needs) ? user2.needs.map((n: string) => n.toLowerCase()) : []
   
   // Location-based scoring with expanding circles
   if (distance !== undefined) {
@@ -421,8 +417,8 @@ function calculateCompatibilityScore(user1: CachedProfile, user2: CachedProfile,
   
   // Relationship type bonuses
   const relationshipTypes = ['boyfriend', 'girlfriend', 'dating', 'relationship']
-  const user1WantsRelationship = user1Needs.some(need => relationshipTypes.includes(need))
-  const user2WantsRelationship = user2Needs.some(need => relationshipTypes.includes(need))
+  const user1WantsRelationship = user1Needs.some((need: string) => relationshipTypes.includes(need))
+  const user2WantsRelationship = user2Needs.some((need: string) => relationshipTypes.includes(need))
   
   if (user1WantsRelationship && user2WantsRelationship) {
     score += 8 // Both want relationships - good compatibility
@@ -434,6 +430,14 @@ function calculateCompatibilityScore(user1: CachedProfile, user2: CachedProfile,
   if (user1WantsCasual && user2WantsCasual) {
     score += 5 // Both want casual - moderate compatibility
   }
+  
+  logger.debug({
+    enhancedScore: compatibility.score,
+    finalScore: score,
+    breakdown: compatibility.breakdown,
+    commonInterests: compatibility.commonInterests,
+    commonNeeds: compatibility.commonNeeds
+  }, '🎯 Final compatibility score calculated')
   
   return score
 }
