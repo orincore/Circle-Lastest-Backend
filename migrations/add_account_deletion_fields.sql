@@ -22,3 +22,17 @@ UPDATE profiles
 SET is_deleted = TRUE, deleted_at = NOW()
 WHERE email LIKE 'deleted_%@deleted.com' 
 AND is_deleted IS NULL;
+
+Error fetching chats: {
+0|circle-backend  |   code: '42703',
+0|circle-backend  |   details: null,
+0|circle-backend  |   hint: null,
+0|circle-backend  |   message: 'column chats.user1_id does not exist'
+0|circle-backend  | }
+0|circle-backend  | Error fetching chats: {
+0|circle-backend  |   code: '42703',
+0|circle-backend  |   details: null,
+0|circle-backend  |   hint: null,
+0|circle-backend  |   message: 'column chats.user1_id does not exist'
+0|circle-backend  | }
+
