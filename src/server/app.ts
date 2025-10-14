@@ -53,6 +53,7 @@ import aiSupportRouter from './routes/ai-support.routes.js'
 import aiAdminRouter from './routes/ai-admin.routes.js'
 import publicStatsRouter from './routes/public-stats.routes.js'
 import userPhotosRouter from './routes/user-photos.routes.js'
+import accountDeletionRouter from './routes/account-deletion.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -233,6 +234,7 @@ app.use('/api/revenue', revenueRouter)
 app.use('/api/ai-support', aiSupportRouter)
 app.use('/api/ai-admin', aiAdminRouter)
 app.use('/api/users', userPhotosRouter)
+app.use('/api/account', accountDeletionRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 
