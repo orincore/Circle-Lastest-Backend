@@ -419,21 +419,41 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
 
     console.log('Found profiles:', profiles?.length || 0)
 
-    // Combine friendships with profile data
+    // Get chat IDs for each friendship
+    const { data: chats, error: chatsError } = await supabase
+      .from('chats')
+      .select('id, user1_id, user2_id')
+      .or(`and(user1_id.eq.${userId},user2_id.in.(${friendUserIds.join(',')})),and(user2_id.eq.${userId},user1_id.in.(${friendUserIds.join(',')}))`)
+
+    if (chatsError) {
+      console.error('Error fetching chats:', chatsError)
+    }
+
+    console.log('Found chats:', chats?.length || 0)
+
+    // Combine friendships with profile data and chat IDs
     const friends = friendships.map((friendship: any) => {
       const friendId = friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
       const profile = profiles?.find((p: any) => p.id === friendId)
+      
+      // Find the chat with this friend
+      const chat = chats?.find((c: any) => 
+        (c.user1_id === userId && c.user2_id === friendId) ||
+        (c.user2_id === userId && c.user1_id === friendId)
+      )
       
       return {
         id: friendId,
         name: profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown User' : `User ${friendId.slice(0, 8)}`,
         profile_photo_url: profile?.profile_photo_url || null,
         email: profile?.email || null,
-        created_at: friendship.created_at
+        username: profile?.instagram_username || null,
+        created_at: friendship.created_at,
+        chat_id: chat?.id || null // Include chat ID if exists
       }
     })
 
-    console.log('Returning friends:', friends)
+    console.log('Returning friends with chat IDs:', friends)
     res.json({ friends })
   } catch (error) {
     console.error('Get friends list error:', error)

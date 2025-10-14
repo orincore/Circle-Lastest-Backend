@@ -5,14 +5,21 @@
 -- Create user_photos table
 CREATE TABLE IF NOT EXISTS user_photos (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
     photo_url TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     
-    -- Ensure user doesn't exceed 5 photos (enforced at application level too)
+    -- Foreign key constraint (will be added after checking table structure)
     CONSTRAINT valid_photo_url CHECK (photo_url ~ '^https?://.*')
 );
+
+-- Add foreign key constraint
+-- Note: Change 'auth.users' to 'public.users' or just 'users' depending on your schema
+-- Check your actual users table with: SELECT * FROM information_schema.tables WHERE table_name = 'users';
+ALTER TABLE user_photos 
+ADD CONSTRAINT user_photos_user_id_fkey 
+FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 
 -- Create index for faster queries
 CREATE INDEX IF NOT EXISTS idx_user_photos_user_id ON user_photos(user_id);
