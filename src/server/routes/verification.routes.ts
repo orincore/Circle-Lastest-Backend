@@ -151,13 +151,37 @@ router.post('/submit', requireAuth, upload.single('video'), async (req: AuthRequ
       .order('created_at', { ascending: false })
       .limit(1);
 
-    // Send notification if verified
+    // Update profile verification status
     if (verificationResult.verified) {
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          verification_status: 'verified',
+          verified_at: new Date().toISOString(),
+          verification_required: false
+        })
+        .eq('id', userId);
+
+      if (updateError) {
+        console.error('Error updating profile verification status:', updateError);
+      } else {
+        console.log('✅ Profile verification status updated for user:', userId);
+      }
+
+      // Send notification if verified
       try {
         await NotificationService.notifyVerificationSuccess(userId);
       } catch (notifError) {
         console.error('Failed to send verification notification:', notifError);
       }
+    } else {
+      // Update profile to rejected status
+      await supabase
+        .from('profiles')
+        .update({
+          verification_status: 'rejected'
+        })
+        .eq('id', userId);
     }
 
     return res.json({
