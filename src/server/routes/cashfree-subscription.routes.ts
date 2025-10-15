@@ -429,11 +429,12 @@ router.get('/subscription-status', requireAuth, async (req: AuthRequest, res) =>
   try {
     const userId = req.user!.id;
 
+    // Check for active or cancelled subscriptions (cancelled users keep access until expiry)
     const { data: subscription } = await supabase
       .from('user_subscriptions')
       .select('*')
       .eq('user_id', userId)
-      .eq('status', 'active')
+      .in('status', ['active', 'cancelled'])
       .single();
 
     if (!subscription) {
@@ -460,12 +461,79 @@ router.get('/subscription-status', requireAuth, async (req: AuthRequest, res) =>
       is_subscribed: true,
       plan: subscription.plan_type,
       expires_at: subscription.expires_at,
-      started_at: subscription.started_at
+      started_at: subscription.started_at,
+      status: subscription.status,
+      is_cancelled: subscription.status === 'cancelled',
+      cancelled_at: subscription.cancelled_at
     });
 
   } catch (error) {
     logger.error({ error }, 'Error fetching subscription status');
     res.status(500).json({ error: 'Failed to fetch subscription status' });
+  }
+});
+
+/**
+ * Cancel subscription (No refund policy)
+ * POST /api/cashfree/cancel-subscription
+ */
+router.post('/cancel-subscription', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+
+    // Get active subscription
+    const { data: subscription, error: fetchError } = await supabase
+      .from('user_subscriptions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .single();
+
+    if (fetchError || !subscription) {
+      return res.status(404).json({ error: 'No active subscription found' });
+    }
+
+    // Cancel the subscription (no refund - subscription remains active until expiry)
+    const { error: cancelError } = await supabase
+      .from('user_subscriptions')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        auto_renew: false,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', subscription.id);
+
+    if (cancelError) {
+      logger.error({ error: cancelError, userId }, 'Error cancelling subscription');
+      return res.status(500).json({ error: 'Failed to cancel subscription' });
+    }
+
+    // Update profile to remove premium status after expiry
+    // Note: User keeps premium access until expires_at date
+    await supabase
+      .from('profiles')
+      .update({
+        subscription_expires_at: subscription.expires_at
+      })
+      .eq('id', userId);
+
+    logger.info({ 
+      userId, 
+      subscriptionId: subscription.id,
+      expiresAt: subscription.expires_at 
+    }, 'Subscription cancelled - access remains until expiry date');
+
+    res.json({
+      success: true,
+      message: 'Subscription cancelled successfully. You will retain access until the end of your billing period.',
+      expires_at: subscription.expires_at,
+      no_refund: true
+    });
+
+  } catch (error) {
+    logger.error({ error }, 'Error cancelling subscription');
+    res.status(500).json({ error: 'Failed to cancel subscription' });
   }
 });
 

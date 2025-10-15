@@ -119,11 +119,12 @@ export class SubscriptionService {
       }
       
       // Also check user_subscriptions table (Cashfree payments)
+      // Note: Include 'cancelled' status because users retain access until expiry
       const { data: cashfreeSub, error } = await supabase
         .from('user_subscriptions')
         .select('*')
         .eq('user_id', userId)
-        .eq('status', 'active')
+        .in('status', ['active', 'cancelled'])
         .single()
       
       if (error && error.code !== 'PGRST116') {
@@ -141,6 +142,7 @@ export class SubscriptionService {
           return false
         }
         
+        // User has access until expiry even if cancelled
         return true
       }
       
@@ -167,11 +169,12 @@ export class SubscriptionService {
       }
       
       // Also check user_subscriptions table (Cashfree payments)
+      // Include cancelled subscriptions as they retain access until expiry
       const { data: cashfreeSub, error } = await supabase
         .from('user_subscriptions')
         .select('*')
         .eq('user_id', userId)
-        .eq('status', 'active')
+        .in('status', ['active', 'cancelled'])
         .single()
       
       if (error && error.code !== 'PGRST116') {
