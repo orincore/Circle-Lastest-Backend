@@ -291,16 +291,105 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 async function handlePaymentSuccess(data: any) {
   const orderId = data.order.order_id;
   
+  // Get order details from database
+  const { data: order, error: orderError } = await supabase
+    .from('payment_orders')
+    .select('*')
+    .eq('order_id', orderId)
+    .single();
+
+  if (orderError || !order) {
+    logger.error({ orderId, error: orderError }, 'Order not found for webhook');
+    return;
+  }
+
+  // Update payment order status
   await supabase
     .from('payment_orders')
     .update({
       status: 'success',
       gateway_payment_id: data.payment.cf_payment_id,
+      payment_method: data.payment.payment_group,
       updated_at: new Date().toISOString()
     })
     .eq('order_id', orderId);
 
-  logger.info({ orderId }, 'Payment success webhook processed');
+  // Get plan details
+  const plan = getPlanById(order.plan_id);
+  if (!plan) {
+    logger.error({ orderId, planId: order.plan_id }, 'Invalid plan for order');
+    return;
+  }
+
+  const durationDays = getDurationInDays(order.plan_id);
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + durationDays);
+
+  // Check if user has existing active subscription
+  const { data: existingSub } = await supabase
+    .from('user_subscriptions')
+    .select('*')
+    .eq('user_id', order.user_id)
+    .eq('status', 'active')
+    .single();
+
+  if (existingSub) {
+    // Extend existing subscription
+    const currentExpiry = new Date(existingSub.expires_at);
+    const newExpiry = currentExpiry > new Date() 
+      ? new Date(currentExpiry.getTime() + durationDays * 24 * 60 * 60 * 1000)
+      : expiresAt;
+
+    await supabase
+      .from('user_subscriptions')
+      .update({
+        plan_type: plan.duration,
+        expires_at: newExpiry.toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', existingSub.id);
+
+    logger.info({ orderId, userId: order.user_id, newExpiry }, 'Subscription extended via webhook');
+  } else {
+    // Create new subscription
+    await supabase.from('user_subscriptions').insert({
+      user_id: order.user_id,
+      plan_type: plan.duration,
+      status: 'active',
+      started_at: new Date().toISOString(),
+      expires_at: expiresAt.toISOString(),
+      payment_gateway: 'cashfree',
+      gateway_subscription_id: order.gateway_order_id,
+      amount: order.amount,
+      currency: 'INR'
+    });
+
+    logger.info({ orderId, userId: order.user_id, expiresAt }, 'New subscription created via webhook');
+  }
+
+  // Record transaction
+  await supabase.from('subscription_transactions').insert({
+    user_id: order.user_id,
+    order_id: orderId,
+    amount: order.amount,
+    currency: 'INR',
+    status: 'completed',
+    payment_method: data.payment.payment_group,
+    gateway: 'cashfree',
+    gateway_transaction_id: data.payment.cf_payment_id,
+    created_at: new Date().toISOString()
+  });
+
+  // Update profile premium status (trigger will handle this, but we can do it explicitly too)
+  await supabase
+    .from('profiles')
+    .update({
+      is_premium: true,
+      subscription_expires_at: expiresAt.toISOString()
+    })
+    .eq('id', order.user_id);
+
+  logger.info({ orderId, userId: order.user_id, planId: order.plan_id }, 'Payment success webhook processed - subscription activated');
 }
 
 async function handlePaymentFailed(data: any) {
