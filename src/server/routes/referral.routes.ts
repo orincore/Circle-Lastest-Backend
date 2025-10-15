@@ -294,6 +294,33 @@ export async function applyReferralCode(
       return { success: false, error: 'Failed to create referral' };
     }
 
+    // Update total_referrals count in user_referrals table
+    console.log('📊 Updating referral count for user:', referrerId);
+    const { error: updateError } = await supabase.rpc('increment_referral_count', {
+      p_user_id: referrerId
+    });
+
+    if (updateError) {
+      console.warn('⚠️ RPC function not available, using manual update');
+      // Fallback: Manual increment
+      const { data: currentData } = await supabase
+        .from('user_referrals')
+        .select('total_referrals')
+        .eq('user_id', referrerId)
+        .single();
+
+      const newCount = (currentData?.total_referrals || 0) + 1;
+      
+      await supabase
+        .from('user_referrals')
+        .update({ total_referrals: newCount })
+        .eq('user_id', referrerId);
+      
+      console.log('✅ Manually updated referral count to:', newCount);
+    } else {
+      console.log('✅ Referral count updated via RPC');
+    }
+
     // Get referred user's name for notification
     const { data: referredUser } = await supabase
       .from('profiles')
