@@ -1,0 +1,7 @@
+flask>=3.0.0
+opencv-python>=4.8.0
+mediapipe
+numpy>=1.24.0
+boto3>=1.34.0
+python-dotenv>=1.0.0
+werkzeug>=3.0.0

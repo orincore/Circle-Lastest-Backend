@@ -5,3 +5,23 @@ dist/
 .DS_Store
 ._*
 .vercel
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+ENV/
+*.egg-info/
+
+# Python services - ignore virtual environments
+python-services/*/venv/
+python-services/*/env/
+python-services/*/.env
+python-services/*/__pycache__/
+python-services/*/*.pyc
+python-services/*/.pytest_cache/
+python-services/*/logs/
+python-services/*/*.log

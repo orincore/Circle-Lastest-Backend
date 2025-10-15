@@ -25,7 +25,9 @@ export type NotificationType =
   | 'referral_approved'
   | 'referral_rejected'
   | 'referral_paid'
-  | 'referral_signup';
+  | 'referral_signup'
+  | 'verification_success'
+  | 'verification_rejected';
 
 export class NotificationService {
   /**
@@ -429,6 +431,37 @@ export class NotificationService {
         referral_number: referralNumber,
         amount,
         payment_reference: paymentReference
+      }
+    });
+  }
+
+  /**
+   * Notify user when face verification is successful
+   */
+  static async notifyVerificationSuccess(userId: string): Promise<void> {
+    await this.createNotification({
+      recipient_id: userId,
+      type: 'verification_success',
+      title: '✅ Verification Successful!',
+      message: 'Your face verification has been approved. You now have full access to all features!',
+      data: { 
+        action: 'verification_approved'
+      }
+    });
+  }
+
+  /**
+   * Notify user when face verification is rejected
+   */
+  static async notifyVerificationRejected(userId: string, reason: string): Promise<void> {
+    await this.createNotification({
+      recipient_id: userId,
+      type: 'verification_rejected',
+      title: '❌ Verification Failed',
+      message: `Your verification was not successful. ${reason}`,
+      data: { 
+        action: 'verification_rejected',
+        reason
       }
     });
   }

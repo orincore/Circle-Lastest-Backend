@@ -169,7 +169,7 @@ The system uses these tables (already created):
 
 1. **User Requests Payment**
    - POST to `/api/referrals/request-payment`
-   - Minimum ₹10 required
+   - Minimum ₹100 required
 
 2. **Admin Processes Request**
    - View via `/api/admin/referrals/payment-requests`
