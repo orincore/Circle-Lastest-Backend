@@ -66,6 +66,43 @@ router.get('/check', requireAuth, async (req: AuthRequest, res) => {
 })
 
 /**
+ * Verify admin token and status
+ * GET /api/admin/verify
+ */
+router.get('/verify', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+
+    // Check admin_roles table for active admin role
+    const { data: adminRole, error } = await supabase
+      .from('admin_roles')
+      .select('id, role, granted_at, is_active')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('revoked_at', null)
+      .single()
+
+    if (error || !adminRole) {
+      return res.status(403).json({
+        isAdmin: false,
+        error: 'Not authorized as admin'
+      })
+    }
+
+    return res.json({
+      isAdmin: true,
+      role: adminRole.role,
+      grantedAt: adminRole.granted_at
+    })
+  } catch (error) {
+    console.error('❌ Admin verify error:', error)
+    return res.status(500).json({
+      error: 'Failed to verify admin status'
+    })
+  }
+})
+
+/**
  * Get admin profile with stats
  * GET /api/admin/profile
  */
