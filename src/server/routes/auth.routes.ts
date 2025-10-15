@@ -38,7 +38,8 @@ const signupSchema = z.object({
     .refine((s) => /^[a-zA-Z0-9._]+$/.test(s), {
       message: 'Instagram username can only contain letters, numbers, periods, and underscores'
     })
-    .optional()
+    .optional(),
+  referralCode: z.string().optional()
 })
 
 // Username availability
@@ -67,13 +68,14 @@ router.post('/signup', async (req, res) => {
     } catch {}
     return res.status(400).json({ error: 'Invalid body', details: parse.error.flatten() })
   }
-  let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username, instagramUsername } = parse.data
+  let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username, instagramUsername, referralCode } = parse.data
 
   // Debug: Log the parsed data to see what we're receiving
   
 
   const normalizedEmail = email.trim().toLowerCase()
   const cleanInstagramUsername = instagramUsername ? instagramUsername.trim().replace('@', '') : ''
+  const cleanReferralCode = referralCode ? referralCode.trim().toUpperCase() : null
 
   // Validate Instagram username format if provided
   if (cleanInstagramUsername && !/^[a-zA-Z0-9._]+$/.test(cleanInstagramUsername)) {
@@ -153,6 +155,37 @@ router.post('/signup', async (req, res) => {
 
   // Welcome email will be sent after email verification, not at signup
 
+  // Handle referral code if provided
+  let referralInfo = null;
+  if (cleanReferralCode) {
+    try {
+      // Dynamically import the referral function
+      const { applyReferralCode } = await import('./referral.routes.js');
+      const result = await applyReferralCode(
+        profile.id, 
+        cleanReferralCode, 
+        req.ip || req.connection?.remoteAddress, 
+        req.get('User-Agent')
+      );
+      
+      if (result.success) {
+        referralInfo = { 
+          code: cleanReferralCode, 
+          status: 'pending',
+          referralNumber: result.referralNumber
+        };
+        console.log(`✅ Referral code ${cleanReferralCode} applied successfully for user ${profile.id}`);
+      } else {
+        console.log(`⚠️ Referral code ${cleanReferralCode} failed: ${result.error}`);
+        referralInfo = { code: cleanReferralCode, status: 'failed', error: result.error };
+      }
+    } catch (error) {
+      console.error('Failed to process referral code:', error);
+      // Don't fail signup if referral processing fails
+      referralInfo = { code: cleanReferralCode, status: 'error' };
+    }
+  }
+
   const access_token = signJwt({ sub: profile.id, email: profile.email, username: profile.username })
   return res.json({
     access_token,
@@ -171,7 +204,8 @@ router.post('/signup', async (req, res) => {
       profilePhotoUrl: profile.profile_photo_url,
       instagramUsername: profile.instagram_username,
       emailVerified: false // New users need to verify email
-    }
+    },
+    referralInfo
   })
 })
 
