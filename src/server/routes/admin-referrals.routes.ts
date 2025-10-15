@@ -322,6 +322,160 @@ router.post('/:transactionId/verify', requireAuth, requireAdmin, async (req: Adm
 });
 
 /**
+ * Update referral transaction details
+ * PUT /api/admin/referrals/:transactionId/update
+ */
+router.put('/:transactionId/update', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { transactionId } = req.params;
+    const { reward_amount, notes } = req.body;
+    const adminId = req.user!.id;
+
+    // Get transaction details first
+    const { data: transaction, error: fetchError } = await supabase
+      .from('referral_transactions')
+      .select('*')
+      .eq('id', transactionId)
+      .single();
+
+    if (fetchError || !transaction) {
+      return res.status(404).json({ error: 'Referral transaction not found' });
+    }
+
+    // Prepare update object
+    const updates: any = {
+      updated_at: new Date().toISOString()
+    };
+
+    if (reward_amount !== undefined && reward_amount !== null) {
+      updates.reward_amount = reward_amount;
+    }
+
+    if (notes !== undefined) {
+      updates.notes = notes;
+    }
+
+    // Update transaction
+    const { error: updateError } = await supabase
+      .from('referral_transactions')
+      .update(updates)
+      .eq('id', transactionId);
+
+    if (updateError) {
+      console.error('Error updating referral:', updateError);
+      return res.status(500).json({ error: 'Failed to update referral' });
+    }
+
+    // Log admin action
+    await supabase.from('admin_audit_logs').insert({
+      admin_id: adminId,
+      action: 'update_referral',
+      target_type: 'referral_transaction',
+      target_id: transactionId,
+      details: { updates, old_values: { reward_amount: transaction.reward_amount } }
+    });
+
+    res.json({
+      success: true,
+      message: 'Referral updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating referral:', error);
+    res.status(500).json({ error: 'Failed to update referral' });
+  }
+});
+
+/**
+ * Change referral status
+ * POST /api/admin/referrals/:transactionId/change-status
+ */
+router.post('/:transactionId/change-status', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { transactionId } = req.params;
+    const { status } = req.body;
+    const adminId = req.user!.id;
+
+    // Validate status
+    if (!['pending', 'approved', 'paid', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    // Get transaction details first
+    const { data: transaction, error: fetchError } = await supabase
+      .from('referral_transactions')
+      .select('*')
+      .eq('id', transactionId)
+      .single();
+
+    if (fetchError || !transaction) {
+      return res.status(404).json({ error: 'Referral transaction not found' });
+    }
+
+    const oldStatus = transaction.status;
+
+    // Update transaction status
+    const { error: updateError } = await supabase
+      .from('referral_transactions')
+      .update({
+        status,
+        verified_by: adminId,
+        verified_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', transactionId);
+
+    if (updateError) {
+      console.error('Error changing status:', updateError);
+      return res.status(500).json({ error: 'Failed to change status' });
+    }
+
+    // Log admin action
+    await supabase.from('admin_audit_logs').insert({
+      admin_id: adminId,
+      action: 'change_referral_status',
+      target_type: 'referral_transaction',
+      target_id: transactionId,
+      details: { old_status: oldStatus, new_status: status }
+    });
+
+    // Send notification based on new status
+    try {
+      if (status === 'approved') {
+        await NotificationService.notifyReferralApproved(
+          transaction.referrer_user_id,
+          transaction.referral_number,
+          parseFloat(transaction.reward_amount as any) || 10
+        );
+      } else if (status === 'rejected') {
+        await NotificationService.notifyReferralRejected(
+          transaction.referrer_user_id,
+          transaction.referral_number,
+          'Status changed by admin'
+        );
+      } else if (status === 'paid') {
+        await NotificationService.notifyReferralPaid(
+          transaction.referrer_user_id,
+          transaction.referral_number,
+          parseFloat(transaction.reward_amount as any) || 10,
+          'Admin status change'
+        );
+      }
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
+
+    res.json({
+      success: true,
+      message: `Status changed from ${oldStatus} to ${status} successfully`
+    });
+  } catch (error) {
+    console.error('Error changing status:', error);
+    res.status(500).json({ error: 'Failed to change status' });
+  }
+});
+
+/**
  * Mark referral as paid
  * POST /api/admin/referrals/:transactionId/mark-paid
  */
