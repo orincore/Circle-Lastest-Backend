@@ -18,6 +18,9 @@ fi
 echo "📦 Updating package list..."
 sudo apt-get update
 
+# Install bc for version comparison
+sudo apt-get install -y bc lsb-release 2>/dev/null || true
+
 # Install Python 3.11 if not already installed
 if ! command -v python3.11 &> /dev/null; then
     echo "🐍 Installing Python 3.11..."
@@ -41,39 +44,39 @@ fi
 
 # Install system dependencies for OpenCV and MediaPipe
 echo "📦 Installing system dependencies..."
-sudo apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    libgstreamer1.0-0 \
-    libavcodec-dev \
-    libavformat-dev \
-    libswscale-dev \
-    libglu1-mesa \
-    libxi6 \
-    libxrandr2 \
-    libxinerama1 \
-    libxcursor1 \
-    libxfixes3 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxkbcommon0 \
-    libxkbcommon-x11-0 \
-    libfontconfig1 \
-    libfreetype6 \
-    libpng16-16 \
-    libjpeg-turbo8 \
-    libtiff6 \
-    libwebp7 \
-    libopenjp2-7 \
-    libopenexr-3-1-30 \
-    libharfbuzz0b \
-    libatlas-base-dev \
-    gfortran \
-    2>/dev/null || echo "Some packages may not be available on this system"
+
+# Detect Ubuntu version
+UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "20.04")
+
+# For Ubuntu 24.04+ use new package names
+if [[ $(echo "$UBUNTU_VERSION >= 24.04" | bc -l 2>/dev/null || echo "0") -eq 1 ]]; then
+    echo "Detected Ubuntu $UBUNTU_VERSION - using updated package names"
+    sudo apt-get install -y \
+        libgl1 \
+        libglib2.0-0t64 \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
+        libgomp1 \
+        libgstreamer1.0-0 \
+        libavcodec-dev \
+        libavformat-dev \
+        libswscale-dev \
+        python3-opencv
+else
+    echo "Detected Ubuntu $UBUNTU_VERSION - using legacy package names"
+    sudo apt-get install -y \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
+        libgomp1 \
+        libgstreamer1.0-0 \
+        libavcodec-dev \
+        libavformat-dev \
+        libswscale-dev
+fi
 
 # Create virtual environment
 if [ ! -d "venv" ]; then
