@@ -12,13 +12,41 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
     // Get user referral info
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('user_referrals')
       .select('*')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
 
-    if (error) {
+    // If user doesn't have a referral code, create one
+    if (!data && error?.code === 'PGRST116') {
+      console.log('Creating referral code for user:', userId);
+      
+      // Call the database function to generate a referral code
+      const { data: newCode } = await supabase.rpc('generate_referral_code');
+      const referralCode = newCode || `CIR${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+      
+      // Insert new referral record
+      const { data: newReferral, error: insertError } = await supabase
+        .from('user_referrals')
+        .insert({
+          user_id: userId,
+          referral_code: referralCode,
+          total_referrals: 0,
+          total_earnings: 0,
+          pending_earnings: 0,
+          paid_earnings: 0
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error('Error creating referral code:', insertError);
+        return res.status(500).json({ error: 'Failed to create referral code' });
+      }
+
+      data = newReferral;
+    } else if (error) {
       console.error('Error fetching referral info:', error);
       return res.status(500).json({ error: 'Failed to fetch referral information' });
     }
