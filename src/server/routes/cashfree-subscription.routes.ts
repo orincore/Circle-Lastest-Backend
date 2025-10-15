@@ -49,9 +49,6 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Invalid plan selected' });
     }
 
-    // Generate unique order ID
-    const orderId = `ORDER_${userId.substring(0, 8)}_${Date.now()}`;
-    
     // Get user details
     const { data: profile } = await supabase
       .from('profiles')
@@ -63,9 +60,8 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       return res.status(404).json({ error: 'User profile not found' });
     }
 
-    // Create Cashfree order
+    // Create Cashfree order (v2023-08-01 API format)
     const orderRequest = {
-      order_id: orderId,
       order_amount: plan.price,
       order_currency: 'INR',
       customer_details: {
@@ -76,17 +72,18 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       },
       order_meta: {
         return_url: `${process.env.FRONTEND_URL}/subscription/verify?order_id={order_id}`,
-        notify_url: `${process.env.API_BASE_URL}/api/cashfree/webhook`,
-        payment_methods: 'cc,dc,nb,upi,app'
-      },
-      order_note: `Circle ${plan.name} Subscription`
+        notify_url: `${process.env.API_BASE_URL}/api/cashfree/webhook`
+      }
     };
 
     const response = await cashfreeClient.post('/orders', orderRequest);
+    
+    // Use Cashfree's generated order_id
+    const cfOrderId = response.data.order_id;
 
     // Store order in database
     await supabase.from('payment_orders').insert({
-      order_id: orderId,
+      order_id: cfOrderId,
       user_id: userId,
       plan_id: planId,
       amount: plan.price,
@@ -97,13 +94,12 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       created_at: new Date().toISOString()
     });
 
-    logger.info({ userId, orderId, planId, amount: plan.price }, 'Cashfree order created');
+    logger.info({ userId, cfOrderId, planId, amount: plan.price }, 'Cashfree order created');
 
     res.json({
       success: true,
-      order_id: orderId,
+      order_id: cfOrderId,
       payment_session_id: response.data.payment_session_id,
-      order_token: response.data.order_token,
       cf_order_id: response.data.cf_order_id,
       order_amount: plan.price,
       order_currency: 'INR'
