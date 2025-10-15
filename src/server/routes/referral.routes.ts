@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { supabase } from '../config/supabase.js';
 import { requireAuth, AuthRequest } from '../middleware/auth.js';
+import { NotificationService } from '../services/notificationService.js';
 
 const router = Router();
 
@@ -202,6 +203,28 @@ export async function applyReferralCode(
     if (insertError) {
       console.error('Error creating referral transaction:', insertError);
       return { success: false, error: 'Failed to create referral' };
+    }
+
+    // Get referred user's name for notification
+    const { data: referredUser } = await supabase
+      .from('profiles')
+      .select('first_name, last_name')
+      .eq('id', referredUserId)
+      .single();
+
+    // Send notification to referrer
+    try {
+      const referredUserName = referredUser 
+        ? `${referredUser.first_name} ${referredUser.last_name}`.trim() 
+        : 'Someone';
+      await NotificationService.notifyReferralSignup(
+        referrerId,
+        referredUserName,
+        referralNumber
+      );
+    } catch (notifError) {
+      console.error('Error sending referral signup notification:', notifError);
+      // Don't fail the referral if notification fails
     }
 
     // Log successful attempt
@@ -430,6 +453,17 @@ router.post('/admin/verify/:transactionId', requireAuth, async (req: AuthRequest
       return res.status(400).json({ error: 'Rejection reason is required' });
     }
 
+    // Get transaction details first
+    const { data: transaction, error: fetchError } = await supabase
+      .from('referral_transactions')
+      .select('*')
+      .eq('id', transactionId)
+      .single();
+
+    if (fetchError || !transaction) {
+      return res.status(404).json({ error: 'Referral transaction not found' });
+    }
+
     const { error } = await supabase
       .from('referral_transactions')
       .update({
@@ -443,6 +477,26 @@ router.post('/admin/verify/:transactionId', requireAuth, async (req: AuthRequest
     if (error) {
       console.error('Error verifying referral:', error);
       return res.status(500).json({ error: 'Failed to verify referral' });
+    }
+
+    // Send notification to user
+    try {
+      if (status === 'approved') {
+        await NotificationService.notifyReferralApproved(
+          transaction.referrer_user_id,
+          transaction.referral_number,
+          parseFloat(transaction.reward_amount as any) || 10
+        );
+      } else {
+        await NotificationService.notifyReferralRejected(
+          transaction.referrer_user_id,
+          transaction.referral_number,
+          rejectionReason
+        );
+      }
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
     }
 
     res.json({ message: `Referral ${status} successfully` });
@@ -459,6 +513,17 @@ router.post('/admin/mark-paid/:transactionId', requireAuth, async (req: AuthRequ
     const { transactionId } = req.params;
     const { paymentReference } = req.body;
 
+    // Get transaction details first
+    const { data: transaction, error: fetchError } = await supabase
+      .from('referral_transactions')
+      .select('*')
+      .eq('id', transactionId)
+      .single();
+
+    if (fetchError || !transaction) {
+      return res.status(404).json({ error: 'Referral transaction not found' });
+    }
+
     const { error } = await supabase
       .from('referral_transactions')
       .update({
@@ -472,6 +537,19 @@ router.post('/admin/mark-paid/:transactionId', requireAuth, async (req: AuthRequ
     if (error) {
       console.error('Error marking referral as paid:', error);
       return res.status(500).json({ error: 'Failed to mark referral as paid' });
+    }
+
+    // Send notification to user
+    try {
+      await NotificationService.notifyReferralPaid(
+        transaction.referrer_user_id,
+        transaction.referral_number,
+        parseFloat(transaction.reward_amount as any) || 10,
+        paymentReference
+      );
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
     }
 
     res.json({ message: 'Referral marked as paid successfully' });

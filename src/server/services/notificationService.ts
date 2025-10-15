@@ -21,7 +21,11 @@ export type NotificationType =
   | 'friend_unfriended'
   | 'new_message'
   | 'match_expired'
-  | 'new_user_suggestion';
+  | 'new_user_suggestion'
+  | 'referral_approved'
+  | 'referral_rejected'
+  | 'referral_paid'
+  | 'referral_signup';
 
 export class NotificationService {
   /**
@@ -359,5 +363,73 @@ export class NotificationService {
     } catch (error) {
       console.error('❌ Failed to create new user notifications:', error);
     }
+  }
+
+  /**
+   * Notify user when someone signs up using their referral code
+   */
+  static async notifyReferralSignup(referrerId: string, referredUserName: string, referralNumber: string): Promise<void> {
+    await this.createNotification({
+      recipient_id: referrerId,
+      type: 'referral_signup',
+      title: '🎉 New Referral!',
+      message: `${referredUserName} just signed up using your referral code! Referral #${referralNumber}`,
+      data: { 
+        action: 'referral_signup',
+        referral_number: referralNumber
+      }
+    });
+  }
+
+  /**
+   * Notify user when their referral is approved
+   */
+  static async notifyReferralApproved(userId: string, referralNumber: string, amount: number): Promise<void> {
+    await this.createNotification({
+      recipient_id: userId,
+      type: 'referral_approved',
+      title: '✅ Referral Approved!',
+      message: `Your referral #${referralNumber} has been approved! ₹${amount} added to your pending earnings.`,
+      data: { 
+        action: 'referral_approved',
+        referral_number: referralNumber,
+        amount
+      }
+    });
+  }
+
+  /**
+   * Notify user when their referral is rejected
+   */
+  static async notifyReferralRejected(userId: string, referralNumber: string, reason: string): Promise<void> {
+    await this.createNotification({
+      recipient_id: userId,
+      type: 'referral_rejected',
+      title: '❌ Referral Rejected',
+      message: `Your referral #${referralNumber} was rejected. Reason: ${reason}`,
+      data: { 
+        action: 'referral_rejected',
+        referral_number: referralNumber,
+        reason
+      }
+    });
+  }
+
+  /**
+   * Notify user when their referral payment is completed
+   */
+  static async notifyReferralPaid(userId: string, referralNumber: string, amount: number, paymentReference?: string): Promise<void> {
+    await this.createNotification({
+      recipient_id: userId,
+      type: 'referral_paid',
+      title: '💰 Payment Completed!',
+      message: `Payment of ₹${amount} for referral #${referralNumber} has been completed!${paymentReference ? ` Reference: ${paymentReference}` : ''}`,
+      data: { 
+        action: 'referral_paid',
+        referral_number: referralNumber,
+        amount,
+        payment_reference: paymentReference
+      }
+    });
   }
 }
