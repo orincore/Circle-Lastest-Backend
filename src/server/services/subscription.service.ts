@@ -39,7 +39,40 @@ export class SubscriptionService {
         throw error
       }
       
-      return data || null
+      if (data) return data
+      
+      // Also check user_subscriptions table (Cashfree payments)
+      const { data: cashfreeSub, error: cashfreeError } = await supabase
+        .from('user_subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+      
+      if (cashfreeError && cashfreeError.code !== 'PGRST116') {
+        logger.error({ error: cashfreeError, userId }, 'Error getting Cashfree subscription')
+      }
+      
+      if (cashfreeSub) {
+        // Map Cashfree subscription to standard format
+        return {
+          id: cashfreeSub.id,
+          user_id: cashfreeSub.user_id,
+          plan_type: 'premium', // Map monthly/yearly to premium
+          status: cashfreeSub.status,
+          started_at: new Date(cashfreeSub.started_at),
+          expires_at: cashfreeSub.expires_at ? new Date(cashfreeSub.expires_at) : undefined,
+          payment_provider: cashfreeSub.payment_gateway,
+          external_subscription_id: cashfreeSub.gateway_subscription_id,
+          price_paid: cashfreeSub.amount,
+          currency: cashfreeSub.currency || 'INR',
+          auto_renew: cashfreeSub.auto_renew || false,
+          cancelled_at: cashfreeSub.cancelled_at ? new Date(cashfreeSub.cancelled_at) : undefined
+        } as Subscription
+      }
+      
+      return null
     } catch (error) {
       logger.error({ error, userId }, 'Error getting user subscription')
       throw error
@@ -70,19 +103,48 @@ export class SubscriptionService {
   // Check if user is premium
   static async isPremiumUser(userId: string): Promise<boolean> {
     try {
+      // First check the subscriptions table
       const subscription = await this.getActiveSubscription(userId)
-      if (!subscription) return false
-      
-      // Check if subscription is premium and not expired
-      if (subscription.plan_type === 'free') return false
-      
-      if (subscription.expires_at && new Date() > subscription.expires_at) {
-        // Subscription expired, update status
-        await this.expireSubscription(userId)
-        return false
+      if (subscription) {
+        // Check if subscription is premium and not expired
+        if (subscription.plan_type === 'free') return false
+        
+        if (subscription.expires_at && new Date() > subscription.expires_at) {
+          // Subscription expired, update status
+          await this.expireSubscription(userId)
+          return false
+        }
+        
+        return true
       }
       
-      return true
+      // Also check user_subscriptions table (Cashfree payments)
+      const { data: cashfreeSub, error } = await supabase
+        .from('user_subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .single()
+      
+      if (error && error.code !== 'PGRST116') {
+        logger.error({ error, userId }, 'Error checking Cashfree subscription')
+      }
+      
+      if (cashfreeSub) {
+        // Check if not expired
+        if (cashfreeSub.expires_at && new Date() > new Date(cashfreeSub.expires_at)) {
+          // Expired, update status
+          await supabase
+            .from('user_subscriptions')
+            .update({ status: 'expired', updated_at: new Date().toISOString() })
+            .eq('id', cashfreeSub.id)
+          return false
+        }
+        
+        return true
+      }
+      
+      return false
     } catch (error) {
       logger.error({ error, userId }, 'Error checking premium status')
       return false
@@ -92,16 +154,45 @@ export class SubscriptionService {
   // Get user's subscription plan
   static async getUserPlan(userId: string): Promise<'free' | 'premium' | 'premium_plus'> {
     try {
+      // First check the subscriptions table
       const subscription = await this.getActiveSubscription(userId)
-      if (!subscription) return 'free'
-      
-      // Check if expired
-      if (subscription.expires_at && new Date() > subscription.expires_at) {
-        await this.expireSubscription(userId)
-        return 'free'
+      if (subscription) {
+        // Check if expired
+        if (subscription.expires_at && new Date() > subscription.expires_at) {
+          await this.expireSubscription(userId)
+          return 'free'
+        }
+        
+        return subscription.plan_type
       }
       
-      return subscription.plan_type
+      // Also check user_subscriptions table (Cashfree payments)
+      const { data: cashfreeSub, error } = await supabase
+        .from('user_subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .single()
+      
+      if (error && error.code !== 'PGRST116') {
+        logger.error({ error, userId }, 'Error checking Cashfree subscription plan')
+      }
+      
+      if (cashfreeSub) {
+        // Check if expired
+        if (cashfreeSub.expires_at && new Date() > new Date(cashfreeSub.expires_at)) {
+          await supabase
+            .from('user_subscriptions')
+            .update({ status: 'expired', updated_at: new Date().toISOString() })
+            .eq('id', cashfreeSub.id)
+          return 'free'
+        }
+        
+        // Map Cashfree plan types (monthly/yearly) to premium
+        return 'premium'
+      }
+      
+      return 'free'
     } catch (error) {
       logger.error({ error, userId }, 'Error getting user plan')
       return 'free'
