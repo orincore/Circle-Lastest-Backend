@@ -42,7 +42,7 @@ fi
 # Install system dependencies for OpenCV and MediaPipe
 echo "📦 Installing system dependencies..."
 sudo apt-get install -y \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -51,7 +51,29 @@ sudo apt-get install -y \
     libgstreamer1.0-0 \
     libavcodec-dev \
     libavformat-dev \
-    libswscale-dev
+    libswscale-dev \
+    libglu1-mesa \
+    libxi6 \
+    libxrandr2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxfixes3 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxkbcommon0 \
+    libxkbcommon-x11-0 \
+    libfontconfig1 \
+    libfreetype6 \
+    libpng16-16 \
+    libjpeg-turbo8 \
+    libtiff6 \
+    libwebp7 \
+    libopenjp2-7 \
+    libopenexr-3-1-30 \
+    libharfbuzz0b \
+    libatlas-base-dev \
+    gfortran \
+    2>/dev/null || echo "Some packages may not be available on this system"
 
 # Create virtual environment
 if [ ! -d "venv" ]; then
