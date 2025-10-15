@@ -402,8 +402,8 @@ router.post('/request-payment', requireAuth, async (req: AuthRequest, res: Respo
       return res.status(400).json({ error: 'Requested amount exceeds pending earnings' });
     }
 
-    if (amount < 10) {
-      return res.status(400).json({ error: 'Minimum withdrawal amount is ₹10' });
+    if (amount < 100) {
+      return res.status(400).json({ error: 'Minimum withdrawal amount is ₹100' });
     }
 
     // Use provided UPI or existing one
