@@ -79,13 +79,30 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
         .single();
 
       if (insertError) {
-        console.error('❌ Error creating referral code:', insertError);
-        console.error('Insert error details:', JSON.stringify(insertError, null, 2));
-        return res.status(500).json({ error: 'Failed to create referral code', details: insertError.message });
+        // If duplicate key error, it means another request already created it
+        if (insertError.code === '23505') {
+          console.log('⚠️ Referral code already exists (race condition), fetching existing...');
+          const { data: existingReferral } = await supabase
+            .from('user_referrals')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+          
+          if (existingReferral) {
+            data = existingReferral;
+          } else {
+            console.error('❌ Failed to fetch existing referral code');
+            return res.status(500).json({ error: 'Failed to fetch referral code' });
+          }
+        } else {
+          console.error('❌ Error creating referral code:', insertError);
+          console.error('Insert error details:', JSON.stringify(insertError, null, 2));
+          return res.status(500).json({ error: 'Failed to create referral code', details: insertError.message });
+        }
+      } else {
+        console.log('✅ Referral code created successfully:', newReferral);
+        data = newReferral;
       }
-
-      console.log('✅ Referral code created successfully:', newReferral);
-      data = newReferral;
     } else if (error) {
       console.error('❌ Error fetching referral info:', error);
       return res.status(500).json({ error: 'Failed to fetch referral information' });
