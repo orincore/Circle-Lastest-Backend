@@ -1,4 +1,3 @@
-import { devLog, devDebug, devWarn } from './utils/dev-logger';
 /**
  * Development Logger Utility
  * Defaults to production mode (no logs) if NODE_ENV is not set
@@ -14,7 +13,7 @@ const isDebugEnabled = process.env.DEBUG === 'true';
  */
 export const devLog = (...args: any[]) => {
   if (isDevelopment) {
-    devLog(...args);
+    console.log(...args);
   }
 };
 
@@ -23,7 +22,7 @@ export const devLog = (...args: any[]) => {
  */
 export const devDebug = (...args: any[]) => {
   if (isDevelopment && isDebugEnabled) {
-    devDebug(...args);
+    console.debug(...args);
   }
 };
 
@@ -32,7 +31,7 @@ export const devDebug = (...args: any[]) => {
  */
 export const devWarn = (...args: any[]) => {
   if (isDevelopment) {
-    devWarn(...args);
+    console.warn(...args);
   }
 };
 

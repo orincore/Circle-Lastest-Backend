@@ -1,5 +1,5 @@
 import { S3Client } from '@aws-sdk/client-s3'
-import { env } from '../server/config/env.js'
+import { env } from '../server/config/env'
 
 /**
  * AWS S3 Client Configuration
