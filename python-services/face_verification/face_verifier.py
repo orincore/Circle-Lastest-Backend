@@ -161,9 +161,13 @@ class FaceVerifier:
         
         cap.release()
         
+        # Calculate metrics first
+        face_detection_rate = face_detected_frames / max(frame_count, 1)
+        frames_processed_percentage = (frame_count / total_frames_in_video * 100) if total_frames_in_video > 0 else 0
+        
         # Log completion
         print(f"✅ Video analysis complete!")
-        print(f"   Processed: {frame_count}/{total_frames_in_video} frames ({frame_count/total_frames_in_video*100:.1f}%)")
+        print(f"   Processed: {frame_count}/{total_frames_in_video} frames ({frames_processed_percentage:.1f}%)")
         print(f"   Face detected: {face_detected_frames} frames ({face_detection_rate*100:.1f}%)")
         print(f"   Movements detected: {list(detected_movements)}")
         print(f"   Movement frame counts: {movement_frames}")
@@ -174,9 +178,6 @@ class FaceVerifier:
             pitch_range = max(pitch_values) - min(pitch_values)
             print(f"   Yaw range: {yaw_range:.1f}° (min: {min(yaw_values):.1f}°, max: {max(yaw_values):.1f}°)")
             print(f"   Pitch range: {pitch_range:.1f}° (min: {min(pitch_values):.1f}°, max: {max(pitch_values):.1f}°)")
-        
-        # Ensure we processed the complete video
-        frames_processed_percentage = (frame_count / total_frames_in_video * 100) if total_frames_in_video > 0 else 0
         
         # Check minimum video duration (at least 5 seconds)
         if video_duration < 5:
@@ -200,7 +201,6 @@ class FaceVerifier:
         # 3. Sufficient frames for each movement
         # 4. Complete video processed
         
-        face_detection_rate = face_detected_frames / max(frame_count, 1)
         all_movements_detected = len(detected_movements) == len(self.required_movements)
         
         # Check if each movement was held for at least 3 frames
