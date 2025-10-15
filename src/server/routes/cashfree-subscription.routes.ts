@@ -22,15 +22,88 @@ if (!validateCashfreeConfig()) {
  * Get available subscription plans
  * GET /api/cashfree/plans
  */
-router.get('/plans', (req, res) => {
+router.get('/plans', requireAuth, async (req: AuthRequest, res) => {
   try {
+    const userId = req.user!.id;
+    
+    // Check if user is eligible for free subscription
+    const { data: eligibilityData } = await supabase
+      .rpc('is_eligible_for_free_subscription', { p_user_id: userId });
+    
+    const isEligible = eligibilityData || false;
+    
+    // Get count of free subscriptions claimed
+    const { data: countData } = await supabase
+      .rpc('get_free_subscription_count');
+    
+    const freeSubsCount = countData || 0;
+    
+    // Modify plans based on eligibility
+    const plans = SUBSCRIPTION_PLANS.map(plan => {
+      if (plan.id === 'monthly' && isEligible) {
+        return {
+          ...plan,
+          originalPrice: plan.price,
+          price: 0,
+          isFree: true,
+          promoMessage: `🎉 Free for first 1000 users! (${freeSubsCount}/1000 claimed)`
+        };
+      }
+      return plan;
+    });
+    
     res.json({
-      plans: SUBSCRIPTION_PLANS,
-      currency: 'INR'
+      plans,
+      currency: 'INR',
+      isEligibleForFree: isEligible,
+      freeSubsRemaining: Math.max(0, 1000 - freeSubsCount)
     });
   } catch (error) {
     logger.error({ error }, 'Error fetching subscription plans');
     res.status(500).json({ error: 'Failed to fetch plans' });
+  }
+});
+
+/**
+ * Claim free subscription (for first 1000 users)
+ * POST /api/cashfree/claim-free-subscription
+ */
+router.post('/claim-free-subscription', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    
+    // Call the database function to claim free subscription
+    const { data, error } = await supabase
+      .rpc('claim_free_subscription', { p_user_id: userId })
+      .single();
+    
+    if (error) {
+      logger.error({ error, userId }, 'Error claiming free subscription');
+      return res.status(500).json({ error: 'Failed to claim free subscription' });
+    }
+    
+    const result = data as { success: boolean; message: string; subscription_id: string };
+    
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+    
+    logger.info({ userId, subscriptionId: result.subscription_id }, 'Free subscription claimed successfully');
+    
+    res.json({
+      success: true,
+      message: result.message,
+      subscription: {
+        id: result.subscription_id,
+        plan: 'monthly',
+        price: 0,
+        duration: '30 days',
+        isFree: true
+      }
+    });
+  } catch (error) {
+    logger.error({ error }, 'Error claiming free subscription');
+    res.status(500).json({ error: 'Failed to claim free subscription' });
   }
 });
 
