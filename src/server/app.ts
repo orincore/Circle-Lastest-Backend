@@ -151,22 +151,53 @@ app.use(detectAttackPatterns)
 app.use(validateContentType)
 app.use(preventParameterPollution)
 
-// Body parsers with size limits
-app.use(express.json({ 
-  limit: '2mb',
-  strict: true, // Only accept arrays and objects
-}))
-app.use(express.urlencoded({ 
-  extended: true,
-  limit: '2mb',
-  parameterLimit: 100, // Limit number of parameters
-}))
+// Body parsers with size limits (skip for file upload routes)
+app.use((req, res, next) => {
+  // Skip body parsing for file upload routes - they use multer
+  if (req.path.includes('/verification/submit') || 
+      req.path.includes('/upload') ||
+      req.path.includes('/user-photos')) {
+    return next();
+  }
+  express.json({ 
+    limit: '2mb',
+    strict: true,
+  })(req, res, next);
+});
 
-// Input sanitization - MUST be after body parsers
-app.use(sanitizeInput)
+app.use((req, res, next) => {
+  // Skip body parsing for file upload routes
+  if (req.path.includes('/verification/submit') || 
+      req.path.includes('/upload') ||
+      req.path.includes('/user-photos')) {
+    return next();
+  }
+  express.urlencoded({ 
+    extended: true,
+    limit: '2mb',
+    parameterLimit: 100,
+  })(req, res, next);
+});
 
-// Request size validation
-app.use(validateRequestSize(2 * 1024 * 1024)) // 2MB limit
+// Input sanitization - MUST be after body parsers (skip for file uploads)
+app.use((req, res, next) => {
+  if (req.path.includes('/verification/submit') || 
+      req.path.includes('/upload') ||
+      req.path.includes('/user-photos')) {
+    return next();
+  }
+  sanitizeInput(req, res, next);
+});
+
+// Request size validation (skip for file upload routes)
+app.use((req, res, next) => {
+  if (req.path.includes('/verification/submit') || 
+      req.path.includes('/upload') ||
+      req.path.includes('/user-photos')) {
+    return next();
+  }
+  validateRequestSize(2 * 1024 * 1024)(req, res, next); // 2MB limit
+});
 
 // Global rate limiting (500 requests per minute per IP - increased for development)
 app.use(rateLimit({ 
