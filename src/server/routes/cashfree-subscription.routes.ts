@@ -5,8 +5,8 @@
 
 import express from 'express';
 import { requireAuth, AuthRequest } from '../middleware/auth.js';
-import { Cashfree, validateCashfreeConfig } from '../../config/cashfree.js';
-import { SUBSCRIPTION_PLANS, getPlanById, getDurationInDays } from '../../config/subscription-plans.js';
+import { cashfreeClient, validateCashfreeConfig } from '../config/cashfree.js';
+import { SUBSCRIPTION_PLANS, getPlanById, getDurationInDays } from '../config/subscription-plans.js';
 import { supabase } from '../config/supabase.js';
 import { logger } from '../config/logger.js';
 import crypto from 'crypto';
@@ -82,7 +82,7 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       order_note: `Circle ${plan.name} Subscription`
     };
 
-    const response = await Cashfree.PGCreateOrder('2023-08-01', orderRequest);
+    const response = await cashfreeClient.post('/orders', orderRequest);
 
     // Store order in database
     await supabase.from('payment_orders').insert({
@@ -137,7 +137,7 @@ router.post('/verify-payment', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Fetch order status from Cashfree
-    const response = await Cashfree.PGOrderFetchPayments('2023-08-01', orderId);
+    const response = await cashfreeClient.get(`/orders/${orderId}/payments`);
 
     if (!response.data || response.data.length === 0) {
       return res.status(400).json({ error: 'No payment found for this order' });
