@@ -49,7 +49,7 @@ pm2 delete face-verification 2>/dev/null || true
 
 # Start with PM2 using ecosystem config
 echo "✅ Starting with PM2..."
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.cjs
 
 # Save PM2 configuration
 pm2 save
