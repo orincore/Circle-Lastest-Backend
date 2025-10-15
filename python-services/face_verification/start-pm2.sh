@@ -31,20 +31,25 @@ if [ ! -f ".env" ]; then
 fi
 
 # Get the absolute path to the virtual environment Python
-VENV_PYTHON="$(pwd)/venv/bin/python"
+VENV_PYTHON="$(pwd)/venv/bin/python3"
+
+# Verify Python interpreter exists
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo "❌ Python interpreter not found at: $VENV_PYTHON"
+    exit 1
+fi
+
+echo "Using Python interpreter: $VENV_PYTHON"
+
+# Create logs directory
+mkdir -p logs
 
 # Stop existing instance if running
 pm2 delete face-verification 2>/dev/null || true
 
-# Start with PM2
+# Start with PM2 using ecosystem config
 echo "✅ Starting with PM2..."
-pm2 start app.py \
-    --name face-verification \
-    --interpreter "$VENV_PYTHON" \
-    --watch false \
-    --max-memory-restart 1G \
-    --log-date-format "YYYY-MM-DD HH:mm:ss Z" \
-    --merge-logs
+pm2 start ecosystem.config.js
 
 # Save PM2 configuration
 pm2 save
