@@ -143,8 +143,25 @@ router.get('/transactions', requireAuth, requireAdmin, async (req: AdminRequest,
       return res.status(500).json({ error: 'Failed to fetch referral transactions' });
     }
 
+    // Fetch UPI IDs for referrers
+    const transactionsWithUPI = await Promise.all(
+      (transactions || []).map(async (transaction) => {
+        const { data: upiData } = await supabase
+          .from('user_referrals')
+          .select('upi_id, upi_verified')
+          .eq('user_id', transaction.referrer_user_id)
+          .single();
+        
+        return {
+          ...transaction,
+          referrer_upi_id: upiData?.upi_id || null,
+          referrer_upi_verified: upiData?.upi_verified || false
+        };
+      })
+    );
+
     res.json({
-      transactions: transactions || [],
+      transactions: transactionsWithUPI,
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -198,8 +215,25 @@ router.get('/pending', requireAuth, requireAdmin, async (req: AdminRequest, res)
       return res.status(500).json({ error: 'Failed to fetch pending referrals' });
     }
 
+    // Fetch UPI IDs for referrers
+    const transactionsWithUPI = await Promise.all(
+      (transactions || []).map(async (transaction) => {
+        const { data: upiData } = await supabase
+          .from('user_referrals')
+          .select('upi_id, upi_verified')
+          .eq('user_id', transaction.referrer_user_id)
+          .single();
+        
+        return {
+          ...transaction,
+          referrer_upi_id: upiData?.upi_id || null,
+          referrer_upi_verified: upiData?.upi_verified || false
+        };
+      })
+    );
+
     res.json({
-      transactions: transactions || [],
+      transactions: transactionsWithUPI,
       total: count || 0
     });
   } catch (error) {
