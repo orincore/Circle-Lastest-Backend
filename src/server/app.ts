@@ -57,6 +57,7 @@ import accountDeletionRouter from './routes/account-deletion.routes.js'
 import referralRouter from './routes/referral.routes.js'
 import adminReferralsRouter from './routes/admin-referrals.routes.js'
 import verificationRouter from './routes/verification.routes.js'
+import cashfreeRouter from './routes/cashfree-subscription.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -272,6 +273,7 @@ app.use('/api/account', accountDeletionRouter)
 app.use('/api/referrals', referralRouter)
 app.use('/api/admin/referrals', adminReferralsRouter)
 app.use('/api/verification', verificationRouter)
+app.use('/api/cashfree', cashfreeRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 
