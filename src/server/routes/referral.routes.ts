@@ -11,15 +11,10 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
+    // Get user referral info
     const { data, error } = await supabase
       .from('user_referrals')
-      .select(`
-        *,
-        pending_count:referral_transactions!referrer_user_id(count),
-        approved_count:referral_transactions!referrer_user_id(count),
-        paid_count:referral_transactions!referrer_user_id(count),
-        rejected_count:referral_transactions!referrer_user_id(count)
-      `)
+      .select('*')
       .eq('user_id', userId)
       .single();
 
@@ -28,7 +23,7 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
       return res.status(500).json({ error: 'Failed to fetch referral information' });
     }
 
-    // Get counts by status
+    // Get counts by status separately
     const { data: transactions } = await supabase
       .from('referral_transactions')
       .select('status')
@@ -60,14 +55,7 @@ router.get('/my-referrals/transactions', requireAuth, async (req: AuthRequest, r
 
     let query = supabase
       .from('referral_transactions')
-      .select(`
-        *,
-        referred_user:profiles!referred_user_id(
-          username,
-          email,
-          created_at
-        )
-      `)
+      .select('*', { count: 'exact' })
       .eq('referrer_user_id', userId)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -83,8 +71,24 @@ router.get('/my-referrals/transactions', requireAuth, async (req: AuthRequest, r
       return res.status(500).json({ error: 'Failed to fetch transactions' });
     }
 
+    // Fetch referred user details separately for each transaction
+    const transactionsWithUsers = await Promise.all(
+      (data || []).map(async (transaction) => {
+        const { data: referredUser } = await supabase
+          .from('profiles')
+          .select('username, email, created_at')
+          .eq('id', transaction.referred_user_id)
+          .single();
+
+        return {
+          ...transaction,
+          referred_user: referredUser
+        };
+      })
+    );
+
     res.json({
-      transactions: data || [],
+      transactions: transactionsWithUsers,
       total: count || 0
     });
   } catch (error) {
