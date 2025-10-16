@@ -19,7 +19,7 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
     id: 'monthly',
     name: 'Monthly Plan',
     duration: 'monthly',
-    price: 10, // ₹10/month - CHANGE THIS TO UPDATE PRICE
+    price: 176, // ₹149 + 18% GST = ₹176
     currency: 'INR',
     features: [
       'Unlimited messaging',
@@ -34,7 +34,7 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
     id: 'yearly',
     name: 'Yearly Plan',
     duration: 'yearly',
-    price: 50, // ₹50/year - CHANGE THIS TO UPDATE PRICE
+    price: 1769, // ₹1499 + 18% GST = ₹1769
     currency: 'INR',
     features: [
       'All Monthly features',
@@ -43,10 +43,10 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
       'See who liked you',
       'Priority support',
       'Ad-free experience',
-      'Save ₹70 per year'
+      'Save ₹343 per year'
     ],
     popular: true,
-    savings: 'Save 58%'
+    savings: 'Save 16%'
   }
 ];
 
