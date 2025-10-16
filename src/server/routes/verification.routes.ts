@@ -15,10 +15,11 @@ const upload = multer({
     fileSize: 50 * 1024 * 1024, // 50MB
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('video/')) {
+    const allowedTypes = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo'];
+    if (file.mimetype.startsWith('video/') || allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Only video files are allowed'));
+      cb(new Error('Only video files are allowed (mp4, webm, mov, avi)'));
     }
   }
 });
@@ -85,6 +86,15 @@ router.post('/submit', requireAuth, upload.single('video'), async (req: AuthRequ
       return res.status(400).json({ error: 'User already verified' });
     }
 
+    // Validate video file size (minimum check)
+    const minFileSize = 100 * 1024; // 100KB minimum
+    if (req.file.size < minFileSize) {
+      return res.status(400).json({ 
+        error: 'Video file too small',
+        reason: 'Video appears to be corrupted or too short. Please record at least 5 seconds.'
+      });
+    }
+
     // Log attempt
     await supabase.from('verification_attempts').insert({
       user_id: userId,
@@ -101,6 +111,15 @@ router.post('/submit', requireAuth, upload.single('video'), async (req: AuthRequ
       contentType: req.file.mimetype
     });
     formData.append('user_id', userId);
+    
+    // Add flag to skip duration check on Python side for browser-recorded videos
+    // Browser MediaRecorder may not set proper duration metadata
+    const userAgent = req.get('User-Agent') || '';
+    const isMobileBrowser = /Mobile|Android|iPhone|iPad/i.test(userAgent) && !/Electron/i.test(userAgent);
+    if (isMobileBrowser) {
+      formData.append('skip_duration_check', 'true');
+      console.log('📱 Mobile browser detected, skipping strict duration validation');
+    }
 
     // Call Python verification service
     console.log('📹 Sending video to verification service...');
