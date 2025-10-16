@@ -114,10 +114,21 @@ class FaceVerifier:
         # Get video properties
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames_in_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        video_duration = total_frames_in_video / fps if fps > 0 else 0
+        
+        # Calculate duration - handle invalid metadata from mobile browsers
+        if fps > 0 and total_frames_in_video > 0:
+            video_duration = total_frames_in_video / fps
+        else:
+            # Fallback: assume 30fps if fps is invalid
+            video_duration = total_frames_in_video / 30.0 if total_frames_in_video > 0 else 0
+        
+        # Check if duration metadata is invalid (common in mobile browser videos)
+        is_invalid_duration = video_duration <= 0 or video_duration > 1000000
         
         print(f"📹 Starting video analysis...")
         print(f"   Duration: {video_duration:.1f}s, FPS: {fps:.1f}, Total frames: {total_frames_in_video}")
+        if is_invalid_duration:
+            print(f"   ⚠️ Invalid duration metadata detected (mobile browser video)")
         
         detected_movements = set()
         frame_count = 0
@@ -179,9 +190,30 @@ class FaceVerifier:
             print(f"   Yaw range: {yaw_range:.1f}° (min: {min(yaw_values):.1f}°, max: {max(yaw_values):.1f}°)")
             print(f"   Pitch range: {pitch_range:.1f}° (min: {min(pitch_values):.1f}°, max: {max(pitch_values):.1f}°)")
         
-        # Check minimum video duration (at least 5 seconds)
-        if video_duration < 5:
-            print(f"❌ Video too short: {video_duration:.1f}s (minimum 5s required)")
+        # Check minimum video duration/length
+        # For mobile browser videos with invalid duration, use frame count
+        MIN_DURATION_SECONDS = 5
+        MIN_FRAMES = 150  # 5 seconds at 30fps
+        
+        is_too_short = False
+        short_reason = ""
+        
+        if is_invalid_duration:
+            # Use frame count for mobile browser videos
+            if frame_count < MIN_FRAMES:
+                is_too_short = True
+                short_reason = f'Video too short: {frame_count} frames (minimum {MIN_FRAMES} frames / ~5s required)'
+                print(f"❌ {short_reason}")
+            else:
+                print(f"✅ Frame count validation passed: {frame_count} frames (mobile browser video)")
+        else:
+            # Use duration for normal videos
+            if video_duration < MIN_DURATION_SECONDS:
+                is_too_short = True
+                short_reason = f'Video too short: {video_duration:.1f}s (minimum {MIN_DURATION_SECONDS}s required)'
+                print(f"❌ {short_reason}")
+        
+        if is_too_short:
             return {
                 'verified': False,
                 'confidence': 0.0,
@@ -191,8 +223,8 @@ class FaceVerifier:
                 'total_frames': frame_count,
                 'face_frames': face_detected_frames,
                 'movement_frame_counts': movement_frames,
-                'reason': f'Video too short: {video_duration:.1f}s (minimum 5s required)',
-                'video_duration': round(video_duration, 1)
+                'reason': short_reason,
+                'video_duration': round(video_duration, 1) if not is_invalid_duration else frame_count / 30.0
             }
         
         # Calculate confidence based on:
