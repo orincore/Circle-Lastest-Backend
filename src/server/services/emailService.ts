@@ -48,16 +48,27 @@ class EmailService {
    */
   async sendOTPEmail(email: string, otp: string, name?: string): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle - Dating App" <verify@circle.orincore.com>'
       const mailOptions = {
         from: defaultFrom,
         to: email,
-        subject: 'Verify Your Email - Circle App',
+        subject: `${otp} is your Circle verification code`,
         html: this.getOTPEmailTemplate(otp, name),
+        text: this.getOTPEmailTextVersion(otp, name),
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High',
+          'Importance': 'high',
+          'X-Mailer': 'Circle Dating App',
+          'List-Unsubscribe': '<mailto:support@circle.orincore.com>',
+          'Precedence': 'bulk',
+          'X-Auto-Response-Suppress': 'OOF, DR, RN, NRN, AutoReply'
+        },
+        priority: 'high'
       }
 
       const result = await this.transporter.sendMail(mailOptions)
-      //console.log('✅ OTP email sent:', result.messageId)
+      console.log('✅ OTP email sent:', result.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send OTP email:', error)
@@ -213,6 +224,28 @@ class EmailService {
     } catch (error) {
       console.error('Cleanup OTPs error:', error)
     }
+  }
+
+  /**
+   * Get plain text version of OTP email (prevents spam)
+   */
+  private getOTPEmailTextVersion(otp: string, name?: string): string {
+    return `
+Hi ${name || 'there'},
+
+Your Circle verification code is: ${otp}
+
+This code will expire in 10 minutes.
+
+If you didn't request this code, please ignore this email.
+
+Best regards,
+Circle Team
+
+---
+Circle - Find Your Perfect Match
+https://circle.orincore.com
+    `.trim()
   }
 
   /**
