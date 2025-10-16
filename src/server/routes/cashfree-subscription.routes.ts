@@ -133,6 +133,37 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       return res.status(404).json({ error: 'User profile not found' });
     }
 
+    // Clean and validate phone number for Cashfree
+    // Cashfree requires exactly 10 digits for Indian phone numbers
+    let cleanPhone = '9999999999'; // Default fallback
+    if (profile.phone_number) {
+      // Remove all non-digit characters
+      const digitsOnly = profile.phone_number.replace(/\D/g, '');
+      
+      // If it starts with country code (91), remove it
+      if (digitsOnly.startsWith('91') && digitsOnly.length === 12) {
+        cleanPhone = digitsOnly.substring(2);
+      } 
+      // If it has 11 digits and starts with 1 (likely +1 country code issue)
+      else if (digitsOnly.length === 11 && digitsOnly.startsWith('1')) {
+        cleanPhone = digitsOnly.substring(1);
+      }
+      // If it's already 10 digits
+      else if (digitsOnly.length === 10) {
+        cleanPhone = digitsOnly;
+      }
+      // If it's longer than 10, take last 10 digits
+      else if (digitsOnly.length > 10) {
+        cleanPhone = digitsOnly.slice(-10);
+      }
+    }
+
+    // Validate phone number format
+    if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+      logger.warn({ userId, originalPhone: profile.phone_number, cleanPhone }, 'Invalid phone number format, using default');
+      cleanPhone = '9999999999';
+    }
+
     // Create Cashfree order (v2023-08-01 API format)
     const orderRequest = {
       order_amount: plan.price,
@@ -141,13 +172,15 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
         customer_id: userId,
         customer_name: `${profile.first_name} ${profile.last_name}`.trim() || 'User',
         customer_email: profile.email,
-        customer_phone: profile.phone_number || '9999999999'
+        customer_phone: cleanPhone
       },
       order_meta: {
         return_url: `${process.env.FRONTEND_URL}/subscription/verify?order_id={order_id}`,
         notify_url: `${process.env.API_BASE_URL}/api/cashfree/webhook`
       }
     };
+
+    logger.info({ userId, orderRequest }, 'Creating Cashfree order with cleaned data');
 
     const response = await cashfreeClient.post('/orders', orderRequest);
     
@@ -178,9 +211,31 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       order_currency: 'INR'
     });
 
-  } catch (error) {
-    logger.error({ error }, 'Error creating Cashfree order');
-    res.status(500).json({ error: 'Failed to create payment order' });
+  } catch (error: any) {
+    // Log detailed Cashfree error
+    const errorDetails = {
+      message: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      config: {
+        url: error.config?.url,
+        method: error.config?.method,
+        data: error.config?.data
+      }
+    };
+    
+    logger.error({ error: errorDetails }, 'Error creating Cashfree order');
+    
+    // Return more specific error message
+    const errorMessage = error.response?.data?.message || 
+                        error.response?.data?.error || 
+                        'Failed to create payment order';
+    
+    res.status(500).json({ 
+      error: errorMessage,
+      details: error.response?.data 
+    });
   }
 });
 
