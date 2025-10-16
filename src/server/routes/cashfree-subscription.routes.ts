@@ -513,20 +513,33 @@ router.get('/subscription-status', requireAuth, async (req: AuthRequest, res) =>
     if (!subscription) {
       return res.json({
         is_subscribed: false,
-        plan: null
+        plan: null,
+        status: 'free'
       });
     }
 
     const isExpired = new Date(subscription.expires_at) < new Date();
     if (isExpired) {
+      // Update subscription status to expired
       await supabase
         .from('user_subscriptions')
-        .update({ status: 'expired' })
+        .update({ status: 'expired', updated_at: new Date().toISOString() })
         .eq('id', subscription.id);
+
+      // Update profile to remove premium status
+      await supabase
+        .from('profiles')
+        .update({
+          is_premium: false,
+          subscription_expires_at: null
+        })
+        .eq('id', userId);
 
       return res.json({
         is_subscribed: false,
-        plan: null
+        plan: null,
+        status: 'expired',
+        was_cancelled: subscription.status === 'cancelled'
       });
     }
 
