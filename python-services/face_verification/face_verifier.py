@@ -174,7 +174,12 @@ class FaceVerifier:
         
         # Calculate metrics first
         face_detection_rate = face_detected_frames / max(frame_count, 1)
-        frames_processed_percentage = (frame_count / total_frames_in_video * 100) if total_frames_in_video > 0 else 0
+        
+        # For mobile browser videos with invalid metadata, we processed 100% of available frames
+        if is_invalid_duration or total_frames_in_video <= 0 or total_frames_in_video > 1000000000:
+            frames_processed_percentage = 100.0  # We processed all available frames
+        else:
+            frames_processed_percentage = (frame_count / total_frames_in_video * 100) if total_frames_in_video > 0 else 0
         
         # Log completion
         print(f"✅ Video analysis complete!")
