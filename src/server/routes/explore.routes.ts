@@ -47,12 +47,16 @@ async function getAllSectionsLogic(currentUserId: string) {
       longitude,
       created_at,
       updated_at,
-      invisible_mode
+      invisible_mode,
+      verification_status,
+      email_verified
     `)
     .neq('id', currentUserId)
     .not('first_name', 'is', null)
     .not('last_name', 'is', null)
     .neq('invisible_mode', true) // Exclude users in invisible mode
+    .eq('verification_status', 'verified') // Only face verified users
+    .eq('email_verified', true) // Only email verified users
     .order('updated_at', { ascending: false })
     .limit(100) // Get more users for better distribution
 
@@ -284,10 +288,14 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
         age,
         gender,
         interests,
-        needs
+        needs,
+        verification_status,
+        email_verified
       `)
       .neq('id', currentUserId)
       .or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,username.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
+      .eq('verification_status', 'verified') // Only face verified users
+      .eq('email_verified', true) // Only email verified users
       .limit(parseInt(limit as string))
 
     if (error) throw error
@@ -434,7 +442,9 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
         about,
         interests,
         needs,
-        created_at
+        created_at,
+        verification_status,
+        email_verified
       `)
       .eq('id', userId)
       .single()
@@ -455,6 +465,11 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
     if (!userProfile) {
       //console.log('No user profile found for userId:', userId)
       return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Check if user has completed verification
+    if (userProfile.verification_status !== 'verified' || userProfile.email_verified !== true) {
+      return res.status(403).json({ error: 'User profile not accessible' })
     }
 
     // Check if user is blocked
@@ -531,6 +546,232 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('Get user profile error:', error)
     res.status(500).json({ error: 'Failed to get user profile' })
+  }
+})
+
+// Quick match from explore page
+router.post('/match', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const currentUserId = req.user!.id
+    const { targetUserId, actionType } = req.body // 'like', 'super_like', 'pass'
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user ID is required' })
+    }
+
+    if (currentUserId === targetUserId) {
+      return res.status(400).json({ error: 'Cannot match with yourself' })
+    }
+
+    if (!['like', 'super_like', 'pass'].includes(actionType)) {
+      return res.status(400).json({ error: 'Invalid action type' })
+    }
+
+    // Check if already matched
+    const { data: existingFriendship } = await supabase
+      .from('friendships')
+      .select('id, status')
+      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${targetUserId}),and(user1_id.eq.${targetUserId},user2_id.eq.${currentUserId})`)
+      .in('status', ['active', 'accepted', 'pending'])
+      .limit(1)
+      .maybeSingle()
+
+    if (existingFriendship) {
+      return res.json({ 
+        matchStatus: existingFriendship.status === 'pending' ? 'pending' : 'matched',
+        message: existingFriendship.status === 'pending' ? 'Match request already sent' : 'Already matched with this user'
+      })
+    }
+
+    // Track explore interaction
+    await supabase
+      .from('explore_interactions')
+      .insert({
+        user_id: currentUserId,
+        target_user_id: targetUserId,
+        action_type: actionType,
+        interaction_source: 'explore'
+      })
+
+    if (actionType === 'pass') {
+      return res.json({ 
+        matchStatus: 'passed',
+        message: 'User passed'
+      })
+    }
+
+    // Check if target user has already liked current user (mutual match)
+    const { data: reverseProposal } = await supabase
+      .from('matchmaking_proposals')
+      .select('id')
+      .eq('a', targetUserId)
+      .eq('b', currentUserId)
+      .eq('status', 'pending')
+      .limit(1)
+      .maybeSingle()
+
+    if (reverseProposal) {
+      // Mutual match! Create friendship
+      const { data: newFriendship, error: friendshipError } = await supabase
+        .from('friendships')
+        .insert({
+          user1_id: currentUserId,
+          user2_id: targetUserId,
+          status: 'accepted'
+        })
+        .select()
+        .single()
+
+      if (friendshipError) {
+        console.error('Error creating friendship:', friendshipError)
+        return res.status(500).json({ error: 'Failed to create match' })
+      }
+
+      // Update both proposals to matched
+      await supabase
+        .from('matchmaking_proposals')
+        .update({ status: 'matched' })
+        .eq('id', reverseProposal.id)
+
+      // Send notifications
+      const io = req.app.get('io')
+      if (io) {
+        io.to(targetUserId).emit('match:new', {
+          userId: currentUserId,
+          matchId: newFriendship.id
+        })
+        io.to(currentUserId).emit('match:new', {
+          userId: targetUserId,
+          matchId: newFriendship.id
+        })
+      }
+
+      return res.json({
+        matchStatus: 'matched',
+        message: "It's a Match! 🎉",
+        friendshipId: newFriendship.id
+      })
+    }
+
+    // Create new match proposal
+    const { data: newProposal, error: proposalError } = await supabase
+      .from('matchmaking_proposals')
+      .insert({
+        a: currentUserId,
+        b: targetUserId,
+        status: 'pending',
+        type: actionType === 'super_like' ? 'super_like' : 'like'
+      })
+      .select()
+      .single()
+
+    if (proposalError) {
+      console.error('Error creating proposal:', proposalError)
+      return res.status(500).json({ error: 'Failed to send match request' })
+    }
+
+    // Send notification to target user
+    const io = req.app.get('io')
+    if (io) {
+      io.to(targetUserId).emit('match:request', {
+        senderId: currentUserId,
+        type: actionType,
+        proposalId: newProposal.id
+      })
+    }
+
+    res.json({
+      matchStatus: 'pending',
+      message: actionType === 'super_like' ? 'Super Like sent! ⭐' : 'Match request sent ✓',
+      proposalId: newProposal.id
+    })
+  } catch (error) {
+    console.error('Explore match error:', error)
+    res.status(500).json({ error: 'Failed to process match action' })
+  }
+})
+
+// Check match status with a specific user
+router.get('/match-status/:userId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const currentUserId = req.user!.id
+    const { userId: targetUserId } = req.params
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'User ID is required' })
+    }
+
+    // Check friendship status
+    const { data: friendship } = await supabase
+      .from('friendships')
+      .select('id, status')
+      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${targetUserId}),and(user1_id.eq.${targetUserId},user2_id.eq.${currentUserId})`)
+      .limit(1)
+      .maybeSingle()
+
+    if (friendship) {
+      return res.json({ 
+        status: friendship.status === 'pending' ? 'pending' : 'matched'
+      })
+    }
+
+    // Check if there's a pending proposal
+    const { data: proposal } = await supabase
+      .from('matchmaking_proposals')
+      .select('id, type')
+      .or(`and(a.eq.${currentUserId},b.eq.${targetUserId}),and(a.eq.${targetUserId},b.eq.${currentUserId})`)
+      .eq('status', 'pending')
+      .limit(1)
+      .maybeSingle()
+
+    if (proposal) {
+      return res.json({ 
+        status: 'pending',
+        type: proposal.type
+      })
+    }
+
+    res.json({ status: 'none' })
+  } catch (error) {
+    console.error('Match status check error:', error)
+    res.status(500).json({ error: 'Failed to check match status' })
+  }
+})
+
+// Undo pass action
+router.post('/undo-pass', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const currentUserId = req.user!.id
+    const { targetUserId } = req.body
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user ID is required' })
+    }
+
+    // Delete the pass interaction from last 24 hours
+    const oneDayAgo = new Date()
+    oneDayAgo.setDate(oneDayAgo.getDate() - 1)
+
+    const { error } = await supabase
+      .from('explore_interactions')
+      .delete()
+      .eq('user_id', currentUserId)
+      .eq('target_user_id', targetUserId)
+      .eq('action_type', 'pass')
+      .gte('created_at', oneDayAgo.toISOString())
+
+    if (error) {
+      console.error('Error undoing pass:', error)
+      return res.status(500).json({ error: 'Failed to undo pass' })
+    }
+
+    res.json({ 
+      success: true,
+      message: 'Pass action undone successfully'
+    })
+  } catch (error) {
+    console.error('Undo pass error:', error)
+    res.status(500).json({ error: 'Failed to undo pass' })
   }
 })
 

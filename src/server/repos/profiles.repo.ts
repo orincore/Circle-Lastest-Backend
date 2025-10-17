@@ -17,6 +17,8 @@ export interface Profile {
   password_hash: string
   email_verified?: boolean | null
   email_verified_at?: string | null
+  verification_status?: string | null
+  verified_at?: string | null
   latitude?: number | null
   longitude?: number | null
   location_address?: string | null
@@ -175,6 +177,8 @@ export async function findNearbyUsers({
       .not('last_name', 'is', null)
       .neq('id', excludeUserId || '')
       .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
+      .eq('verification_status', 'verified') // Only verified users
+      .eq('email_verified', true) // Only email verified users
       .limit(limit)
     
     if (fallbackError) throw fallbackError
@@ -186,11 +190,13 @@ export async function findNearbyUsers({
     })).filter(user => user.distance <= radiusKm)
   }
   
-  // Filter out users without complete profiles and invisible users
+  // Filter out users without complete profiles, invisible users, and unverified users
   return (data || []).filter((user: any) => 
     user.first_name && 
     user.last_name && 
-    (!user.invisible_mode || user.invisible_mode === false)
+    (!user.invisible_mode || user.invisible_mode === false) &&
+    user.verification_status === 'verified' &&
+    user.email_verified === true
   )
 }
 
@@ -217,6 +223,8 @@ export async function findUsersInArea({
     .not('longitude', 'is', null)
     .neq('id', excludeUserId || '')
     .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
+    .eq('verification_status', 'verified') // Only verified users
+    .eq('email_verified', true) // Only email verified users
     .limit(limit)
   
   if (error) throw error
