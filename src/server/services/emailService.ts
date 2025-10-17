@@ -64,11 +64,11 @@ class EmailService {
           'Precedence': 'bulk',
           'X-Auto-Response-Suppress': 'OOF, DR, RN, NRN, AutoReply'
         },
-        priority: 'high'
+        priority: 'high' as 'high'
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
-      console.log('✅ OTP email sent:', result.messageId)
+      const result = await this.transporter.sendMail(mailOptions) as any
+      console.log('✅ OTP email sent:', result?.messageId)
       return true
     } catch (error) {
       console.error('❌ Failed to send OTP email:', error)
