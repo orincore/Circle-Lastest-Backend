@@ -201,10 +201,16 @@ export class CirclePointsService {
           stats_updated_at
         `)
         .eq('id', userId)
-        .single()
+        .maybeSingle()
       
       if (error) {
         console.error('❌ Error fetching user stats:', error)
+        return null
+      }
+      
+      // If no data found, return null instead of throwing error
+      if (!data) {
+        console.log('⚠️ No stats found for user:', userId)
         return null
       }
       
