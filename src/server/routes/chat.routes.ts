@@ -358,4 +358,65 @@ router.post('/:chatId/mute', requireAuth, async (req: AuthRequest, res) => {
   }
 })
 
+// Get chat members - useful for determining who the other user is in a 1:1 chat
+router.get('/:chatId/members', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId } = req.params
+    const userId = req.user!.id
+
+    // Verify user is a member of this chat
+    const { data: membership, error: membershipError } = await supabase
+      .from('chat_members')
+      .select('user_id')
+      .eq('chat_id', chatId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (membershipError) {
+      console.error('Error checking chat membership:', membershipError)
+      return res.status(500).json({ error: 'Failed to verify chat membership' })
+    }
+
+    if (!membership) {
+      return res.status(403).json({ error: 'You are not a member of this chat' })
+    }
+
+    // Get all members of the chat with their profile info
+    const { data: members, error: membersError } = await supabase
+      .from('chat_members')
+      .select(`
+        user_id,
+        joined_at,
+        profiles:user_id (
+          id,
+          first_name,
+          last_name,
+          profile_photo_url,
+          instagram_username
+        )
+      `)
+      .eq('chat_id', chatId)
+
+    if (membersError) {
+      console.error('Error fetching chat members:', membersError)
+      return res.status(500).json({ error: 'Failed to fetch chat members' })
+    }
+
+    // Format the response
+    const formattedMembers = members?.map(member => ({
+      user_id: member.user_id,
+      joined_at: member.joined_at,
+      first_name: member.profiles?.first_name,
+      last_name: member.profiles?.last_name,
+      profile_photo_url: member.profiles?.profile_photo_url,
+      username: member.profiles?.instagram_username
+    })) || []
+
+    res.json({ members: formattedMembers })
+  } catch (error) {
+    console.error('Get chat members error:', error)
+    res.status(500).json({ error: 'Failed to get chat members' })
+  }
+})
+
 export default router
