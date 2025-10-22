@@ -1021,8 +1021,10 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
         created_at,
         verification_status,
         email_verified,
-        location,
-        phone
+        location_address,
+        location_city,
+        location_country,
+        phone_number
       `)
       .eq('id', userId)
       .single()
@@ -1083,8 +1085,11 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       about: profile.about || null,
       interests: profile.interests || [],
       needs: profile.needs || [],
-      location: profile.location || null,
-      phone: profile.phone || null,
+      location: profile.location_address || profile.location_city || profile.location_country || null,
+      locationAddress: profile.location_address || null,
+      locationCity: profile.location_city || null,
+      locationCountry: profile.location_country || null,
+      phone: profile.phone_number || null,
       joinedDate: profile.created_at || null,
       verification_status: profile.verification_status || 'unverified',
       email_verified: profile.email_verified || false,
