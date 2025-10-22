@@ -1068,26 +1068,26 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       // Keep default stats if error
     }
     
-    // Return complete profile data with stats
+    // Return complete profile data with stats and proper null handling
     res.json({
       id: profile.id,
-      firstName: profile.first_name,
-      lastName: profile.last_name,
+      firstName: profile.first_name || null,
+      lastName: profile.last_name || null,
       name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown User',
-      username: profile.username,
-      email: profile.email,
-      profilePhotoUrl: profile.profile_photo_url,
-      instagramUsername: profile.instagram_username,
-      age: profile.age,
-      gender: profile.gender,
-      about: profile.about,
+      username: profile.username || null,
+      email: profile.email || null,
+      profilePhotoUrl: profile.profile_photo_url || null,
+      instagramUsername: profile.instagram_username || null,
+      age: profile.age || null,
+      gender: profile.gender || null,
+      about: profile.about || null,
       interests: profile.interests || [],
       needs: profile.needs || [],
-      location: profile.location,
-      phone: profile.phone,
-      joinedDate: profile.created_at,
-      verification_status: profile.verification_status,
-      email_verified: profile.email_verified,
+      location: profile.location || null,
+      phone: profile.phone || null,
+      joinedDate: profile.created_at || null,
+      verification_status: profile.verification_status || 'unverified',
+      email_verified: profile.email_verified || false,
       stats: stats
     })
     
