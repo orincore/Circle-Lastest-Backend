@@ -231,6 +231,23 @@ export class CirclePointsService {
       // Don't record self-visits
       if (visitorId === visitedUserId) return
       
+      // Validate that both users exist in profiles table
+      const { data: profiles, error: profileError } = await supabase
+        .from('profiles')
+        .select('id')
+        .in('id', [visitorId, visitedUserId])
+      
+      if (profileError) {
+        console.error('Error validating user profiles:', profileError)
+        return
+      }
+      
+      // Check if both users exist
+      if (!profiles || profiles.length !== 2) {
+        console.warn(`Profile visit skipped: User(s) not found. Visitor: ${visitorId}, Visited: ${visitedUserId}`)
+        return
+      }
+      
       // Check if visit record already exists
       const { data: existingVisit } = await supabase
         .from('user_profile_visits')

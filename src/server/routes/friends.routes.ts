@@ -419,28 +419,61 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
 
     //console.log('Found profiles:', profiles?.length || 0)
 
-    // Get chat IDs for each friendship
-    const { data: chats, error: chatsError } = await supabase
-      .from('chats')
-      .select('id, user1_id, user2_id')
-      .or(`and(user1_id.eq.${userId},user2_id.in.(${friendUserIds.join(',')})),and(user2_id.eq.${userId},user1_id.in.(${friendUserIds.join(',')}))`)
+    // Get chat IDs for each friendship using chat_members junction table
+    // First, get all chat_ids where the current user is a member
+    const { data: userChatMembers, error: userChatsError } = await supabase
+      .from('chat_members')
+      .select('chat_id')
+      .eq('user_id', userId)
 
-    if (chatsError) {
-      console.error('Error fetching chats:', chatsError)
+    if (userChatsError) {
+      console.error('Error fetching user chats:', userChatsError)
     }
 
-    //console.log('Found chats:', chats?.length || 0)
+    const userChatIds = userChatMembers?.map(m => m.chat_id) || []
+
+    // Get all members of those chats to find which friend is in each chat
+    const { data: allChatMembers, error: membersError } = await supabase
+      .from('chat_members')
+      .select('chat_id, user_id')
+      .in('chat_id', userChatIds)
+
+    if (membersError) {
+      console.error('Error fetching chat members:', membersError)
+    }
+
+    // Create a map of friendId -> chatId for 1:1 chats
+    const friendChatMap = new Map<string, string>()
+    if (allChatMembers) {
+      // Group members by chat_id
+      const chatMembersMap = new Map<string, string[]>()
+      allChatMembers.forEach(member => {
+        if (!chatMembersMap.has(member.chat_id)) {
+          chatMembersMap.set(member.chat_id, [])
+        }
+        chatMembersMap.get(member.chat_id)!.push(member.user_id)
+      })
+
+      // Find 1:1 chats (exactly 2 members)
+      chatMembersMap.forEach((members, chatId) => {
+        if (members.length === 2) {
+          const otherUserId = members.find(id => id !== userId)
+          if (otherUserId && friendUserIds.includes(otherUserId)) {
+            friendChatMap.set(otherUserId, chatId)
+          }
+        }
+      })
+    }
+
+    //console.log('Found chats:', friendChatMap.size)
 
     // Combine friendships with profile data and chat IDs
     const friends = friendships.map((friendship: any) => {
       const friendId = friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
       const profile = profiles?.find((p: any) => p.id === friendId)
       
-      // Find the chat with this friend
-      const chat = chats?.find((c: any) => 
-        (c.user1_id === userId && c.user2_id === friendId) ||
-        (c.user2_id === userId && c.user1_id === friendId)
-      )
+      // Get the chat ID from the map
+      const chatId = friendChatMap.get(friendId) || null
       
       return {
         id: friendId,
@@ -449,7 +482,7 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
         email: profile?.email || null,
         username: profile?.instagram_username || null,
         created_at: friendship.created_at,
-        chat_id: chat?.id || null // Include chat ID if exists
+        chat_id: chatId // Include chat ID if exists
       }
     })
 

@@ -37,6 +37,42 @@ export class NotificationService {
     try {
       //console.log('📬 Creating notification:', JSON.stringify(notificationData, null, 2));
 
+      // Validate that recipient exists in profiles table
+      const { data: recipientProfile, error: recipientError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', notificationData.recipient_id)
+        .maybeSingle();
+      
+      if (recipientError) {
+        console.error('Error validating recipient profile:', recipientError);
+        return null;
+      }
+      
+      if (!recipientProfile) {
+        console.warn(`Notification skipped: Recipient not found. Recipient ID: ${notificationData.recipient_id}`);
+        return null;
+      }
+
+      // Validate sender if provided
+      if (notificationData.sender_id) {
+        const { data: senderProfile, error: senderError } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('id', notificationData.sender_id)
+          .maybeSingle();
+        
+        if (senderError) {
+          console.error('Error validating sender profile:', senderError);
+          return null;
+        }
+        
+        if (!senderProfile) {
+          console.warn(`Notification skipped: Sender not found. Sender ID: ${notificationData.sender_id}`);
+          return null;
+        }
+      }
+
       const insertData = {
         recipient_id: notificationData.recipient_id,
         sender_id: notificationData.sender_id,
