@@ -38,32 +38,16 @@ router.get('/active', async (req, res) => {
       }
     } catch {}
 
-    // Base: active + within schedule window
+    // Base: active (we'll do schedule + placement + audience filters in JS to avoid .or overrides)
     let query = supabase
       .from('announcements')
       .select('*')
       .eq('is_active', true)
-      .or('starts_at.is.null,starts_at.lte.' + new Date().toISOString())
-      .or('ends_at.is.null,ends_at.gte.' + new Date().toISOString())
       .order('priority', { ascending: false })
       .order('published_at', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false })
 
-    // Filter by placement if provided (row has placements text[] or null for all)
-    if (placement) {
-      // Supabase does not support array contains in JS client without RPC; emulate: include rows where placements is null OR placements contains placement
-      query = query.or(`placements.is.null,placements.cs.{${placement}}`)
-    }
-    // Audience: allow rows with audience null/'all' or matching requested audience
-    if (audience) {
-      const a = audience.toLowerCase()
-      query = query.or(`audience.is.null,audience.eq.all,audience.eq.${a}`)
-    }
-
-    // Countries: include rows where countries is null OR contains the requester's country
-    if (country) {
-      query = query.or(`countries.is.null,countries.cs.{${country}}`)
-    }
+    // Note: placement, audience, country, time-window filtering are done below
 
     const { data, error } = await query
 
@@ -86,12 +70,47 @@ router.get('/active', async (req, res) => {
       return 0
     }
 
+    const nowIso = new Date().toISOString()
+    const nowMs = Date.now()
+
     const filteredByVersion = (data || []).filter((row: any) => {
       if (!row.min_app_version || !appVersion) return true
       return cmp(String(appVersion), String(row.min_app_version)) >= 0
     })
 
-    const announcements = filteredByVersion.map((row: any) => ({
+    // Schedule window filter
+    const filteredBySchedule = filteredByVersion.filter((row: any) => {
+      const s = row.starts_at ? Date.parse(row.starts_at) : null
+      const e = row.ends_at ? Date.parse(row.ends_at) : null
+      if (s && nowMs < s) return false
+      if (e && nowMs > e) return false
+      return true
+    })
+
+    // Placement filter
+    const filteredByPlacement = filteredBySchedule.filter((row: any) => {
+      if (!placement) return true
+      const arr: string[] | null = Array.isArray(row.placements) ? row.placements : null
+      if (!arr || arr.length === 0) return true // global
+      return arr.includes(placement)
+    })
+
+    // Audience filter
+    const filteredByAudience = filteredByPlacement.filter((row: any) => {
+      if (!row.audience || row.audience === 'all') return true
+      if (!audience) return true
+      return String(row.audience).toLowerCase() === String(audience).toLowerCase()
+    })
+
+    // Country filter
+    const filteredByCountry = filteredByAudience.filter((row: any) => {
+      if (!country) return true
+      const arr: string[] | null = Array.isArray(row.countries) ? row.countries : null
+      if (!arr || arr.length === 0) return true
+      return arr.map(c => String(c).toUpperCase()).includes(String(country).toUpperCase())
+    })
+
+    const announcements = filteredByCountry.map((row: any) => ({
       id: row.id,
       title: row.title || undefined,
       message: row.message,
