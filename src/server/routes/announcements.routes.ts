@@ -1,6 +1,5 @@
 import { Router } from 'express'
 import { supabase } from '../config/supabase.js'
-import { verifyJwt } from '../utils/jwt.js'
 
 const router = Router()
 
@@ -15,28 +14,8 @@ router.get('/active', async (req, res) => {
     let audience = (req.query.audience as string | undefined)?.trim()
     let country = (req.query.country as string | undefined)?.trim()?.toUpperCase()
     const appVersion = (req.query.appVersion as string | undefined)?.trim()
-
-    // Try to enrich country/audience from authenticated user if available
-    try {
-      const rawAuth = req.headers.authorization?.toString()
-      const token = rawAuth?.startsWith('Bearer ') ? rawAuth.slice(7) : undefined
-      if (token) {
-        const payload = verifyJwt<any>(token)
-        const userId = payload?.sub
-        if (userId) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('id, country, subscription_tier')
-            .eq('id', userId)
-            .maybeSingle()
-          if (!country && profile?.country) country = String(profile.country).toUpperCase()
-          if (!audience && profile?.subscription_tier) {
-            // Map tiers to audience buckets
-            audience = ['plus','premium','paid'].includes(String(profile.subscription_tier).toLowerCase()) ? 'paid' : 'free'
-          }
-        }
-      }
-    } catch {}
+    const debug = String(req.query.debug || '').toLowerCase() === 'true'
+    // Note: Skipping auth enrichment to avoid dependency; rely on explicit query params or global defaults
 
     // Base: active (we'll do schedule + placement + audience filters in JS to avoid .or overrides)
     let query = supabase
@@ -70,8 +49,24 @@ router.get('/active', async (req, res) => {
       return 0
     }
 
-    const nowIso = new Date().toISOString()
     const nowMs = Date.now()
+
+    if (debug) {
+      const announcements = (data || []).map((row: any) => ({
+        id: row.id,
+        title: row.title || undefined,
+        message: row.message,
+        imageUrl: row.image_url || undefined,
+        linkUrl: row.link_url || undefined,
+        buttons: Array.isArray(row.buttons) ? row.buttons : undefined,
+        startsAt: row.starts_at || undefined,
+        endsAt: row.ends_at || undefined,
+        priority: row.priority ?? 0,
+        audience: row.audience || 'all',
+        sendPush: !!row.send_push_on_publish,
+      }))
+      return res.json({ announcements })
+    }
 
     const filteredByVersion = (data || []).filter((row: any) => {
       if (!row.min_app_version || !appVersion) return true
