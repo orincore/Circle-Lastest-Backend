@@ -420,6 +420,49 @@ export function initOptimizedSocket(server: Server) {
       }
     })
 
+    // Chat: typing indicator (start/stop) with chat list notification
+    socket.on('chat:typing', async ({ chatId, isTyping }: { chatId: string; isTyping: boolean }) => {
+      resetTimeout()
+      const currentUserId: string | undefined = user?.id
+      if (!chatId || !currentUserId) return
+
+      try {
+        // Rate limit typing events
+        if (!(await checkEventRateLimit(currentUserId, 'chat:typing'))) {
+          logger.warn({ userId: currentUserId, socketId: socket.id }, 'Chat typing rate limit exceeded')
+          return
+        }
+
+        // Update typing state in memory
+        setTyping(chatId, currentUserId, !!isTyping)
+        const usersTyping = getTyping(chatId)
+
+        // Broadcast to chat room for in-conversation UI
+        const room = `chat:${chatId}`
+        io.to(room).emit('chat:typing', { chatId, users: usersTyping })
+
+        // Notify other chat members for chat list badges
+        const { data: members } = await supabase
+          .from('chat_members')
+          .select('user_id')
+          .eq('chat_id', chatId)
+
+        if (members) {
+          for (const m of members) {
+            if (m.user_id !== currentUserId) {
+              emitToUser(m.user_id, 'chat:list:typing', {
+                chatId,
+                by: currentUserId,
+                isTyping: !!isTyping,
+              })
+            }
+          }
+        }
+      } catch (error) {
+        logger.error({ error, chatId, currentUserId }, 'Failed to process typing event')
+      }
+    })
+
     // Chat: mark message as read
     socket.on('chat:message:read', async ({ messageId }: { messageId: string }) => {
       resetTimeout()

@@ -58,6 +58,7 @@ import referralRouter from './routes/referral.routes.js'
 import adminReferralsRouter from './routes/admin-referrals.routes.js'
 import verificationRouter from './routes/verification.routes.js'
 import cashfreeRouter from './routes/cashfree-subscription.routes.js'
+import chatListRouter from './routes/chat-list.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -274,6 +275,7 @@ app.use('/api/referrals', referralRouter)
 app.use('/api/admin/referrals', adminReferralsRouter)
 app.use('/api/verification', verificationRouter)
 app.use('/api/cashfree', cashfreeRouter)
+app.use('/api/chat-list', chatListRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 
