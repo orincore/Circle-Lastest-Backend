@@ -280,6 +280,7 @@ app.use('/api/cashfree', cashfreeRouter)
 app.use('/api/chat-list', chatListRouter)
 app.use('/api/announcements', announcementsRouter)
 app.use('/api/admin/announcements', adminAnnouncementsRouter)
+app.use('/api/upload', uploadRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 
