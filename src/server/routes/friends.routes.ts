@@ -1002,10 +1002,28 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
     
     //console.log('🔍 Fetching profile for user:', userId)
     
-    // Get user profile from profiles table
+    // Get complete user profile from profiles table
     const { data: profile, error } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name, email, profile_photo_url')
+      .select(`
+        id,
+        first_name,
+        last_name,
+        username,
+        email,
+        profile_photo_url,
+        instagram_username,
+        age,
+        gender,
+        about,
+        interests,
+        needs,
+        created_at,
+        verification_status,
+        email_verified,
+        location,
+        phone
+      `)
       .eq('id', userId)
       .single()
     
@@ -1016,11 +1034,61 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
     
     //console.log('✅ Found user profile:', profile)
     
+    // Get user statistics
+    let stats = { friends: 0, chats: 0, messages: 0 };
+    
+    try {
+      // Count friends
+      const { count: friendsCount } = await supabase
+        .from('friendships')
+        .select('*', { count: 'exact', head: true })
+        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+        .eq('status', 'accepted')
+      
+      // Count chats (where user is a member)
+      const { count: chatsCount } = await supabase
+        .from('chat_members')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', userId)
+      
+      // Count messages sent by user
+      const { count: messagesCount } = await supabase
+        .from('messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('sender_id', userId)
+        .eq('is_deleted', false)
+      
+      stats = {
+        friends: friendsCount || 0,
+        chats: chatsCount || 0,
+        messages: messagesCount || 0
+      }
+    } catch (statsError) {
+      console.error('Error fetching user stats:', statsError)
+      // Keep default stats if error
+    }
+    
+    // Return complete profile data with stats
     res.json({
       id: profile.id,
+      firstName: profile.first_name,
+      lastName: profile.last_name,
       name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown User',
+      username: profile.username,
+      email: profile.email,
       profilePhotoUrl: profile.profile_photo_url,
-      email: profile.email
+      instagramUsername: profile.instagram_username,
+      age: profile.age,
+      gender: profile.gender,
+      about: profile.about,
+      interests: profile.interests || [],
+      needs: profile.needs || [],
+      location: profile.location,
+      phone: profile.phone,
+      joinedDate: profile.created_at,
+      verification_status: profile.verification_status,
+      email_verified: profile.email_verified,
+      stats: stats
     })
     
   } catch (error) {
