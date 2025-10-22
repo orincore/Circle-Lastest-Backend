@@ -15,7 +15,17 @@ const envSchema = z.object({
   AWS_S3_BUCKET: z.string().optional().default(''),
   AWS_ACCESS_KEY_ID: z.string().optional().default(''),
   AWS_SECRET_ACCESS_KEY: z.string().optional().default(''),
-  DEFAULT_PROFILE_PHOTO_URL: z.string().url().optional().default('https://placehold.co/200x200?text=Profile')
+  DEFAULT_PROFILE_PHOTO_URL: z.string().url().optional().default('https://placehold.co/200x200?text=Profile'),
+  // SMTP for transactional emails
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  // Google Play Console (service account)
+  GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().optional(),
+  GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: z.string().optional(),
+  GOOGLE_PLAY_PACKAGE_NAME: z.string().optional(),
 })
 
 export const env = envSchema.parse(process.env)

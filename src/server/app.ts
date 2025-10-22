@@ -19,6 +19,7 @@ import {
 } from './middleware/security.js'
 import healthRouter from './routes/health.routes.js'
 import authRouter from './routes/auth.routes.js'
+import careersRouter from './routes/careers.routes.js'
 import storageRouter from './routes/storage.routes.js'
 import matchmakingRouter from './routes/matchmaking.routes.js'
 import { heartbeat } from './services/matchmaking-optimized.js'
@@ -255,6 +256,7 @@ app.use('/api/social', socialAccountsRouter)
 app.use('/api/notifications', notificationsRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/contact', contactRouter)
+app.use('/api/careers', careersRouter)
 app.use('/api/reports', reportsRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/admin/users', adminUsersRouter)
