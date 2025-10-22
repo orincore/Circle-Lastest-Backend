@@ -1030,11 +1030,40 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       .single()
     
     if (error) {
-      console.error('Error fetching user profile:', error)
+      console.error('❌ Error fetching user profile:', error)
+      console.error('❌ Error details:', JSON.stringify(error, null, 2))
+      console.error('❌ SQL query was selecting:', `
+        id,
+        first_name,
+        last_name,
+        username,
+        email,
+        profile_photo_url,
+        instagram_username,
+        age,
+        gender,
+        about,
+        interests,
+        needs,
+        created_at,
+        verification_status,
+        email_verified,
+        location_address,
+        location_city,
+        location_country,
+        phone_number
+      `)
       return res.status(404).json({ error: 'User profile not found' })
     }
     
-    //console.log('✅ Found user profile:', profile)
+    console.log('✅ Found user profile:', profile)
+    console.log('✅ Profile keys:', Object.keys(profile))
+    console.log('✅ Profile values check:')
+    console.log('  - first_name:', profile.first_name)
+    console.log('  - last_name:', profile.last_name) 
+    console.log('  - username:', profile.username)
+    console.log('  - about:', profile.about)
+    console.log('  - age:', profile.age)
     
     // Get user statistics
     let stats = { friends: 0, chats: 0, messages: 0 };
@@ -1071,7 +1100,7 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
     }
     
     // Return complete profile data with stats and proper null handling
-    res.json({
+    const responseData = {
       id: profile.id,
       firstName: profile.first_name || null,
       lastName: profile.last_name || null,
@@ -1094,7 +1123,12 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       verification_status: profile.verification_status || 'unverified',
       email_verified: profile.email_verified || false,
       stats: stats
-    })
+    };
+    
+    console.log('📤 Sending response:', responseData);
+    console.log('📤 Response keys:', Object.keys(responseData));
+    
+    res.json(responseData);
     
   } catch (error) {
     console.error('Error in user profile endpoint:', error)
