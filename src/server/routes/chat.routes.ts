@@ -279,6 +279,68 @@ router.delete('/:chatId/messages/:messageId', requireAuth, async (req: AuthReque
   }
 })
 
+// Clear conversation for current user (soft delete: records in chat_deletions)
+router.delete('/:chatId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId } = req.params
+    const userId = req.user!.id
+
+    // Verify membership or at least message presence by user as fallback
+    const { data: membership } = await supabase
+      .from('chat_members')
+      .select('id')
+      .eq('chat_id', chatId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (!membership) {
+      const { data: userMessages } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('chat_id', chatId)
+        .eq('sender_id', userId)
+        .limit(1)
+      if (!userMessages || userMessages.length === 0) {
+        return res.status(403).json({ error: 'Not authorized to clear this chat' })
+      }
+    }
+
+    // Upsert user-specific deletion record
+    const { data: existingDeletion } = await supabase
+      .from('chat_deletions')
+      .select('id')
+      .eq('chat_id', chatId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (existingDeletion) {
+      const { error: updateError } = await supabase
+        .from('chat_deletions')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', existingDeletion.id)
+      if (updateError) {
+        console.error('Error updating chat deletion record:', updateError)
+        return res.status(500).json({ error: 'Failed to clear chat' })
+      }
+    } else {
+      const { error: insertError } = await supabase
+        .from('chat_deletions')
+        .insert({ chat_id: chatId, user_id: userId, deleted_at: new Date().toISOString() })
+      if (insertError) {
+        console.error('Error creating chat deletion record:', insertError)
+        return res.status(500).json({ error: 'Failed to clear chat' })
+      }
+    }
+
+    // Optionally notify only this user (frontends may listen to chat:list:changed)
+    try { emitToUser(userId, 'chat:list:changed', { chatId }) } catch {}
+    return res.json({ success: true })
+  } catch (error) {
+    console.error('Clear chat error:', error)
+    return res.status(500).json({ error: 'Failed to clear chat' })
+  }
+})
+
 // Toggle reaction on message (WhatsApp style - same emoji toggles on/off)
 router.post('/messages/:messageId/reactions', requireAuth, async (req: AuthRequest, res) => {
   try {

@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS chat_user_settings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   chat_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
   archived BOOLEAN NOT NULL DEFAULT FALSE,
   pinned BOOLEAN NOT NULL DEFAULT FALSE,
@@ -11,6 +11,25 @@ CREATE TABLE IF NOT EXISTS chat_user_settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(user_id, chat_id)
 );
+
+-- If table already exists with wrong FK, fix it safely
+DO $$ BEGIN
+  -- Check if the existing foreign key references auth.users and replace it
+  IF EXISTS (
+    SELECT 1 
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+    JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
+    WHERE tc.table_name = 'chat_user_settings'
+      AND tc.constraint_type = 'FOREIGN KEY'
+      AND kcu.column_name = 'user_id'
+      AND ccu.table_name = 'users' -- auth.users in pg catalogs is users
+  ) THEN
+    ALTER TABLE chat_user_settings
+    DROP CONSTRAINT IF EXISTS chat_user_settings_user_id_fkey,
+    ADD CONSTRAINT chat_user_settings_user_id_fkey FOREIGN KEY (user_id) REFERENCES profiles(id) ON DELETE CASCADE;
+  END IF;
+END $$;
 
 -- Trigger to keep updated_at in sync
 CREATE OR REPLACE FUNCTION set_updated_at_chat_user_settings()
