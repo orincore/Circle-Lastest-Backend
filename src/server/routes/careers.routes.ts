@@ -149,18 +149,37 @@ async function addGooglePlayTester(email: string) {
 }
 
 async function sendEmail(to: string, subject: string, html: string) {
-  if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_USER || !env.SMTP_PASS) {
-    return { success: true, skipped: true };
+  // Support both naming conventions for SMTP credentials
+  const smtpPass = env.SMTP_PASS || env.SMTP_PASSWORD;
+  const smtpFrom = env.SMTP_FROM || env.SMTP_FROM_EMAIL || 'Circle <no-reply@circle.app>';
+  
+  if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_USER || !smtpPass) {
+    console.log('SMTP configuration missing:', {
+      host: !!env.SMTP_HOST,
+      port: !!env.SMTP_PORT,
+      user: !!env.SMTP_USER,
+      pass: !!smtpPass
+    });
+    return { success: true, skipped: true, reason: 'SMTP configuration missing' };
   }
-  const transporter = nodemailer.createTransport({
-    host: env.SMTP_HOST,
-    port: env.SMTP_PORT,
-    secure: env.SMTP_PORT === 465,
-    auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
-  });
-  const from = env.SMTP_FROM || 'Circle <no-reply@circle.app>';
-  await transporter.sendMail({ from, to, subject, html });
-  return { success: true };
+  
+  try {
+    const transporter = nodemailer.createTransport({
+      host: env.SMTP_HOST,
+      port: env.SMTP_PORT,
+      secure: env.SMTP_PORT === 465,
+      auth: { user: env.SMTP_USER, pass: smtpPass },
+    });
+    
+    console.log(`Sending email to ${to} with subject: ${subject}`);
+    await transporter.sendMail({ from: smtpFrom, to, subject, html });
+    console.log(`Email sent successfully to ${to}`);
+    return { success: true };
+  } catch (error) {
+    console.error('Email sending failed:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { success: false, error: errorMessage };
+  }
 }
 
 router.post('/app-testing/apply', applyRateLimit, async (req: Request, res: Response) => {
@@ -200,12 +219,14 @@ router.post('/app-testing/apply', applyRateLimit, async (req: Request, res: Resp
         <p>Please manually add this email to the Play testing list and share the download link via WhatsApp.</p>
       </div>
     `;
-    await sendEmail('suradkaradarsh@gmail.com', adminSubj, adminBody);
+    const emailResult = await sendEmail('suradkaradarsh@gmail.com', adminSubj, adminBody);
 
     res.json({
       success: true,
       remaining: Math.max(0, CAP - newCount),
       message: 'Your application is in process. Please wait up to 24 hours to receive the download link via WhatsApp.',
+      emailSent: emailResult.success && !emailResult.skipped,
+      emailStatus: emailResult.skipped ? 'skipped' : (emailResult.success ? 'sent' : 'failed')
     });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || 'Internal server error' });

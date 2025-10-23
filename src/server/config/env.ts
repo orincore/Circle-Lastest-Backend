@@ -21,7 +21,9 @@ const envSchema = z.object({
   SMTP_PORT: z.coerce.number().optional(),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
+  SMTP_PASSWORD: z.string().optional(), // Alternative to SMTP_PASS
   SMTP_FROM: z.string().optional(),
+  SMTP_FROM_EMAIL: z.string().optional(), // Alternative to SMTP_FROM
   // Google Play Console (service account)
   GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().optional(),
   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: z.string().optional(),
