@@ -157,11 +157,16 @@ pm2 delete circle-backend 2>/dev/null || true
 sleep 2
 
 print_info "Starting with TypeScript execution..."
-if pm2 start src/index.ts --name circle-backend --interpreter tsx; then
+if pm2 start src/index.ts --name circle-backend --interpreter ./node_modules/.bin/tsx; then
     print_success "PM2 process started successfully with TypeScript execution"
 else
-    print_error "PM2 start failed"
-    handle_error "pm2 start" $?
+    print_warning "tsx interpreter failed, trying with npx..."
+    if pm2 start "npx tsx src/index.ts" --name circle-backend; then
+        print_success "PM2 process started successfully with npx tsx"
+    else
+        print_error "PM2 start failed with both methods"
+        handle_error "pm2 start" $?
+    fi
 fi
 echo ""
 
