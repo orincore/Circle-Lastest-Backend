@@ -14,7 +14,12 @@
     "incremental": true,
     "tsBuildInfoFile": ".tsbuildinfo",
     "assumeChangesOnlyAffectDirectDependencies": true,
-    "disableSourceOfProjectReferenceRedirect": true
+    "disableSourceOfProjectReferenceRedirect": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "removeComments": true,
+    "noEmitOnError": false
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"],
   "exclude": [
