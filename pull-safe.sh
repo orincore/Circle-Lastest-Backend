@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Circle Backend Safe Deployment Script
-# This script includes rollback capability and detailed error reporting
+# Circle Backend Safe Deployment Script (No-Build Version)
+# This script uses direct TypeScript execution to avoid memory-intensive builds
+# Perfect for 2GB RAM servers - includes rollback capability and detailed error reporting
 
 # Colors for output
 RED='\033[0;31m'
@@ -40,7 +41,8 @@ print_info() {
 show_header() {
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║    Circle Backend Safe Deployment Script       ║${NC}"
+    echo -e "${GREEN}║  Circle Backend Safe Deployment (No-Build)     ║${NC}"
+    echo -e "${GREEN}║        Direct TypeScript Execution             ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
     echo ""
     print_info "Deployment started at: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -100,6 +102,11 @@ check_prerequisites() {
     if ! command -v pm2 &> /dev/null; then
         print_error "PM2 is not installed"
         exit 1
+    fi
+    
+    # Check if tsx is available (for TypeScript direct execution)
+    if ! npx tsx --version &> /dev/null; then
+        print_warning "tsx not found, will be installed with dependencies"
     fi
     
     # Check if we're in a git repository
@@ -165,42 +172,53 @@ else
 fi
 echo ""
 
-# Step 3: Build (prefer fast build on low-RAM)
-print_step "Step 3/5: Building application (fast build preferred)..."
-
-if npm run build:fast 2>&1 | tee /tmp/npm-build.log; then
-  print_success "Fast TypeScript build completed successfully"
-else
-  print_warning "Fast build failed. Falling back to full TypeScript compiler..."
-
-  # Constrain Node memory for low-RAM servers (default 1536MB for 2GB machines)
-  if [ -z "$NODE_OPTIONS" ]; then
-    export NODE_OPTIONS="--max-old-space-size=${BUILD_MAX_OLD_SPACE:-1536}"
-    print_info "Using NODE_OPTIONS=$NODE_OPTIONS for tsc build"
-  else
-    print_info "NODE_OPTIONS already set: $NODE_OPTIONS"
-  fi
-
-  if npm run build 2>&1 | tee -a /tmp/npm-build.log; then
-    print_success "TypeScript build completed successfully"
-  else
-    print_error "Build failed. Check /tmp/npm-build.log for details"
-    handle_error "build step" $?
-  fi
-fi
+# Step 3: Skip Build - Using Direct TypeScript Execution
+print_step "Step 3/5: Skipping build (using direct TypeScript execution)..."
+print_success "Build step skipped - TypeScript will run directly via tsx"
+print_info "This saves memory and deployment time on 2GB RAM servers"
 echo ""
 
-# Step 4: Restart PM2
-print_step "Step 4/5: Restarting PM2 process..."
-if pm2 restart circle-backend 2>&1 | tee /tmp/pm2-restart.log; then
-    print_success "PM2 process restarted successfully"
+# Step 4: Restart PM2 with TypeScript Direct Execution
+print_step "Step 4/5: Restarting PM2 process with TypeScript execution..."
+
+# Check if circle-backend process exists and what it's running
+PM2_EXISTS=$(pm2 jlist | jq -r '.[] | select(.name=="circle-backend") | .name' 2>/dev/null)
+
+if [ "$PM2_EXISTS" = "circle-backend" ]; then
+    print_info "Existing PM2 process found, checking configuration..."
+    
+    # Get current script path
+    CURRENT_SCRIPT=$(pm2 jlist | jq -r '.[] | select(.name=="circle-backend") | .pm2_env.pm_exec_path' 2>/dev/null)
+    print_info "Current script: $CURRENT_SCRIPT"
+    
+    # If it's running old built JS, we need to delete and recreate
+    if [[ "$CURRENT_SCRIPT" == *"dist/"* ]] || [[ "$CURRENT_SCRIPT" == *".js" ]]; then
+        print_warning "Process is running built JavaScript, switching to TypeScript execution..."
+        pm2 delete circle-backend 2>/dev/null || true
+        sleep 2
+        
+        if pm2 start src/index.ts --name circle-backend --interpreter tsx 2>&1 | tee /tmp/pm2-start.log; then
+            print_success "PM2 process recreated with TypeScript execution"
+        else
+            print_error "Failed to start with TypeScript execution. Check /tmp/pm2-start.log"
+            handle_error "pm2 typescript start" $?
+        fi
+    else
+        # Already running TypeScript, just restart
+        if pm2 restart circle-backend 2>&1 | tee /tmp/pm2-restart.log; then
+            print_success "PM2 process restarted successfully"
+        else
+            print_error "PM2 restart failed. Check /tmp/pm2-restart.log"
+            handle_error "pm2 restart" $?
+        fi
+    fi
 else
-    print_warning "PM2 restart failed, trying to start..."
-    if pm2 start ecosystem.config.js 2>&1 | tee /tmp/pm2-start.log; then
-        print_success "PM2 process started successfully"
+    print_info "No existing PM2 process found, starting new one with TypeScript execution..."
+    if pm2 start src/index.ts --name circle-backend --interpreter tsx 2>&1 | tee /tmp/pm2-start.log; then
+        print_success "PM2 process started successfully with TypeScript execution"
     else
         print_error "PM2 start failed. Check /tmp/pm2-start.log for details"
-        handle_error "pm2 restart/start" $?
+        handle_error "pm2 start" $?
     fi
 fi
 echo ""
@@ -236,6 +254,8 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 print_success "Deployment completed in ${DEPLOYMENT_DURATION} seconds"
 print_info "Deployed at: $(date '+%Y-%m-%d %H:%M:%S')"
+print_info "Using direct TypeScript execution (no build required)"
+print_info "Memory usage optimized for 2GB RAM servers"
 echo ""
 
 # Show logs
