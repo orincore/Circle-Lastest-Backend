@@ -468,10 +468,10 @@ router.get('/:chatId/members', requireAuth, async (req: AuthRequest, res) => {
     const formattedMembers = members?.map(member => ({
       user_id: member.user_id,
       joined_at: member.joined_at,
-      first_name: member.profiles?.first_name,
-      last_name: member.profiles?.last_name,
-      profile_photo_url: member.profiles?.profile_photo_url,
-      username: member.profiles?.instagram_username
+      first_name: member.profiles?.[0]?.first_name,
+      last_name: member.profiles?.[0]?.last_name,
+      profile_photo_url: member.profiles?.[0]?.profile_photo_url,
+      username: member.profiles?.[0]?.instagram_username
     })) || []
 
     res.json({ members: formattedMembers })
