@@ -167,6 +167,15 @@ echo ""
 
 # Step 3: Build TypeScript
 print_step "Step 3/5: Building TypeScript..."
+
+# Constrain Node memory for low-RAM servers (default 1536MB for 2GB machines)
+if [ -z "$NODE_OPTIONS" ]; then
+  export NODE_OPTIONS="--max-old-space-size=${BUILD_MAX_OLD_SPACE:-1536}"
+  print_info "Using NODE_OPTIONS=$NODE_OPTIONS for tsc build"
+else
+  print_info "NODE_OPTIONS already set: $NODE_OPTIONS"
+fi
+
 if npm run build 2>&1 | tee /tmp/npm-build.log; then
     print_success "Build completed successfully"
 else
