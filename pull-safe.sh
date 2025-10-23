@@ -165,13 +165,13 @@ else
 fi
 echo ""
 
-# Step 3: Build (prefer esbuild bundle on low-RAM)
-print_step "Step 3/5: Building application (esbuild preferred)..."
+# Step 3: Build (prefer fast build on low-RAM)
+print_step "Step 3/5: Building application (fast build preferred)..."
 
-if npm run build:bundle 2>&1 | tee /tmp/npm-build.log; then
-  print_success "esbuild bundle completed successfully"
+if npm run build:fast 2>&1 | tee /tmp/npm-build.log; then
+  print_success "Fast TypeScript build completed successfully"
 else
-  print_warning "esbuild bundle failed. Falling back to TypeScript compiler..."
+  print_warning "Fast build failed. Falling back to full TypeScript compiler..."
 
   # Constrain Node memory for low-RAM servers (default 1536MB for 2GB machines)
   if [ -z "$NODE_OPTIONS" ]; then
