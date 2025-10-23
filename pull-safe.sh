@@ -165,22 +165,28 @@ else
 fi
 echo ""
 
-# Step 3: Build TypeScript
-print_step "Step 3/5: Building TypeScript..."
+# Step 3: Build (prefer esbuild bundle on low-RAM)
+print_step "Step 3/5: Building application (esbuild preferred)..."
 
-# Constrain Node memory for low-RAM servers (default 1536MB for 2GB machines)
-if [ -z "$NODE_OPTIONS" ]; then
-  export NODE_OPTIONS="--max-old-space-size=${BUILD_MAX_OLD_SPACE:-1536}"
-  print_info "Using NODE_OPTIONS=$NODE_OPTIONS for tsc build"
+if npm run build:bundle 2>&1 | tee /tmp/npm-build.log; then
+  print_success "esbuild bundle completed successfully"
 else
-  print_info "NODE_OPTIONS already set: $NODE_OPTIONS"
-fi
+  print_warning "esbuild bundle failed. Falling back to TypeScript compiler..."
 
-if npm run build 2>&1 | tee /tmp/npm-build.log; then
-    print_success "Build completed successfully"
-else
+  # Constrain Node memory for low-RAM servers (default 1536MB for 2GB machines)
+  if [ -z "$NODE_OPTIONS" ]; then
+    export NODE_OPTIONS="--max-old-space-size=${BUILD_MAX_OLD_SPACE:-1536}"
+    print_info "Using NODE_OPTIONS=$NODE_OPTIONS for tsc build"
+  else
+    print_info "NODE_OPTIONS already set: $NODE_OPTIONS"
+  fi
+
+  if npm run build 2>&1 | tee -a /tmp/npm-build.log; then
+    print_success "TypeScript build completed successfully"
+  else
     print_error "Build failed. Check /tmp/npm-build.log for details"
-    handle_error "npm run build" $?
+    handle_error "build step" $?
+  fi
 fi
 echo ""
 
