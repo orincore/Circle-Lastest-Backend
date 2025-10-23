@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import nodemailer from 'nodemailer';
+import { google } from 'googleapis';
 import Redis from 'ioredis';
 import { env } from '../config/env.js';
 
@@ -14,9 +15,14 @@ const applyRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
-// Redis connection (optional; gracefully fallback to in-memory if fails)
-const redis = new Redis(process.env.REDIS_URL || undefined);
-redis.on('error', () => {/* ignore errors, fallback will be used */});
+// Redis connection (optional; gracefully fallback to in-memory if not configured)
+let redis: Redis | null = null;
+try {
+  if (process.env.REDIS_URL) {
+    redis = new Redis(process.env.REDIS_URL);
+    redis.on('error', () => { /* ignore errors, fallback will be used */ });
+  }
+} catch { redis = null; }
 
 // In-memory fallback if Redis unavailable (non-persistent)
 const memStore = {
@@ -44,6 +50,7 @@ function validatePayload(body: any): string[] {
 
 async function getCounts(): Promise<{ count: number; remaining: number; }> {
   try {
+    if (!redis) throw new Error('no redis');
     const countStr = await redis.get(KEY_COUNT);
     const count = Number(countStr || '0');
     return { count, remaining: Math.max(0, CAP - count) };
@@ -54,6 +61,7 @@ async function getCounts(): Promise<{ count: number; remaining: number; }> {
 
 async function incrementCount(): Promise<number> {
   try {
+    if (!redis) throw new Error('no redis');
     const v = await redis.incr(KEY_COUNT);
     return v;
   } catch {
@@ -64,6 +72,7 @@ async function incrementCount(): Promise<number> {
 
 async function hasDuplicate(email: string, username: string): Promise<boolean> {
   try {
+    if (!redis) throw new Error('no redis');
     const [e, u] = await Promise.all([
       redis.sismember(KEY_EMAILS, email.toLowerCase()),
       redis.sismember(KEY_USERNAMES, username.toLowerCase()),
@@ -76,6 +85,7 @@ async function hasDuplicate(email: string, username: string): Promise<boolean> {
 
 async function addApplicant(email: string, username: string): Promise<void> {
   try {
+    if (!redis) throw new Error('no redis');
     await Promise.all([
       redis.sadd(KEY_EMAILS, email.toLowerCase()),
       redis.sadd(KEY_USERNAMES, username.toLowerCase()),
@@ -87,14 +97,55 @@ async function addApplicant(email: string, username: string): Promise<void> {
 }
 
 async function addGooglePlayTester(email: string) {
-  // Stub for Google Play Developer API integration
-  // Implement with googleapis (AndroidPublisher) using service account creds in env
   const hasCreds = !!(env.GOOGLE_SERVICE_ACCOUNT_EMAIL && env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY && env.GOOGLE_PLAY_PACKAGE_NAME);
   if (!hasCreds) {
-    return { success: true, skipped: true };
+    return { success: true, skipped: true, reason: 'Missing Google Play credentials' } as const;
   }
-  // TODO: Implement Android Publisher API call to add tester email to appropriate track/list
-  return { success: true, skipped: true };
+
+  const track = (process.env.GOOGLE_PLAY_TEST_TRACK || 'internal').toLowerCase();
+
+  // Prepare JWT auth
+  const privateKey = (env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const jwt = new google.auth.JWT({
+    email: env.GOOGLE_SERVICE_ACCOUNT_EMAIL!,
+    key: privateKey,
+    scopes: ['https://www.googleapis.com/auth/androidpublisher'],
+  });
+
+  const androidpublisher = google.androidpublisher({ version: 'v3', auth: jwt });
+
+  // 1) Create edit
+  const insert = await androidpublisher.edits.insert({ packageName: env.GOOGLE_PLAY_PACKAGE_NAME! });
+  const editId = insert.data.id!;
+
+  // 2) Get current testers list for the chosen track
+  const current = await androidpublisher.edits.testers.get({
+    packageName: env.GOOGLE_PLAY_PACKAGE_NAME!,
+    editId,
+    track,
+  });
+  const existing = current.data.googleGroups || [];
+
+  const groupEnv = (process.env.GOOGLE_PLAY_TESTER_GROUPS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  const merged = Array.from(new Set([...(existing || []), ...groupEnv]));
+
+  // 4) Update testers
+  await androidpublisher.edits.testers.update({
+    packageName: env.GOOGLE_PLAY_PACKAGE_NAME!,
+    editId,
+    track,
+    requestBody: {
+      googleGroups: merged,
+    },
+  });
+
+  // 5) Commit edit
+  await androidpublisher.edits.commit({ packageName: env.GOOGLE_PLAY_PACKAGE_NAME!, editId });
+
+  return { success: true, track } as const;
 }
 
 async function sendEmail(to: string, subject: string, html: string) {
@@ -132,36 +183,30 @@ router.post('/app-testing/apply', applyRateLimit, async (req: Request, res: Resp
       return res.status(409).json({ error: 'You have already applied with this email/username.' });
     }
 
-    // Add to tester list (stubbed unless creds provided)
-    const gp = await addGooglePlayTester(email);
-
     // Increment after successful Play add (or stubbed success)
     const newCount = await incrementCount();
     await addApplicant(email, username);
 
-    // Send email with download instructions
-    const pkg = env.GOOGLE_PLAY_PACKAGE_NAME || 'your.package.name';
-    const testingLink = process.env.TESTING_DOWNLOAD_URL || `https://play.google.com/store/apps/details?id=${pkg}`;
-    const subj = 'Circle App Testing — Access Instructions';
-    const body = `
+    const adminSubj = 'New App Testing Application';
+    const adminBody = `
       <div style="font-family: Arial, sans-serif;">
-        <h2>Welcome to Circle App Testing</h2>
-        <p>Hi ${fullName},</p>
-        <p>You're approved for the App Testing role. This role lasts a maximum of <strong>60 days</strong>. Please:</p>
-        <ul>
-          <li>Use Circle at least <strong>30 minutes daily</strong>.</li>
-          <li>Report any issues via any medium (in-app support, email, etc.).</li>
-          <li>Install using the <strong>same email</strong> you used to apply.</li>
-        </ul>
-        <p><a href="${testingLink}" target="_blank">Download / Install from Google Play</a></p>
-        <p>Note: If the link does not open for you immediately, please ensure your email is part of the testing program and try again in a little while.</p>
+        <h2>New App Testing Applicant</h2>
+        <p><strong>Full Name:</strong> ${fullName}</p>
+        <p><strong>Username:</strong> ${username}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Country/Region:</strong> ${country}</p>
+        ${contact ? `<p><strong>Contact:</strong> ${contact}</p>` : ''}
         <hr />
-        <p>Thanks,<br/>Circle Team</p>
+        <p>Please manually add this email to the Play testing list and share the download link via WhatsApp.</p>
       </div>
     `;
-    await sendEmail(email, subj, body);
+    await sendEmail('suradkaradarsh@gmail.com', adminSubj, adminBody);
 
-    res.json({ success: true, remaining: Math.max(0, CAP - newCount), googlePlay: gp });
+    res.json({
+      success: true,
+      remaining: Math.max(0, CAP - newCount),
+      message: 'Your application is in process. Please wait up to 24 hours to receive the download link via WhatsApp.',
+    });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || 'Internal server error' });
   }
