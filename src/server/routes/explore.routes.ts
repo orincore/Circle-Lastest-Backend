@@ -55,7 +55,7 @@ async function getAllSectionsLogic(currentUserId: string) {
     .not('first_name', 'is', null)
     .not('last_name', 'is', null)
     .neq('invisible_mode', true) // Exclude users in invisible mode
-    .eq('verification_status', 'verified') // Only face verified users
+    .eq('verification_required', false) // Only users who don't require face verification
     .eq('email_verified', true) // Only email verified users
     .order('updated_at', { ascending: false })
     .limit(100) // Get more users for better distribution
@@ -294,7 +294,7 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
       `)
       .neq('id', currentUserId)
       .or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,username.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
-      .eq('verification_status', 'verified') // Only face verified users
+      .eq('verification_required', false) // Only users who don't require face verification
       .eq('email_verified', true) // Only email verified users
       .limit(parseInt(limit as string))
 
@@ -467,10 +467,7 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       return res.status(404).json({ error: 'User not found' })
     }
 
-    // Check if user has completed verification
-    if (userProfile.verification_status !== 'verified' || userProfile.email_verified !== true) {
-      return res.status(403).json({ error: 'User profile not accessible' })
-    }
+
 
     // Check if user is blocked
     const { data: blocks } = await supabase
