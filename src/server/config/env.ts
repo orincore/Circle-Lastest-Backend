@@ -5,6 +5,7 @@ config()
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  SERVER_RUNTIME: z.enum(['node', 'vercel']).default('node'),
   PORT: z.coerce.number().default(8080),
   CORS_ORIGIN: z.string().default('*'),
   SUPABASE_URL: z.string().url(),

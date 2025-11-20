@@ -1,22 +1,11 @@
 import http from 'http'
-import { app } from './server/app.js'
 import { initOptimizedSocket } from './server/sockets/optimized-socket.js'
 import { env } from './server/config/env.js'
 import { logger } from './server/config/logger.js'
-import { setupGraphQL } from './server/graphql/index.js'
-import { notFound, errorHandler } from './server/middleware/errorHandler.js'
-import { loadActivitiesFromDatabase } from './server/services/activityService.js'
+import { prepareApp } from './server/bootstrap.js'
 
 async function bootstrap() {
-  await setupGraphQL(app)
-
-  // Load existing activities from database
-  await loadActivitiesFromDatabase()
-
-  // Register 404 and error handlers AFTER GraphQL and routes
-  app.use(notFound)
-  app.use(errorHandler)
-
+  const app = await prepareApp()
   const server = http.createServer(app)
   initOptimizedSocket(server)
 
