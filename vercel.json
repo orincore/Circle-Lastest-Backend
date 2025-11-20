@@ -1,7 +1,7 @@
 {
   "version": 2,
   "functions": {
-    "api/server.ts": { "runtime": "nodejs20.x" }
+    "api/server.ts": { "runtime": "nodejs18.x" }
   },
   "env": {
     "NODE_ENV": "production"
