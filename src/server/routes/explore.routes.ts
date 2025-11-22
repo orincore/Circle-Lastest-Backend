@@ -28,7 +28,7 @@ async function getAllSectionsLogic(currentUserId: string) {
     }
   }
 
-  // Get all potential users (increased limit for better distribution)
+  // Get all potential users (increased limit for better distribution) - show all users regardless of verification
   const { data: allUsers, error } = await supabase
     .from('profiles')
     .select(`
@@ -55,8 +55,6 @@ async function getAllSectionsLogic(currentUserId: string) {
     .not('first_name', 'is', null)
     .not('last_name', 'is', null)
     .neq('invisible_mode', true) // Exclude users in invisible mode
-    .eq('verification_required', false) // Only users who don't require face verification
-    .eq('email_verified', true) // Only email verified users
     .order('updated_at', { ascending: false })
     .limit(100) // Get more users for better distribution
 
@@ -274,7 +272,7 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
 
     const searchTerm = query.trim().toLowerCase()
 
-    // Search in multiple fields
+    // Search in multiple fields - show all users regardless of verification status
     const { data: searchResults, error } = await supabase
       .from('profiles')
       .select(`
@@ -294,8 +292,6 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
       `)
       .neq('id', currentUserId)
       .or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,username.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
-      .eq('verification_required', false) // Only users who don't require face verification
-      .eq('email_verified', true) // Only email verified users
       .limit(parseInt(limit as string))
 
     if (error) throw error
