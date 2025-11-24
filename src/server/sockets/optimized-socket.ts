@@ -10,7 +10,7 @@ import { NotificationService } from '../services/notificationService.js'
 import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, trackProfileVisited } from '../services/activityService.js'
 import { setupVoiceCallHandlers, registerTestHandlers } from '../handlers/voiceCallHandler.js'
 import { setupFriendRequestHandlers } from '../handlers/friendRequestHandler.js'
-import Redis from 'ioredis'
+import { Redis } from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
 async function emitUnreadCountUpdate(chatId: string, userId: string) {
@@ -293,7 +293,9 @@ export function initOptimizedSocket(server: Server) {
     roomCounts.set(room, next)
     const chatId = room.startsWith('chat:') ? room.slice(5) : undefined
     if (chatId) {
-      io.to(room).emit('chat:presence', { chatId, online: next > 1 })
+      // Emit both `online` and `isOnline` for backward/forward compatibility with clients
+      const isOnline = next > 1
+      io.to(room).emit('chat:presence', { chatId, online: isOnline, isOnline })
     }
   }
 
@@ -421,8 +423,11 @@ export function initOptimizedSocket(server: Server) {
     })
 
     // Chat: typing indicator (start/stop) with chat list notification
-    socket.on('chat:typing', async ({ chatId, isTyping }: { chatId: string; isTyping: boolean }) => {
+    socket.on('chat:typing', async (payload: { chatId: string; isTyping?: boolean; typing?: boolean }) => {
       resetTimeout()
+      const { chatId } = payload || ({} as any)
+      // Support both new `isTyping` field and legacy `typing` field from clients
+      const isTyping = typeof payload.isTyping === 'boolean' ? payload.isTyping : !!payload.typing
       const currentUserId: string | undefined = user?.id
       if (!chatId || !currentUserId) return
 
