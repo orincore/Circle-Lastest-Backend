@@ -8,8 +8,14 @@ import { hashPassword, verifyPassword } from '../utils/password.js'
 import { NotificationService } from '../services/notificationService.js'
 import { trackUserJoined } from '../services/activityService.js'
 import emailService from '../services/emailService.js'
+import { OAuth2Client } from 'google-auth-library'
 
 const router = Router()
+
+// Google OAuth configuration
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) : null
 
 const signupSchema = z.object({
   firstName: z.string().min(1),
@@ -273,6 +279,241 @@ router.post('/login', async (req, res) => {
   //console.log('🔍 [Login] Response emailVerified:', loginResponse.user.emailVerified);
   
   return res.json(loginResponse)
+})
+
+// Google OAuth Login/Signup
+router.post('/google', async (req, res) => {
+  try {
+    const { idToken } = req.body
+
+    if (!idToken) {
+      return res.status(400).json({ error: 'Google ID token is required' })
+    }
+
+    if (!googleClient) {
+      return res.status(500).json({ error: 'Google OAuth not configured' })
+    }
+
+    // Verify the Google ID token
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE_CLIENT_ID,
+    })
+
+    const payload = ticket.getPayload()
+    if (!payload) {
+      return res.status(400).json({ error: 'Invalid Google token' })
+    }
+
+    const { email, given_name, family_name, picture, email_verified } = payload
+
+    if (!email || !email_verified) {
+      return res.status(400).json({ error: 'Google email not verified' })
+    }
+
+    // Check if user already exists
+    const existingUser = await findByEmail(email.toLowerCase())
+
+    if (existingUser) {
+      // User exists - log them in
+      const access_token = signJwt({ 
+        sub: existingUser.id, 
+        email: existingUser.email, 
+        username: existingUser.username 
+      })
+
+      // Send login alert email (async, don't wait for it)
+      const loginInfo = {
+        device: req.get('User-Agent') || 'Unknown device',
+        location: 'Unknown location',
+        ip: req.ip || req.connection?.remoteAddress || 'Unknown IP',
+        timestamp: new Date().toLocaleString(),
+        method: 'Google OAuth'
+      }
+      
+      emailService.sendLoginAlert(existingUser.email, existingUser.first_name || 'User', loginInfo)
+        .catch(error => console.error('Failed to send login alert:', error))
+
+      return res.json({
+        access_token,
+        user: {
+          id: existingUser.id,
+          email: existingUser.email,
+          username: existingUser.username,
+          firstName: existingUser.first_name,
+          lastName: existingUser.last_name,
+          age: existingUser.age,
+          gender: existingUser.gender,
+          phoneNumber: existingUser.phone_number,
+          about: existingUser.about,
+          interests: existingUser.interests,
+          needs: existingUser.needs,
+          profilePhotoUrl: existingUser.profile_photo_url,
+          instagramUsername: existingUser.instagram_username,
+          emailVerified: existingUser.email_verified || false
+        },
+        isNewUser: false
+      })
+    }
+
+    // New user - return Google profile data for signup completion
+    return res.json({
+      isNewUser: true,
+      googleProfile: {
+        email: email.toLowerCase(),
+        firstName: given_name || '',
+        lastName: family_name || '',
+        profilePhotoUrl: picture || null,
+        emailVerified: true // Google emails are pre-verified
+      }
+    })
+
+  } catch (error) {
+    console.error('Google OAuth error:', error)
+    return res.status(500).json({ error: 'Google authentication failed' })
+  }
+})
+
+// Complete Google OAuth Signup
+router.post('/google/complete-signup', async (req, res) => {
+  try {
+    const { 
+      idToken, 
+      firstName, 
+      lastName, 
+      age, 
+      gender, 
+      username, 
+      phoneNumber, 
+      interests, 
+      needs, 
+      instagramUsername, 
+      about 
+    } = req.body
+
+    if (!idToken) {
+      return res.status(400).json({ error: 'Google ID token is required' })
+    }
+
+    if (!googleClient) {
+      return res.status(500).json({ error: 'Google OAuth not configured' })
+    }
+
+    // Verify the Google ID token again
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE_CLIENT_ID,
+    })
+
+    const payload = ticket.getPayload()
+    if (!payload || !payload.email || !payload.email_verified) {
+      return res.status(400).json({ error: 'Invalid Google token' })
+    }
+
+    const email = payload.email.toLowerCase()
+    const profilePicture = payload.picture
+
+    // Validate required fields
+    if (!firstName || !lastName || !age || !gender || !username) {
+      return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    // Check if email is already taken
+    const existingUser = await findByEmail(email)
+    if (existingUser) {
+      return res.status(409).json({ error: 'Email already in use' })
+    }
+
+    // Check if username is already taken
+    const existingUsername = await findByUsername(username.toLowerCase())
+    if (existingUsername) {
+      return res.status(409).json({ error: 'Username already taken' })
+    }
+
+    // Create profile data
+    // Generate a random password hash for Google OAuth users (they won't use it)
+    const randomPassword = `google_oauth_${Date.now()}_${Math.random().toString(36)}`
+    const googlePasswordHash = await hashPassword(randomPassword)
+    
+    const profileData = {
+      email,
+      username: username.trim(),
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      age: Number(age),
+      gender: gender.trim(),
+      phone_number: phoneNumber || null,
+      about: about || 'Hello! I\'m excited to connect with new people and make meaningful friendships.',
+      interests: Array.isArray(interests) ? interests : [],
+      needs: Array.isArray(needs) ? needs : [],
+      profile_photo_url: profilePicture || env.DEFAULT_PROFILE_PHOTO_URL,
+      instagram_username: instagramUsername ? instagramUsername.trim().replace('@', '') : null,
+      password_hash: googlePasswordHash, // Random hash for Google OAuth users
+      email_verified: true // Google emails are pre-verified
+    }
+
+    const profile = await createProfile(profileData)
+
+    // Track user joined activity
+    try {
+      await trackUserJoined(profile)
+    } catch (error) {
+      console.error('❌ Failed to track user joined activity:', error)
+    }
+
+    // Send notifications to potential matches
+    try {
+      const newUserName = `${profile.first_name} ${profile.last_name}`.trim()
+      
+      const { data: potentialMatches } = await supabase
+        .from('profiles')
+        .select('id')
+        .neq('id', profile.id)
+        .limit(50)
+      
+      if (potentialMatches && potentialMatches.length > 0) {
+        const matchIds = potentialMatches.map(m => m.id)
+        await NotificationService.notifyNewUserSignup(
+          profile.id,
+          newUserName,
+          matchIds
+        )
+      }
+    } catch (error) {
+      console.error('❌ Failed to send new user notifications:', error)
+    }
+
+    const access_token = signJwt({ 
+      sub: profile.id, 
+      email: profile.email, 
+      username: profile.username 
+    })
+
+    return res.json({
+      access_token,
+      user: {
+        id: profile.id,
+        email: profile.email,
+        username: profile.username,
+        firstName: profile.first_name,
+        lastName: profile.last_name,
+        age: profile.age,
+        gender: profile.gender,
+        phoneNumber: profile.phone_number,
+        about: profile.about,
+        interests: profile.interests,
+        needs: profile.needs,
+        profilePhotoUrl: profile.profile_photo_url,
+        instagramUsername: profile.instagram_username,
+        emailVerified: true // Google users are pre-verified
+      },
+      isNewUser: true
+    })
+
+  } catch (error) {
+    console.error('Google OAuth complete signup error:', error)
+    return res.status(500).json({ error: 'Failed to complete Google signup' })
+  }
 })
 
 // Delete account endpoint (soft delete)
