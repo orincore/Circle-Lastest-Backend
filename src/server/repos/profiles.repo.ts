@@ -176,9 +176,7 @@ export async function findNearbyUsers({
       .not('first_name', 'is', null)
       .not('last_name', 'is', null)
       .neq('id', excludeUserId || '')
-      .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
-      .eq('verification_required', false) // Only users who don't require face verification
-      .eq('email_verified', true) // Only email verified users
+      .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users, allow others regardless of verification flags
       .limit(limit)
     
     if (fallbackError) throw fallbackError
@@ -190,13 +188,12 @@ export async function findNearbyUsers({
     })).filter(user => user.distance <= radiusKm)
   }
   
-  // Filter out users without complete profiles, invisible users, and users requiring verification
+  // Filter out users without complete profiles and invisible users
+  // Do NOT hard-filter by verification_required/email_verified here to avoid empty map results
   return (data || []).filter((user: any) => 
     user.first_name && 
     user.last_name && 
-    (!user.invisible_mode || user.invisible_mode === false) &&
-    user.verification_required === false &&
-    user.email_verified === true
+    (!user.invisible_mode || user.invisible_mode === false)
   )
 }
 
@@ -222,9 +219,7 @@ export async function findUsersInArea({
     .not('latitude', 'is', null)
     .not('longitude', 'is', null)
     .neq('id', excludeUserId || '')
-    .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
-    .eq('verification_required', false) // Only users who don't require face verification
-    .eq('email_verified', true) // Only email verified users
+    .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users, allow others regardless of verification flags
     .limit(limit)
   
   if (error) throw error
