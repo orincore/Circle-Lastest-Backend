@@ -788,48 +788,47 @@ export function initOptimizedSocket(server: Server) {
       }
 
       try {
-        // Verify user is a member of this chat
-        //console.log(`🔍 Checking membership for user ${userId} in chat ${chatId}`)
+        // Check if this is a blind date chat (bypass membership check)
+        const { BlindDatingService } = await import('../services/blind-dating.service.js')
+        const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
         
-        const { data: membership, error: memberError } = await supabase
-          .from('chat_members')
-          .select('id, user_id, chat_id')
-          .eq('chat_id', chatId)
-          .eq('user_id', userId)
-          .single()
-
-        //console.log('🔍 Membership query result:', { membership, memberError })
-
-        if (memberError || !membership) {
-          //console.log('❌ User not found in chat_members table')
-          //console.log('🔍 Let me check all members of this chat:')
-          
-          // Debug: Check all members of this chat
-          const { data: allMembers } = await supabase
-            .from('chat_members')
-            .select('user_id, chat_id')
+        if (isBlindDate) {
+          // For blind date chats, verify user is part of the match
+          const { data: match } = await supabase
+            .from('blind_date_matches')
+            .select('user_a, user_b')
             .eq('chat_id', chatId)
+            .in('status', ['active', 'revealed'])
+            .maybeSingle()
           
-          //console.log('👥 All members of chat:', allMembers)
-          
-          // Fallback: Check if user has sent messages in this chat
-          //console.log('🔍 Checking if user has messages in this chat as fallback...')
-          const { data: userMessages, error: messageError } = await supabase
-            .from('messages')
-            .select('id')
-            .eq('chat_id', chatId)
-            .eq('sender_id', userId)
-            .limit(1)
-          
-          //console.log('📨 User messages in chat:', { userMessages, messageError })
-          
-          if (!userMessages || userMessages.length === 0) {
-            //console.log('❌ User has no messages in this chat either - not authorized')
+          if (!match || (match.user_a !== userId && match.user_b !== userId)) {
             socket.emit('chat:clear:error', { error: 'Not authorized to clear this chat' })
             return
           }
-          
-          //console.log('✅ User has messages in this chat - allowing clear operation')
+          // User is part of the blind date match, allow deletion
+        } else {
+          // For regular chats, verify user is a member of this chat
+          const { data: membership, error: memberError } = await supabase
+            .from('chat_members')
+            .select('id, user_id, chat_id')
+            .eq('chat_id', chatId)
+            .eq('user_id', userId)
+            .single()
+
+          if (memberError || !membership) {
+            // Fallback: Check if user has sent messages in this chat
+            const { data: userMessages } = await supabase
+              .from('messages')
+              .select('id')
+              .eq('chat_id', chatId)
+              .eq('sender_id', userId)
+              .limit(1)
+            
+            if (!userMessages || userMessages.length === 0) {
+              socket.emit('chat:clear:error', { error: 'Not authorized to clear this chat' })
+              return
+            }
+          }
         }
 
         //console.log('✅ User is authorized to clear this chat')

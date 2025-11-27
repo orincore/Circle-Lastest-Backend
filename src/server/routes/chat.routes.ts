@@ -291,23 +291,42 @@ router.delete('/:chatId', requireAuth, async (req: AuthRequest, res) => {
     const { chatId } = req.params
     const userId = req.user!.id
 
-    // Verify membership or at least message presence by user as fallback
-    const { data: membership } = await supabase
-      .from('chat_members')
-      .select('id')
-      .eq('chat_id', chatId)
-      .eq('user_id', userId)
-      .maybeSingle()
-
-    if (!membership) {
-      const { data: userMessages } = await supabase
-        .from('messages')
+    // Check if this is a blind date chat (bypass membership check)
+    const { BlindDatingService } = await import('../services/blind-dating.service.js')
+    const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
+    
+    if (isBlindDate) {
+      // For blind date chats, verify user is part of the match
+      const { data: match } = await supabase
+        .from('blind_date_matches')
+        .select('user_a, user_b')
+        .eq('chat_id', chatId)
+        .in('status', ['active', 'revealed'])
+        .maybeSingle()
+      
+      if (!match || (match.user_a !== userId && match.user_b !== userId)) {
+        return res.status(403).json({ error: 'Not authorized to clear this chat' })
+      }
+      // User is part of the blind date match, allow deletion
+    } else {
+      // For regular chats, verify membership or at least message presence by user as fallback
+      const { data: membership } = await supabase
+        .from('chat_members')
         .select('id')
         .eq('chat_id', chatId)
-        .eq('sender_id', userId)
-        .limit(1)
-      if (!userMessages || userMessages.length === 0) {
-        return res.status(403).json({ error: 'Not authorized to clear this chat' })
+        .eq('user_id', userId)
+        .maybeSingle()
+
+      if (!membership) {
+        const { data: userMessages } = await supabase
+          .from('messages')
+          .select('id')
+          .eq('chat_id', chatId)
+          .eq('sender_id', userId)
+          .limit(1)
+        if (!userMessages || userMessages.length === 0) {
+          return res.status(403).json({ error: 'Not authorized to clear this chat' })
+        }
       }
     }
 
