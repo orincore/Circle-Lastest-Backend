@@ -239,6 +239,13 @@ export function initOptimizedSocket(server: Server) {
   })
   
   ioRef = io
+  
+  // Initialize push notification service with IO reference
+  import('../services/pushNotificationService.js').then(({ PushNotificationService }) => {
+    PushNotificationService.setIoRef(io)
+  }).catch(err => {
+    logger.error({ error: err }, 'Failed to initialize push notification service')
+  })
 
   // Enhanced authentication middleware with connection limits
   io.use(async (socket, next) => {
@@ -1092,7 +1099,48 @@ export function initOptimizedSocket(server: Server) {
           }
         }
         
-        
+        // For blind date chats ONLY, filter messages for personal information
+        // Regular chats and revealed blind dates bypass all filtering
+        if (isBlindDate && text && text.trim()) {
+          try {
+            // Get the match for this chat using the service method
+            const match = await BlindDatingService.getMatchByChatId(chatId)
+            
+            // Only filter if match exists AND identities are NOT revealed yet
+            // Once revealed (status === 'revealed'), no filtering - users can share anything
+            if (match && match.status !== 'revealed') {
+              // Fast filtering with timeout to ensure real-time performance
+              const filterPromise = BlindDatingService.filterMessage(
+                text.trim(),
+                match.id,
+                userId
+              )
+              
+              // Set a timeout for filtering (max 2 seconds to keep it real-time)
+              const timeoutPromise = new Promise<{ allowed: false }>((resolve) => {
+                setTimeout(() => resolve({ allowed: false }), 2000)
+              })
+              
+              const filterResult = await Promise.race([filterPromise, timeoutPromise])
+              
+              if (!filterResult.allowed) {
+                // Message contains personal information - block it
+                socket.emit('chat:message:blocked', {
+                  error: 'Message blocked',
+                  reason: 'personal_info_detected',
+                  message: 'Focus on conversation! Once your vibe matches, we will allow you to share personal information.',
+                  blockedReason: filterResult.blockedReason || 'Personal information detected'
+                })
+                return
+              }
+            }
+            // If match is revealed or doesn't exist, proceed without filtering
+          } catch (filterError) {
+            logger.error({ error: filterError, chatId, userId }, 'Error filtering blind date message')
+            // On error, allow the message but log it (fail open for real-time performance)
+          }
+        }
+        // Regular chats (not blind date) bypass all filtering - proceed directly
         
         const row = await insertMessage(
           chatId, 
@@ -1138,15 +1186,50 @@ export function initOptimizedSocket(server: Server) {
             : 'Someone'
           
           if (members) {
-            members.forEach((member: { user_id: string }) => {
+            // Process each member (parallel for better performance)
+            const memberPromises = members.map(async (member: { user_id: string }) => {
               if (member.user_id !== userId) { // Don't send to sender
-                io.to(member.user_id).emit('chat:message:background', { 
-                  message: { 
-                    ...msg, 
-                    senderName 
-                  } 
-                })
+                try {
+                  // Check if user is online
+                  const userSockets = await io.fetchSockets()
+                  const isOnline = userSockets.some((s: any) => {
+                    const socketUser = (s.data as any)?.user
+                    return socketUser?.id === member.user_id
+                  })
+                  
+                  if (isOnline) {
+                    // User is online - send via socket
+                    io.to(member.user_id).emit('chat:message:background', { 
+                      message: { 
+                        ...msg, 
+                        senderName 
+                      } 
+                    })
+                  } else {
+                    // User is offline - send push notification
+                    try {
+                      const { PushNotificationService } = await import('../services/pushNotificationService.js')
+                      await PushNotificationService.sendMessageNotification(
+                        member.user_id,
+                        senderName,
+                        msg.text || 'New message',
+                        chatId,
+                        msg.id
+                      )
+                      logger.debug({ recipientId: member.user_id, chatId }, 'Sent push notification for offline user')
+                    } catch (pushError) {
+                      logger.error({ error: pushError, recipientId: member.user_id }, 'Failed to send push notification')
+                    }
+                  }
+                } catch (error) {
+                  logger.error({ error, recipientId: member.user_id }, 'Error processing message delivery')
+                }
               }
+            })
+            
+            // Wait for all deliveries (don't block message sending)
+            Promise.all(memberPromises).catch(err => {
+              logger.error({ error: err, chatId }, 'Error in parallel message delivery')
             })
           }
         } catch (error) {

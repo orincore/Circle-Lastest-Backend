@@ -190,6 +190,48 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
       }
     }
     
+    // For blind date chats ONLY, filter messages for personal information
+    // Regular chats and revealed blind dates bypass all filtering
+    if (isBlindDate && text && text.trim()) {
+      try {
+        // Get the match for this chat
+        const match = await BlindDatingService.getMatchByChatId(chatId)
+        
+        // Only filter if match exists AND identities are NOT revealed yet
+        // Once revealed (status === 'revealed'), no filtering - users can share anything
+        if (match && match.status !== 'revealed') {
+          // Fast filtering with timeout to ensure real-time performance
+          const filterPromise = BlindDatingService.filterMessage(
+            text.trim(),
+            match.id,
+            userId
+          )
+          
+          // Set a timeout for filtering (max 2 seconds to keep it real-time)
+          const timeoutPromise = new Promise<{ allowed: false }>((resolve) => {
+            setTimeout(() => resolve({ allowed: false }), 2000)
+          })
+          
+          const filterResult = await Promise.race([filterPromise, timeoutPromise])
+          
+          if (!filterResult.allowed) {
+            // Message contains personal information - block it
+            return res.status(403).json({
+              error: 'Message blocked',
+              reason: 'personal_info_detected',
+              message: 'Focus on conversation! Once your vibe matches, we will allow you to share personal information.',
+              blockedReason: filterResult.blockedReason || 'Personal information detected'
+            })
+          }
+        }
+        // If match is revealed or doesn't exist, proceed without filtering
+      } catch (filterError) {
+        console.error('Error filtering blind date message:', filterError)
+        // On error, allow the message but log it (fail open for real-time performance)
+      }
+    }
+    // Regular chats (not blind date) bypass all filtering - proceed directly
+    
     const msg = await insertMessage(chatId, userId, text, mediaUrl, mediaType, thumbnail)
     
     // Emit real-time message to other user for chat list updates

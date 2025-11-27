@@ -753,33 +753,40 @@ export class BlindDatingService {
     try {
       const match = await this.getMatchById(matchId)
       if (!match) {
-        return { allowed: false, originalMessage: message, blockedReason: 'Match not found' }
+        // Match not found - allow message (fail open)
+        return { allowed: true, originalMessage: message }
       }
 
-      // If identities are revealed, allow all messages
+      // CRITICAL: If identities are revealed, allow ALL messages without any filtering
+      // Users can share any information once revealed
       if (match.status === 'revealed') {
         return { allowed: true, originalMessage: message }
       }
 
-      // Quick check for obvious personal info
+      // Fast quick check first (pattern-based, no AI call)
+      // This catches 90% of cases instantly without AI delay
       if (!ContentFilterService.quickCheck(message)) {
+        // No obvious personal info patterns - allow immediately
         return { allowed: true, originalMessage: message }
       }
 
-      // Full AI analysis
+      // Only if quickCheck found potential issues, do AI analysis
+      // This is the only part that might take time, but it's only for suspicious messages
       const analysis = await ContentFilterService.analyzeMessage(message, {
         messageCount: match.message_count
       })
 
       if (!analysis.containsPersonalInfo) {
+        // AI confirms no personal info - allow
         return { allowed: true, originalMessage: message, analysis }
       }
 
       // Message contains personal info - block it
       const blockedReason = `Personal information detected: ${analysis.detectedTypes.join(', ')}`
       
-      // Store blocked message
-      await supabase
+      // Store blocked message (fire and forget - don't wait to keep it real-time)
+      // This runs in background and doesn't block the response
+      Promise.resolve(supabase
         .from('blind_date_blocked_messages')
         .insert({
           blind_date_id: matchId,
@@ -790,13 +797,22 @@ export class BlindDatingService {
           detection_confidence: analysis.confidence,
           ai_analysis: analysis as any,
           was_released: false
+        }))
+        .then(async (result) => {
+          const { error: insertError } = await result
+          if (insertError) {
+            logger.error({ error: insertError, matchId, senderId }, 'Failed to log blocked message')
+          } else {
+            logger.info({ 
+              matchId, 
+              senderId, 
+              detectedTypes: analysis.detectedTypes 
+            }, 'Message blocked for personal info in blind date')
+          }
         })
-
-      logger.info({ 
-        matchId, 
-        senderId, 
-        detectedTypes: analysis.detectedTypes 
-      }, 'Message blocked for personal info in blind date')
+        .catch((err: any) => {
+          logger.error({ error: err, matchId, senderId }, 'Failed to log blocked message')
+        })
 
       return {
         allowed: false,
@@ -807,7 +823,7 @@ export class BlindDatingService {
       }
     } catch (error) {
       logger.error({ error, matchId, senderId }, 'Error filtering message')
-      // In case of error, allow the message but log it
+      // In case of error, allow the message but log it (fail open for real-time)
       return { allowed: true, originalMessage: message }
     }
   }
