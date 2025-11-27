@@ -1069,23 +1069,28 @@ export function initOptimizedSocket(server: Server) {
           return
         }
 
-        // Check if users are friends (required for messaging)
-        // Accept both 'active' and 'accepted' status for compatibility
-        const { data: friendshipCheck } = await supabase
-          .from('friendships')
-          .select('id')
-          .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
-          .in('status', ['active', 'accepted'])
-          .limit(1)
-          .maybeSingle()
+        // Check if this is a blind date chat (bypass friendship requirement)
+        const { BlindDatingService } = await import('../services/blind-dating.service.js')
+        const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
         
-        if (!friendshipCheck) {
-          // No friendship found - don't allow messaging
-          socket.emit('chat:message:blocked', { 
-            error: 'Messaging not allowed',
-            reason: 'not_friends'
-          })
-          return
+        // Only check friendship if it's NOT a blind date chat
+        if (!isBlindDate) {
+          const { data: friendshipCheck } = await supabase
+            .from('friendships')
+            .select('id')
+            .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
+            .in('status', ['active', 'accepted'])
+            .limit(1)
+            .maybeSingle()
+          
+          if (!friendshipCheck) {
+            // No friendship found - don't allow messaging
+            socket.emit('chat:message:blocked', { 
+              error: 'Messaging not allowed',
+              reason: 'not_friends'
+            })
+            return
+          }
         }
         
         

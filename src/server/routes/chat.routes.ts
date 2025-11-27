@@ -167,21 +167,27 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Invalid chat members' })
     }
     
-    // Check if users are friends (accept both 'active' and 'accepted' status)
-    const { data: friendshipCheck } = await supabase
-      .from('friendships')
-      .select('id')
-      .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
-      .in('status', ['active', 'accepted'])
-      .limit(1)
-      .maybeSingle()
+    // Check if this is a blind date chat (bypass friendship requirement)
+    const { BlindDatingService } = await import('../services/blind-dating.service.js')
+    const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
     
-    if (!friendshipCheck) {
-      return res.status(403).json({ 
-        error: 'Messaging not allowed',
-        reason: 'not_friends',
-        message: 'You can only send messages to friends. Send a friend request first.'
-      })
+    // Only check friendship if it's NOT a blind date chat
+    if (!isBlindDate) {
+      const { data: friendshipCheck } = await supabase
+        .from('friendships')
+        .select('id')
+        .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
+        .in('status', ['active', 'accepted'])
+        .limit(1)
+        .maybeSingle()
+      
+      if (!friendshipCheck) {
+        return res.status(403).json({ 
+          error: 'Messaging not allowed',
+          reason: 'not_friends',
+          message: 'You can only send messages to friends. Send a friend request first.'
+        })
+      }
     }
     
     const msg = await insertMessage(chatId, userId, text, mediaUrl, mediaType, thumbnail)

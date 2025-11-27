@@ -448,6 +448,30 @@ export class BlindDatingService {
   }
 
   /**
+   * Check if a chat is a blind date chat
+   */
+  static async isBlindDateChat(chatId: string): Promise<boolean> {
+    try {
+      const { data: match, error } = await supabase
+        .from('blind_date_matches')
+        .select('id, status')
+        .eq('chat_id', chatId)
+        .in('status', ['active', 'revealed'])
+        .maybeSingle()
+      
+      if (error && error.code !== 'PGRST116') {
+        logger.error({ error, chatId }, 'Error checking if chat is blind date')
+        return false
+      }
+      
+      return !!match
+    } catch (error) {
+      logger.error({ error, chatId }, 'Error checking blind date chat')
+      return false
+    }
+  }
+
+  /**
    * Get anonymized profile for blind dating
    */
   static async getAnonymizedProfile(userId: string, isRevealed: boolean): Promise<AnonymizedProfile | null> {
@@ -476,14 +500,21 @@ export class BlindDatingService {
           needs: profile.needs,
           profile_photo_url: profile.profile_photo_url,
           location_city: profile.location_city,
-          is_revealed: true
+          is_revealed: true,
+          anonymous_avatar: undefined
         }
       }
 
-      // Anonymize the profile
-      const anonymizedFirstName = profile.first_name
-        ? profile.first_name.charAt(0) + '*'.repeat(Math.max(profile.first_name.length - 1, 2))
-        : '***'
+      // Anonymize the profile - Format: "A***** S*******"
+      const anonymizeName = (name: string | null | undefined): string => {
+        if (!name || name.length === 0) return '***'
+        if (name.length === 1) return name + '****'
+        // First letter + stars for rest
+        return name.charAt(0) + '*'.repeat(Math.max(name.length - 1, 4))
+      }
+
+      const anonymizedFirstName = anonymizeName(profile.first_name)
+      const anonymizedLastName = anonymizeName(profile.last_name)
 
       // Generate a consistent anonymous avatar using user ID
       const anonymousAvatar = `https://api.dicebear.com/7.x/shapes/svg?seed=${userId}&backgroundColor=b6e3f4,c0aede,d1d4f9`
@@ -491,19 +522,17 @@ export class BlindDatingService {
       return {
         id: profile.id,
         first_name: anonymizedFirstName,
-        last_name: '***',
+        last_name: anonymizedLastName,
         username: '***hidden***',
         age: profile.age,
         gender: profile.gender,
         about: undefined, // Hidden in anonymous mode
         interests: profile.interests,
-        needs: profile.needs,
-        profile_photo_url: undefined, // Hidden in anonymous mode
-        location_city: profile.location_city
-          ? profile.location_city.charAt(0) + '****'
-          : undefined,
-        is_revealed: false,
-        anonymous_avatar: anonymousAvatar
+        needs: profile.needs, // This contains the preference (girlfriend, boyfriend, etc.)
+        profile_photo_url: profile.profile_photo_url, // Show blurry photo
+        location_city: profile.location_city,
+        anonymous_avatar: anonymousAvatar,
+        is_revealed: false
       }
     } catch (error) {
       logger.error({ error, userId }, 'Error getting anonymized profile')
@@ -1380,4 +1409,5 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
 }
 
 export default BlindDatingService
+
 
