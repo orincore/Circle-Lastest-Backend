@@ -10,6 +10,7 @@ import { NotificationService } from '../services/notificationService.js'
 import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, trackProfileVisited } from '../services/activityService.js'
 import { setupVoiceCallHandlers, registerTestHandlers } from '../handlers/voiceCallHandler.js'
 import { setupFriendRequestHandlers } from '../handlers/friendRequestHandler.js'
+import { setupBlindDatingHandlers } from '../handlers/blindDatingHandler.js'
 import { Redis } from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
@@ -1473,6 +1474,8 @@ export function initOptimizedSocket(server: Server) {
       setupVoiceCallHandlers(io, socket, userId);
       // Set up simplified friend request handlers
       setupFriendRequestHandlers(io, socket, userId);
+      // Set up blind dating handlers
+      setupBlindDatingHandlers(io, socket, userId);
       // Register test handlers for debugging
       registerTestHandlers(io, socket);
       

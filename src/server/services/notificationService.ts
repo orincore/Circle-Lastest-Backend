@@ -27,7 +27,10 @@ export type NotificationType =
   | 'referral_paid'
   | 'referral_signup'
   | 'verification_success'
-  | 'verification_rejected';
+  | 'verification_rejected'
+  | 'blind_date_match'
+  | 'blind_date_reveal'
+  | 'blind_date_ended';
 
 export class NotificationService {
   /**

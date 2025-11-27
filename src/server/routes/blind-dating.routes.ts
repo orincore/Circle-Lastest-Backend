@@ -1,0 +1,531 @@
+import { Router } from 'express'
+import { requireAuth, type AuthRequest } from '../middleware/auth.js'
+import { BlindDatingService } from '../services/blind-dating.service.js'
+import { ContentFilterService } from '../services/ai/content-filter.service.js'
+import { supabase } from '../config/supabase.js'
+import { logger } from '../config/logger.js'
+
+const router = Router()
+
+/**
+ * GET /api/blind-dating/settings
+ * Get current user's blind dating settings
+ */
+router.get('/settings', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    let settings = await BlindDatingService.getSettings(userId)
+    
+    // Return default settings if none exist
+    if (!settings) {
+      settings = {
+        id: '',
+        user_id: userId,
+        is_enabled: false,
+        daily_match_time: '09:00:00',
+        max_active_matches: 3,
+        preferred_reveal_threshold: 30,
+        auto_match: true,
+        notifications_enabled: true
+      }
+    }
+    
+    res.json({ settings })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error getting blind dating settings')
+    res.status(500).json({ error: 'Failed to get settings' })
+  }
+})
+
+/**
+ * PUT /api/blind-dating/settings
+ * Update blind dating settings
+ */
+router.put('/settings', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const {
+      is_enabled,
+      daily_match_time,
+      max_active_matches,
+      preferred_reveal_threshold,
+      auto_match,
+      notifications_enabled
+    } = req.body
+
+    const settings = await BlindDatingService.updateSettings(userId, {
+      is_enabled,
+      daily_match_time,
+      max_active_matches: Math.min(Math.max(max_active_matches || 3, 1), 5), // Limit 1-5
+      preferred_reveal_threshold: Math.min(Math.max(preferred_reveal_threshold || 30, 10), 100), // Limit 10-100
+      auto_match,
+      notifications_enabled
+    })
+
+    res.json({ settings })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error updating blind dating settings')
+    res.status(500).json({ error: 'Failed to update settings' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/enable
+ * Enable blind dating for the user
+ */
+router.post('/enable', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const settings = await BlindDatingService.enableBlindDating(userId)
+    res.json({ 
+      success: true, 
+      message: 'Blind dating enabled! We\'ll find you a match.',
+      settings 
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error enabling blind dating')
+    res.status(500).json({ error: 'Failed to enable blind dating' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/disable
+ * Disable blind dating for the user
+ */
+router.post('/disable', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const settings = await BlindDatingService.disableBlindDating(userId)
+    res.json({ 
+      success: true, 
+      message: 'Blind dating disabled.',
+      settings 
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error disabling blind dating')
+    res.status(500).json({ error: 'Failed to disable blind dating' })
+  }
+})
+
+/**
+ * GET /api/blind-dating/matches
+ * Get all active blind date matches for the user
+ */
+router.get('/matches', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const matches = await BlindDatingService.getActiveMatches(userId)
+    
+    // Enrich with anonymized profiles
+    const enrichedMatches = await Promise.all(
+      matches.map(async (match) => {
+        const isUserA = match.user_a === userId
+        const otherUserId = isUserA ? match.user_b : match.user_a
+        const isRevealed = match.status === 'revealed' || 
+                          (isUserA ? match.user_b_revealed : match.user_a_revealed)
+        
+        const otherUserProfile = await BlindDatingService.getAnonymizedProfile(otherUserId, isRevealed)
+        const canReveal = BlindDatingService.isRevealAvailable(match)
+        const messagesUntilReveal = Math.max(0, match.reveal_threshold - match.message_count)
+        
+        return {
+          ...match,
+          otherUser: otherUserProfile,
+          canReveal,
+          messagesUntilReveal,
+          hasRevealedSelf: isUserA ? match.user_a_revealed : match.user_b_revealed,
+          otherHasRevealed: isUserA ? match.user_b_revealed : match.user_a_revealed
+        }
+      })
+    )
+    
+    res.json({ matches: enrichedMatches })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error getting blind date matches')
+    res.status(500).json({ error: 'Failed to get matches' })
+  }
+})
+
+/**
+ * GET /api/blind-dating/match/:matchId
+ * Get a specific blind date match
+ */
+router.get('/match/:matchId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { matchId } = req.params
+    
+    const match = await BlindDatingService.getMatchById(matchId)
+    
+    if (!match) {
+      return res.status(404).json({ error: 'Match not found' })
+    }
+    
+    if (match.user_a !== userId && match.user_b !== userId) {
+      return res.status(403).json({ error: 'Not authorized to view this match' })
+    }
+    
+    const isUserA = match.user_a === userId
+    const otherUserId = isUserA ? match.user_b : match.user_a
+    const isRevealed = match.status === 'revealed' || 
+                      (isUserA ? match.user_b_revealed : match.user_a_revealed)
+    
+    const otherUserProfile = await BlindDatingService.getAnonymizedProfile(otherUserId, isRevealed)
+    
+    res.json({
+      match,
+      otherUser: otherUserProfile,
+      canReveal: BlindDatingService.isRevealAvailable(match),
+      messagesUntilReveal: Math.max(0, match.reveal_threshold - match.message_count),
+      hasRevealedSelf: isUserA ? match.user_a_revealed : match.user_b_revealed,
+      otherHasRevealed: isUserA ? match.user_b_revealed : match.user_a_revealed
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error getting blind date match')
+    res.status(500).json({ error: 'Failed to get match' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/find-match
+ * Manually trigger finding a new match
+ */
+router.post('/find-match', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    
+    // Check settings
+    const settings = await BlindDatingService.getSettings(userId)
+    if (!settings?.is_enabled) {
+      return res.status(400).json({ error: 'Enable blind dating first in your settings' })
+    }
+    
+    // Check active matches
+    const activeMatches = await BlindDatingService.getActiveMatches(userId)
+    if (activeMatches.length >= settings.max_active_matches) {
+      return res.status(400).json({ 
+        error: 'You have reached your maximum active blind dates',
+        activeMatches: activeMatches.length,
+        maxMatches: settings.max_active_matches
+      })
+    }
+    
+    const match = await BlindDatingService.findMatch(userId)
+    
+    if (!match) {
+      return res.json({ 
+        success: false, 
+        message: 'No compatible matches found right now. Try again later!' 
+      })
+    }
+    
+    const isUserA = match.user_a === userId
+    const otherUserId = isUserA ? match.user_b : match.user_a
+    const otherUserProfile = await BlindDatingService.getAnonymizedProfile(otherUserId, false)
+    
+    res.json({
+      success: true,
+      message: 'New blind date match found!',
+      match: {
+        ...match,
+        otherUser: otherUserProfile,
+        canReveal: false,
+        messagesUntilReveal: match.reveal_threshold
+      }
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error finding blind date match')
+    res.status(500).json({ error: 'Failed to find match' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/reveal/:matchId
+ * Request to reveal identity in a blind date
+ */
+router.post('/reveal/:matchId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { matchId } = req.params
+    
+    const result = await BlindDatingService.requestReveal(matchId, userId)
+    
+    if (!result.success) {
+      return res.status(400).json({ error: result.message })
+    }
+    
+    res.json(result)
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error revealing identity')
+    res.status(500).json({ error: 'Failed to reveal identity' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/end/:matchId
+ * End a blind date match
+ */
+router.post('/end/:matchId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { matchId } = req.params
+    const { reason } = req.body
+    
+    const success = await BlindDatingService.endMatch(matchId, userId, reason)
+    
+    if (!success) {
+      return res.status(400).json({ error: 'Failed to end match' })
+    }
+    
+    res.json({ success: true, message: 'Blind date ended' })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error ending blind date')
+    res.status(500).json({ error: 'Failed to end blind date' })
+  }
+})
+
+/**
+ * GET /api/blind-dating/chat/:chatId/status
+ * Get blind date status for a chat
+ */
+router.get('/chat/:chatId/status', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { chatId } = req.params
+    
+    const status = await BlindDatingService.getChatBlindDateStatus(chatId, userId)
+    
+    res.json(status || { isBlindDate: false })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id, chatId: req.params.chatId }, 'Error getting chat blind date status')
+    res.status(500).json({ error: 'Failed to get status' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/filter-message
+ * Filter a message for personal information
+ */
+router.post('/filter-message', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { message, matchId, chatId } = req.body
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' })
+    }
+    
+    // Get match ID from chat if not provided
+    let actualMatchId = matchId
+    if (!actualMatchId && chatId) {
+      const match = await BlindDatingService.getMatchByChatId(chatId)
+      actualMatchId = match?.id
+    }
+    
+    if (!actualMatchId) {
+      // Not a blind date chat, allow message
+      return res.json({ allowed: true, originalMessage: message })
+    }
+    
+    const result = await BlindDatingService.filterMessage(message, actualMatchId, userId)
+    
+    res.json(result)
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error filtering message')
+    res.status(500).json({ error: 'Failed to filter message' })
+  }
+})
+
+/**
+ * GET /api/blind-dating/blocked-messages/:matchId
+ * Get blocked messages for a blind date (after reveal)
+ */
+router.get('/blocked-messages/:matchId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    const { matchId } = req.params
+    
+    // Verify user is part of the match
+    const match = await BlindDatingService.getMatchById(matchId)
+    if (!match) {
+      return res.status(404).json({ error: 'Match not found' })
+    }
+    
+    if (match.user_a !== userId && match.user_b !== userId) {
+      return res.status(403).json({ error: 'Not authorized' })
+    }
+    
+    // Only show blocked messages after reveal
+    if (match.status !== 'revealed') {
+      return res.json({ messages: [] })
+    }
+    
+    const { data: blockedMessages, error } = await supabase
+      .from('blind_date_blocked_messages')
+      .select('*')
+      .eq('blind_date_id', matchId)
+      .order('created_at', { ascending: true })
+    
+    if (error) {
+      throw error
+    }
+    
+    res.json({ messages: blockedMessages || [] })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error getting blocked messages')
+    res.status(500).json({ error: 'Failed to get blocked messages' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/test-filter
+ * Test the message filter (for debugging)
+ */
+router.post('/test-filter', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { message } = req.body
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' })
+    }
+    
+    // Quick check first
+    const quickCheckResult = ContentFilterService.quickCheck(message)
+    
+    // Full analysis
+    const analysis = await ContentFilterService.analyzeMessage(message)
+    
+    // Sanitized version
+    const sanitized = ContentFilterService.sanitizeMessage(message, analysis)
+    
+    res.json({
+      quickCheckTriggered: quickCheckResult,
+      analysis,
+      sanitizedMessage: sanitized,
+      serviceInfo: ContentFilterService.getServiceInfo()
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error testing message filter')
+    res.status(500).json({ error: 'Failed to test filter' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/run-tests
+ * Run comprehensive tests on the content filter
+ */
+router.post('/run-tests', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    // Validate connection first
+    const isConnected = await ContentFilterService.validateConnection()
+    
+    if (!isConnected) {
+      return res.status(503).json({ 
+        error: 'Together AI connection failed',
+        message: 'Please check TOGETHER_AI_API_KEY environment variable'
+      })
+    }
+    
+    // Run the test suite
+    const testResults = await ContentFilterService.runTests()
+    
+    res.json({
+      success: true,
+      serviceInfo: ContentFilterService.getServiceInfo(),
+      summary: {
+        total: testResults.passed + testResults.failed,
+        passed: testResults.passed,
+        failed: testResults.failed,
+        passRate: `${Math.round((testResults.passed / (testResults.passed + testResults.failed)) * 100)}%`
+      },
+      results: testResults.results
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error running content filter tests')
+    res.status(500).json({ error: 'Failed to run tests' })
+  }
+})
+
+/**
+ * GET /api/blind-dating/test-connection
+ * Test Together AI connection
+ */
+router.get('/test-connection', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const isConnected = await ContentFilterService.validateConnection()
+    
+    res.json({
+      connected: isConnected,
+      serviceInfo: ContentFilterService.getServiceInfo()
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error testing Together AI connection')
+    res.status(500).json({ 
+      connected: false,
+      error: 'Failed to test connection'
+    })
+  }
+})
+
+/**
+ * GET /api/blind-dating/stats
+ * Get blind dating statistics for the user
+ */
+router.get('/stats', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    
+    // Get total matches
+    const { data: allMatches, error: matchError } = await supabase
+      .from('blind_date_matches')
+      .select('id, status, revealed_at')
+      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+    
+    if (matchError) throw matchError
+    
+    const stats = {
+      totalMatches: allMatches?.length || 0,
+      activeMatches: allMatches?.filter(m => m.status === 'active').length || 0,
+      revealedMatches: allMatches?.filter(m => m.status === 'revealed').length || 0,
+      endedMatches: allMatches?.filter(m => m.status === 'ended').length || 0,
+      successRate: 0
+    }
+    
+    // Calculate success rate (revealed / total ended or revealed)
+    const completedMatches = stats.revealedMatches + stats.endedMatches
+    if (completedMatches > 0) {
+      stats.successRate = Math.round((stats.revealedMatches / completedMatches) * 100)
+    }
+    
+    res.json({ stats })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error getting blind dating stats')
+    res.status(500).json({ error: 'Failed to get stats' })
+  }
+})
+
+/**
+ * Admin endpoint: Process daily matches (should be called by cron job)
+ */
+router.post('/admin/process-daily-matches', async (req, res) => {
+  try {
+    // Verify admin API key
+    const apiKey = req.headers['x-admin-api-key']
+    if (apiKey !== process.env.ADMIN_API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    
+    const result = await BlindDatingService.processDailyMatches()
+    
+    res.json({
+      success: true,
+      ...result
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error processing daily matches')
+    res.status(500).json({ error: 'Failed to process daily matches' })
+  }
+})
+
+export default router
+
