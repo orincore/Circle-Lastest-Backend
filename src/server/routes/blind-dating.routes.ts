@@ -527,5 +527,167 @@ router.post('/admin/process-daily-matches', async (req, res) => {
   }
 })
 
+// ============================================================
+// TEST ENDPOINTS FOR DEVELOPMENT
+// ============================================================
+
+/**
+ * POST /api/blind-dating/test/create-test-match
+ * Create a test match with an AI bot for testing the full blind dating flow
+ */
+router.post('/test/create-test-match', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    
+    // First enable blind dating if not enabled
+    let settings = await BlindDatingService.getSettings(userId)
+    if (!settings?.is_enabled) {
+      settings = await BlindDatingService.enableBlindDating(userId)
+    }
+    
+    // Create a test match with an AI bot
+    const testMatch = await BlindDatingService.createTestMatch(userId)
+    
+    if (!testMatch) {
+      return res.status(500).json({ 
+        error: 'Failed to create test match',
+        reason: 'Could not create test bot user or match'
+      })
+    }
+    
+    // Get anonymized profile of the bot
+    const botProfile = await BlindDatingService.getAnonymizedProfile(testMatch.botUserId, false)
+    
+    res.json({
+      success: true,
+      message: '🤖 Test match created with AI bot! You can now chat anonymously.',
+      match: testMatch.match,
+      botUser: botProfile,
+      chatId: testMatch.match.chat_id,
+      instructions: {
+        step1: 'Go to the chat and start messaging',
+        step2: 'Try sending personal info - it will be blocked!',
+        step3: 'The AI bot will respond to your messages',
+        step4: `After ${testMatch.match.reveal_threshold} messages, you can reveal identities`,
+        step5: 'Test Hindi messages too: "Mera naam XYZ hai"'
+      }
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error creating test match')
+    res.status(500).json({ error: 'Failed to create test match' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/test/ai-chat
+ * Get AI response for testing blind date chat
+ */
+router.post('/test/ai-chat', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { message, matchId, chatId, personality } = req.body
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' })
+    }
+    
+    // Get AI response simulating a blind date chat partner
+    const response = await BlindDatingService.getTestAIResponse(message, {
+      matchId,
+      chatId,
+      personality: personality || 'friendly_indian'
+    })
+    
+    res.json({
+      success: true,
+      response: response.message,
+      filtered: response.wasFiltered,
+      blockedInfo: response.blockedInfo,
+      personality: response.personality
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error getting AI chat response')
+    res.status(500).json({ error: 'Failed to get AI response' })
+  }
+})
+
+/**
+ * GET /api/blind-dating/test/debug-eligibility
+ * Debug why no matches are found
+ */
+router.get('/test/debug-eligibility', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id
+    
+    // Get user's settings
+    const settings = await BlindDatingService.getSettings(userId)
+    
+    // Get all users with blind dating enabled
+    const { data: enabledUsers, error: enabledError } = await supabase
+      .from('blind_dating_settings')
+      .select('user_id, is_enabled, max_active_matches')
+      .eq('is_enabled', true)
+    
+    // Get total users
+    const { count: totalUsers } = await supabase
+      .from('profiles')
+      .select('*', { count: 'exact', head: true })
+      .is('deleted_at', null)
+    
+    // Get user's active matches
+    const activeMatches = settings?.is_enabled ? await BlindDatingService.getActiveMatches(userId) : []
+    
+    // Get users that the current user has already matched with
+    const { data: pastMatches } = await supabase
+      .from('blind_date_matches')
+      .select('user_a, user_b')
+      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+    
+    const matchedUserIds = new Set(
+      (pastMatches || []).flatMap(m => [m.user_a, m.user_b]).filter(id => id !== userId)
+    )
+    
+    res.json({
+      debug: {
+        yourUserId: userId,
+        yourSettings: {
+          blindDatingEnabled: settings?.is_enabled || false,
+          maxActiveMatches: settings?.max_active_matches || 3,
+          revealThreshold: settings?.preferred_reveal_threshold || 30
+        },
+        eligibility: {
+          totalUsersInApp: totalUsers || 0,
+          usersWithBlindDatingEnabled: (enabledUsers || []).length,
+          eligibleUserIds: (enabledUsers || []).map(u => u.user_id).filter(id => id !== userId),
+          usersYouAlreadyMatchedWith: Array.from(matchedUserIds),
+          yourCurrentActiveMatches: activeMatches.length
+        },
+        reason: getNoMatchReason({
+          isEnabled: settings?.is_enabled,
+          enabledUsersCount: (enabledUsers || []).filter(u => u.user_id !== userId).length,
+          activeMatchesCount: activeMatches.length,
+          maxActive: settings?.max_active_matches || 3
+        })
+      }
+    })
+  } catch (error) {
+    logger.error({ error, userId: req.user!.id }, 'Error debugging eligibility')
+    res.status(500).json({ error: 'Failed to debug' })
+  }
+})
+
+// Helper to determine reason for no matches
+function getNoMatchReason(info: { isEnabled?: boolean; enabledUsersCount: number; activeMatchesCount: number; maxActive: number }): string {
+  if (!info.isEnabled) {
+    return '❌ Your blind dating is NOT enabled. Enable it first!'
+  }
+  if (info.activeMatchesCount >= info.maxActive) {
+    return `❌ You've reached max active matches (${info.activeMatchesCount}/${info.maxActive})`
+  }
+  if (info.enabledUsersCount === 0) {
+    return '❌ No other users have blind dating enabled. Use "Create Test Match" to test with AI bot!'
+  }
+  return '✅ You should be eligible for matches'
+}
+
 export default router
 

@@ -960,6 +960,287 @@ export class BlindDatingService {
       return stats
     }
   }
+
+  // ============================================================
+  // TEST MODE METHODS
+  // ============================================================
+
+  /**
+   * Create a test match with an AI bot for testing purposes
+   */
+  static async createTestMatch(userId: string): Promise<{ match: BlindDateMatch; botUserId: string } | null> {
+    try {
+      // Check if test bot user exists, create if not
+      const testBotId = await this.ensureTestBotUser()
+      if (!testBotId) {
+        logger.error({ userId }, 'Failed to create/get test bot user')
+        return null
+      }
+
+      // Get user settings
+      const settings = await this.getSettings(userId)
+      const revealThreshold = settings?.preferred_reveal_threshold || 30
+
+      // Create chat between user and bot
+      const chat = await ensureChatForUsers(userId, testBotId)
+
+      // Ensure consistent ordering
+      const [userA, userB] = [userId, testBotId].sort()
+
+      // Create the blind date match
+      const { data: match, error: matchError } = await supabase
+        .from('blind_date_matches')
+        .insert({
+          user_a: userA,
+          user_b: userB,
+          chat_id: chat.id,
+          compatibility_score: 0.85, // Simulated high compatibility
+          status: 'active',
+          message_count: 0,
+          reveal_threshold: revealThreshold,
+          user_a_revealed: false,
+          user_b_revealed: false,
+          matched_at: new Date().toISOString()
+        })
+        .select('*')
+        .single()
+
+      if (matchError) {
+        logger.error({ error: matchError, userId }, 'Failed to create test match')
+        throw matchError
+      }
+
+      logger.info({ matchId: match.id, userId, botId: testBotId }, 'Test blind date match created')
+
+      return {
+        match: match as BlindDateMatch,
+        botUserId: testBotId
+      }
+    } catch (error) {
+      logger.error({ error, userId }, 'Error creating test match')
+      return null
+    }
+  }
+
+  /**
+   * Ensure test bot user exists
+   */
+  private static async ensureTestBotUser(): Promise<string | null> {
+    try {
+      const testBotEmail = 'blind_dating_test_bot@circle.internal'
+      
+      // Check if bot exists
+      const { data: existingBot } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('email', testBotEmail)
+        .maybeSingle()
+
+      if (existingBot) {
+        // Ensure blind dating is enabled for bot
+        await supabase
+          .from('blind_dating_settings')
+          .upsert({
+            user_id: existingBot.id,
+            is_enabled: true,
+            max_active_matches: 100,
+            preferred_reveal_threshold: 30
+          }, { onConflict: 'user_id' })
+        
+        return existingBot.id
+      }
+
+      // Create test bot user
+      const botId = crypto.randomUUID()
+      const { error: createError } = await supabase
+        .from('profiles')
+        .insert({
+          id: botId,
+          email: testBotEmail,
+          first_name: 'Mystery',
+          last_name: 'Match',
+          username: 'mystery_match_bot',
+          gender: Math.random() > 0.5 ? 'female' : 'male',
+          age: Math.floor(Math.random() * 10) + 22, // 22-32
+          about: 'Hi! I am an AI test partner for blind dating. Chat with me to test the feature!',
+          interests: ['Music', 'Travel', 'Movies', 'Food', 'Technology'],
+          needs: ['Friendship', 'Dating', 'Conversation'],
+          location_city: 'Mumbai',
+          location_country: 'India',
+          is_test_account: true
+        })
+
+      if (createError) {
+        logger.error({ error: createError }, 'Failed to create test bot profile')
+        throw createError
+      }
+
+      // Enable blind dating for bot
+      await supabase
+        .from('blind_dating_settings')
+        .insert({
+          user_id: botId,
+          is_enabled: true,
+          max_active_matches: 100,
+          preferred_reveal_threshold: 30
+        })
+
+      logger.info({ botId }, 'Test bot user created')
+      return botId
+    } catch (error) {
+      logger.error({ error }, 'Error ensuring test bot user')
+      return null
+    }
+  }
+
+  /**
+   * Get AI response for test chat
+   */
+  static async getTestAIResponse(
+    userMessage: string,
+    options: { matchId?: string; chatId?: string; personality?: string }
+  ): Promise<{
+    message: string
+    wasFiltered: boolean
+    blockedInfo?: string[]
+    personality: string
+  }> {
+    try {
+      const personality = options.personality || 'friendly_indian'
+      
+      // First, check if user's message would be blocked
+      const userMsgAnalysis = await ContentFilterService.analyzeMessage(userMessage)
+      
+      // Get AI response using Together AI
+      const systemPrompt = this.getTestChatSystemPrompt(personality)
+      
+      // Use Together AI for response
+      const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.TOGETHER_AI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage }
+          ],
+          max_tokens: 200,
+          temperature: 0.8,
+          top_p: 0.9
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`Together AI API error: ${response.status}`)
+      }
+
+      const data = await response.json()
+      let aiMessage = data.choices?.[0]?.message?.content || "I couldn't think of a response 😅"
+
+      // Check if AI response contains personal info (and filter it for demo)
+      const aiMsgAnalysis = await ContentFilterService.analyzeMessage(aiMessage)
+      if (aiMsgAnalysis.containsPersonalInfo) {
+        aiMessage = ContentFilterService.sanitizeMessage(aiMessage, aiMsgAnalysis)
+      }
+
+      return {
+        message: aiMessage,
+        wasFiltered: userMsgAnalysis.containsPersonalInfo,
+        blockedInfo: userMsgAnalysis.containsPersonalInfo ? userMsgAnalysis.detectedTypes : undefined,
+        personality
+      }
+    } catch (error) {
+      logger.error({ error }, 'Error getting test AI response')
+      
+      // Return a fallback response
+      return {
+        message: this.getFallbackResponse(options.personality || 'friendly_indian'),
+        wasFiltered: false,
+        personality: options.personality || 'friendly_indian'
+      }
+    }
+  }
+
+  /**
+   * System prompt for test chat AI
+   */
+  private static getTestChatSystemPrompt(personality: string): string {
+    const prompts: Record<string, string> = {
+      friendly_indian: `You are a friendly Indian person on a blind dating app. You're chatting anonymously and can't reveal your real identity yet.
+
+IMPORTANT RULES:
+1. NEVER share your real name, phone number, social media, or any identifying info
+2. Use a mix of English and casual Hindi/Hinglish (like "yaar", "kya", "bahut", "accha")
+3. Be warm, friendly, and show genuine interest in getting to know the other person
+4. Ask questions about their interests, dreams, hobbies
+5. Share generic info about yourself (job type but not company, city type but not specific area)
+6. Be a bit flirty but respectful
+7. Keep responses short (1-3 sentences max)
+8. Use emojis occasionally 😊
+
+Example responses:
+- "Hey! Kaise ho? 😊 What do you like to do for fun yaar?"
+- "That's so cool! Main bhi travel bahut pasand karta/karti hoon"
+- "Haha you're funny 😂 Tell me more about yourself"
+
+Remember: Stay anonymous but be engaging and fun!`,
+
+      shy_introvert: `You are a shy, introverted person on a blind dating app. You're nervous but trying.
+
+RULES:
+1. Never share identifying info
+2. Give shorter, thoughtful responses
+3. Take time to open up
+4. Show you're genuinely listening
+5. Occasionally use "..." to show hesitation
+
+Example: "That's really interesting... I don't usually talk about this but I love reading too 📚"`,
+
+      outgoing_extrovert: `You are an outgoing, energetic person on a blind dating app. You love chatting!
+
+RULES:
+1. Never share identifying info (no name/number/socials)
+2. Be enthusiastic and use lots of energy in responses
+3. Ask multiple questions, show excitement
+4. Use emojis freely
+5. Mix Hindi words naturally
+
+Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everything yaar!"`,
+    }
+
+    return prompts[personality] || prompts.friendly_indian
+  }
+
+  /**
+   * Fallback responses when AI fails
+   */
+  private static getFallbackResponse(personality: string): string {
+    const responses: Record<string, string[]> = {
+      friendly_indian: [
+        "Accha! That's interesting yaar 😊 Tell me more!",
+        "Haha nice! What else do you like?",
+        "Oh wow! Main bhi similar cheezein pasand karta/karti hoon",
+        "That sounds fun! What do you do for work? I mean like generally, engineering ya kuch aur?",
+        "You seem really cool 😄 What's your ideal weekend like?",
+      ],
+      shy_introvert: [
+        "Oh... that's nice. I like that too, actually.",
+        "Hmm, interesting... tell me more?",
+        "I see... 📚",
+      ],
+      outgoing_extrovert: [
+        "OMG YESSS! That's so cool!! 🎉🎉",
+        "No way!! I can't believe it! What else?!",
+        "Hahaha you're hilarious! 😂😂",
+      ],
+    }
+
+    const options = responses[personality] || responses.friendly_indian
+    return options[Math.floor(Math.random() * options.length)]
+  }
 }
 
 export default BlindDatingService
