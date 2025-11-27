@@ -6,6 +6,7 @@ import { ContentFilterService, type PersonalInfoAnalysis } from './ai/content-fi
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
 import { randomUUID } from 'crypto'
+import { hashPassword } from '../utils/password.js'
 
 /**
  * Blind Dating Service
@@ -1146,12 +1147,19 @@ export class BlindDatingService {
 
       // Create test bot user
       const botId = randomUUID()
+      
+      // Generate a password hash for the test bot (will never be used for login)
+      const dummyPassword = `test_bot_${botId}_${Date.now()}`
+      const passwordHash = await hashPassword(dummyPassword)
+      
       const botData: any = {
         id: botId,
         email: testBotEmail,
+        username: username,
         first_name: 'Mystery',
         last_name: 'Match',
-        username: username,
+        password_hash: passwordHash, // Required field - dummy hash since bot never logs in
+        email_verified: true, // Set to true so bot can function normally
         gender: Math.random() > 0.5 ? 'female' : 'male',
         age: Math.floor(Math.random() * 10) + 22, // 22-32
         about: 'Hi! I am an AI test partner for blind dating. Chat with me to test the feature!',
