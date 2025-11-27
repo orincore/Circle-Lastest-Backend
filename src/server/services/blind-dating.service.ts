@@ -511,9 +511,59 @@ export class BlindDatingService {
 
   /**
    * Check if reveal is available for a match
+   * Uses dynamic threshold: base threshold, then check every 5 messages
    */
   static isRevealAvailable(match: BlindDateMatch): boolean {
-    return match.message_count >= match.reveal_threshold && match.status === 'active'
+    if (match.status !== 'active') {
+      return false
+    }
+
+    const messageCount = match.message_count
+    const threshold = match.reveal_threshold
+
+    // Not reached initial threshold yet
+    if (messageCount < threshold) {
+      return false
+    }
+
+    // At or past threshold - check if we're at a checkpoint
+    // Checkpoints: threshold, threshold+5, threshold+10, etc.
+    const messagesSinceThreshold = messageCount - threshold
+    const checkInterval = 5
+    
+    // Allow reveal at threshold itself
+    if (messagesSinceThreshold === 0) {
+      return true
+    }
+    
+    // After threshold, only at 5-message intervals
+    return messagesSinceThreshold % checkInterval === 0
+  }
+
+  /**
+   * Get next reveal checkpoint
+   */
+  static getNextRevealCheckpoint(match: BlindDateMatch): number {
+    const messageCount = match.message_count
+    const threshold = match.reveal_threshold
+
+    if (messageCount < threshold) {
+      return threshold
+    }
+
+    const messagesSinceThreshold = messageCount - threshold
+    const checkInterval = 5
+    const nextCheckpointOffset = (Math.floor(messagesSinceThreshold / checkInterval) + 1) * checkInterval
+    
+    return threshold + nextCheckpointOffset
+  }
+
+  /**
+   * Get messages until next reveal opportunity
+   */
+  static getMessagesUntilReveal(match: BlindDateMatch): number {
+    const nextCheckpoint = this.getNextRevealCheckpoint(match)
+    return Math.max(0, nextCheckpoint - match.message_count)
   }
 
   /**
@@ -801,7 +851,7 @@ export class BlindDatingService {
 
       const otherUserProfile = await this.getAnonymizedProfile(otherUserId, isRevealed)
       const canReveal = this.isRevealAvailable(match)
-      const messagesUntilReveal = Math.max(0, match.reveal_threshold - match.message_count)
+      const messagesUntilReveal = this.getMessagesUntilReveal(match)
 
       return {
         isBlindDate: true,
