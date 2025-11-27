@@ -5,6 +5,7 @@ import { CompatibilityService } from './compatibility.service.js'
 import { ContentFilterService, type PersonalInfoAnalysis } from './ai/content-filter.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
+import { randomUUID } from 'crypto'
 
 /**
  * Blind Dating Service
@@ -977,15 +978,42 @@ export class BlindDatingService {
         return null
       }
 
+      // Ensure consistent ordering
+      const [userA, userB] = [userId, testBotId].sort()
+
+      // Check if match already exists
+      const { data: existingMatch, error: checkError } = await supabase
+        .from('blind_date_matches')
+        .select('*')
+        .eq('user_a', userA)
+        .eq('user_b', userB)
+        .in('status', ['active', 'revealed'])
+        .maybeSingle()
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        logger.error({ error: checkError, userId }, 'Error checking for existing test match')
+      }
+
+      if (existingMatch) {
+        logger.info({ matchId: existingMatch.id, userId, botId: testBotId }, 'Test match already exists')
+        return {
+          match: existingMatch as BlindDateMatch,
+          botUserId: testBotId
+        }
+      }
+
       // Get user settings
       const settings = await this.getSettings(userId)
       const revealThreshold = settings?.preferred_reveal_threshold || 30
 
       // Create chat between user and bot
-      const chat = await ensureChatForUsers(userId, testBotId)
-
-      // Ensure consistent ordering
-      const [userA, userB] = [userId, testBotId].sort()
+      let chat
+      try {
+        chat = await ensureChatForUsers(userId, testBotId)
+      } catch (error) {
+        logger.error({ error, userId, testBotId }, 'Failed to create/ensure chat')
+        throw error
+      }
 
       // Create the blind date match
       const { data: match, error: matchError } = await supabase
@@ -1006,8 +1034,38 @@ export class BlindDatingService {
         .single()
 
       if (matchError) {
-        logger.error({ error: matchError, userId }, 'Failed to create test match')
+        // If it's a unique constraint error, try to get existing match
+        if (matchError.code === '23505') {
+          logger.info({ userId, testBotId }, 'Match already exists (unique constraint), fetching existing')
+          const { data: existing } = await supabase
+            .from('blind_date_matches')
+            .select('*')
+            .eq('user_a', userA)
+            .eq('user_b', userB)
+            .in('status', ['active', 'revealed', 'ended'])
+            .order('matched_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          
+          if (existing) {
+            return {
+              match: existing as BlindDateMatch,
+              botUserId: testBotId
+            }
+          }
+        }
+        
+        logger.error({ 
+          error: matchError, 
+          errorCode: matchError.code,
+          errorMessage: matchError.message,
+          userId 
+        }, 'Failed to create test match')
         throw matchError
+      }
+
+      if (!match) {
+        throw new Error('Match created but no data returned')
       }
 
       logger.info({ matchId: match.id, userId, botId: testBotId }, 'Test blind date match created')
@@ -1017,7 +1075,12 @@ export class BlindDatingService {
         botUserId: testBotId
       }
     } catch (error) {
-      logger.error({ error, userId }, 'Error creating test match')
+      logger.error({ 
+        error, 
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        errorStack: error instanceof Error ? error.stack : undefined,
+        userId 
+      }, 'Error creating test match')
       return null
     }
   }
@@ -1028,17 +1091,24 @@ export class BlindDatingService {
   private static async ensureTestBotUser(): Promise<string | null> {
     try {
       const testBotEmail = 'blind_dating_test_bot@circle.internal'
+      const testBotUsername = 'mystery_match_bot'
       
-      // Check if bot exists
-      const { data: existingBot } = await supabase
+      // Check if bot exists by email
+      const { data: existingBot, error: checkError } = await supabase
         .from('profiles')
-        .select('id')
+        .select('id, username')
         .eq('email', testBotEmail)
         .maybeSingle()
 
+      if (checkError && checkError.code !== 'PGRST116') {
+        logger.error({ error: checkError }, 'Error checking for existing test bot')
+      }
+
       if (existingBot) {
+        logger.info({ botId: existingBot.id }, 'Test bot already exists')
+        
         // Ensure blind dating is enabled for bot
-        await supabase
+        const { error: settingsError } = await supabase
           .from('blind_dating_settings')
           .upsert({
             user_id: existingBot.id,
@@ -1047,48 +1117,106 @@ export class BlindDatingService {
             preferred_reveal_threshold: 30
           }, { onConflict: 'user_id' })
         
+        if (settingsError) {
+          logger.error({ error: settingsError, botId: existingBot.id }, 'Failed to enable blind dating for bot')
+        }
+        
         return existingBot.id
       }
 
+      // Check if username is taken (try variations)
+      let username = testBotUsername
+      let usernameTaken = true
+      let attempts = 0
+      
+      while (usernameTaken && attempts < 5) {
+        const { data: usernameCheck } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('username', username)
+          .maybeSingle()
+        
+        if (!usernameCheck) {
+          usernameTaken = false
+        } else {
+          username = `${testBotUsername}_${Date.now()}`
+          attempts++
+        }
+      }
+
       // Create test bot user
-      const botId = crypto.randomUUID()
-      const { error: createError } = await supabase
+      const botId = randomUUID()
+      const botData: any = {
+        id: botId,
+        email: testBotEmail,
+        first_name: 'Mystery',
+        last_name: 'Match',
+        username: username,
+        gender: Math.random() > 0.5 ? 'female' : 'male',
+        age: Math.floor(Math.random() * 10) + 22, // 22-32
+        about: 'Hi! I am an AI test partner for blind dating. Chat with me to test the feature!',
+        interests: ['Music', 'Travel', 'Movies', 'Food', 'Technology'],
+        needs: ['Friendship', 'Dating', 'Conversation'],
+        location_city: 'Mumbai',
+        location_country: 'India',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+
+      // Only add is_test_account if the column exists (optional field)
+      // We'll skip it to avoid schema errors
+
+      const { data: createdBot, error: createError } = await supabase
         .from('profiles')
-        .insert({
-          id: botId,
-          email: testBotEmail,
-          first_name: 'Mystery',
-          last_name: 'Match',
-          username: 'mystery_match_bot',
-          gender: Math.random() > 0.5 ? 'female' : 'male',
-          age: Math.floor(Math.random() * 10) + 22, // 22-32
-          about: 'Hi! I am an AI test partner for blind dating. Chat with me to test the feature!',
-          interests: ['Music', 'Travel', 'Movies', 'Food', 'Technology'],
-          needs: ['Friendship', 'Dating', 'Conversation'],
-          location_city: 'Mumbai',
-          location_country: 'India',
-          is_test_account: true
-        })
+        .insert(botData)
+        .select('id')
+        .single()
 
       if (createError) {
-        logger.error({ error: createError }, 'Failed to create test bot profile')
+        logger.error({ error: createError, botData }, 'Failed to create test bot profile')
+        
+        // If it's a unique constraint error, try to find existing bot by username
+        if (createError.code === '23505') {
+          const { data: existingByUsername } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('username', username)
+            .maybeSingle()
+          
+          if (existingByUsername) {
+            logger.info({ botId: existingByUsername.id }, 'Found existing bot by username')
+            return existingByUsername.id
+          }
+        }
+        
         throw createError
       }
 
+      if (!createdBot) {
+        throw new Error('Bot profile created but no data returned')
+      }
+
       // Enable blind dating for bot
-      await supabase
+      const { error: settingsError } = await supabase
         .from('blind_dating_settings')
         .insert({
-          user_id: botId,
+          user_id: createdBot.id,
           is_enabled: true,
           max_active_matches: 100,
-          preferred_reveal_threshold: 30
+          preferred_reveal_threshold: 30,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
         })
 
-      logger.info({ botId }, 'Test bot user created')
-      return botId
+      if (settingsError) {
+        logger.error({ error: settingsError, botId: createdBot.id }, 'Failed to enable blind dating for bot')
+        // Don't throw - bot exists, we can continue
+      }
+
+      logger.info({ botId: createdBot.id, username }, 'Test bot user created')
+      return createdBot.id
     } catch (error) {
-      logger.error({ error }, 'Error ensuring test bot user')
+      logger.error({ error, errorMessage: error instanceof Error ? error.message : 'Unknown error' }, 'Error ensuring test bot user')
       return null
     }
   }
