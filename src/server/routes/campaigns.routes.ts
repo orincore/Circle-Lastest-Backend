@@ -90,7 +90,9 @@ router.post('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
       content, 
       template_id, 
       segment_criteria,
-      scheduled_at 
+      scheduled_at,
+      push_title,
+      push_body,
     } = req.body
 
     const userId = req.user!.id
@@ -111,6 +113,8 @@ router.post('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
         template_id,
         segment_criteria,
         scheduled_at,
+        push_title,
+        push_body,
         status: scheduled_at ? 'scheduled' : 'draft',
         created_by: userId
       })
@@ -266,6 +270,10 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
       }
     } else if (campaign.type === 'push_notification') {
       // Send push notification campaigns
+      // Allow explicit push title/body fields from admin panel, with safe fallbacks
+      const pushTitle = (campaign as any).push_title || campaign.subject || campaign.name;
+      const pushBody = (campaign as any).push_body || campaign.content;
+
       //console.log(`📱 Sending push notification campaign to ${users.length} users`)
       
       for (const user of users) {
@@ -285,11 +293,13 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
             const message = {
               to: pushToken.token,
               sound: 'default',
-              title: campaign.subject || campaign.name,
-              body: campaign.content,
+              title: pushTitle,
+              body: pushBody,
               data: { 
                 campaignId: id,
-                type: 'marketing_campaign'
+                type: 'marketing_campaign',
+                title: pushTitle,
+                body: pushBody,
               },
             }
 
