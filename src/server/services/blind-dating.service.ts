@@ -442,6 +442,65 @@ export class BlindDatingService {
         message: 'You have a new anonymous match! Start chatting to discover who they are.',
         data: { matchId: match.id, chatId: match.chat_id }
       })
+
+      // Send anonymized email notifications to both users if emails are available
+      const { default: EmailService }: any = await import('./emailService.js')
+      const { data: emailProfiles } = await supabase
+        .from('profiles')
+        .select('id, email, first_name')
+        .in('id', [userId, otherUserId])
+
+      const emailMap = new Map<string, { email: string; first_name: string | null }>()
+      ;(emailProfiles || []).forEach((p: any) => {
+        if (p.email) {
+          emailMap.set(p.id, { email: p.email, first_name: p.first_name })
+        }
+      })
+
+      const anonymizedForUser = userProfile
+      const anonymizedForOther = otherProfile
+
+      const userEmailInfo = emailMap.get(userId)
+      if (userEmailInfo && anonymizedForUser) {
+        const html = `
+          <p>Hi ${userEmailInfo.first_name || 'there'},</p>
+          <p>We just found you a new blind date match on Circle.</p>
+          <p>For now, their identity is anonymous, but here are a few hints:</p>
+          <ul>
+            <li>Name: ${anonymizedForUser.first_name} ${anonymizedForUser.last_name}</li>
+            ${anonymizedForUser.age ? `<li>Age: ${anonymizedForUser.age}</li>` : ''}
+            ${anonymizedForUser.location_city ? `<li>City: ${anonymizedForUser.location_city}</li>` : ''}
+          </ul>
+          <p>Open the Circle app to start chatting. Once the vibe is right and both of you agree, you can reveal your identities.</p>
+        `.trim()
+
+        await EmailService.sendEmail({
+          to: userEmailInfo.email,
+          subject: 'New Blind Date match on Circle 🎭',
+          html,
+        })
+      }
+
+      const otherEmailInfo = emailMap.get(otherUserId)
+      if (otherEmailInfo && anonymizedForOther) {
+        const html = `
+          <p>Hi ${otherEmailInfo.first_name || 'there'},</p>
+          <p>We just found you a new blind date match on Circle.</p>
+          <p>For now, their identity is anonymous, but here are a few hints:</p>
+          <ul>
+            <li>Name: ${anonymizedForOther.first_name} ${anonymizedForOther.last_name}</li>
+            ${anonymizedForOther.age ? `<li>Age: ${anonymizedForOther.age}</li>` : ''}
+            ${anonymizedForOther.location_city ? `<li>City: ${anonymizedForOther.location_city}</li>` : ''}
+          </ul>
+          <p>Open the Circle app to start chatting. Once the vibe is right and both of you agree, you can reveal your identities.</p>
+        `.trim()
+
+        await EmailService.sendEmail({
+          to: otherEmailInfo.email,
+          subject: 'New Blind Date match on Circle 🎭',
+          html,
+        })
+      }
     } catch (error) {
       logger.error({ error, userId, otherUserId }, 'Failed to notify users about blind date match')
     }

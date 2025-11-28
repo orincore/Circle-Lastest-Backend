@@ -107,7 +107,9 @@ export class PushNotificationService {
     notification: PushNotificationData
   ): Promise<boolean> {
     try {
-      const message = {
+      const isIncomingCall = notification.data && notification.data.type === 'incoming_call';
+
+      const message: any = {
         to: token,
         sound: notification.sound || 'default',
         title: notification.title,
@@ -117,6 +119,10 @@ export class PushNotificationService {
         priority: notification.priority || 'high',
         channelId: 'default', // Android notification channel
       };
+
+      if (isIncomingCall) {
+        message.categoryId = 'call';
+      }
 
       const response = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
@@ -165,14 +171,6 @@ export class PushNotificationService {
     messageId: string
   ): Promise<boolean> {
     try {
-      // Check if user is online - if online, don't send push (socket will handle it)
-      const isOnline = await this.isUserOnline(recipientId);
-      
-      if (isOnline) {
-        logger.debug({ recipientId }, 'User is online, skipping push notification');
-        return false;
-      }
-
       // Truncate message for notification
       const truncatedMessage = messageText.length > 100 
         ? messageText.substring(0, 100) + '...' 
@@ -205,11 +203,8 @@ export class PushNotificationService {
     requestId: string
   ): Promise<boolean> {
     try {
-      const isOnline = await this.isUserOnline(recipientId);
-      if (isOnline) return false;
-
       return await this.sendPushNotification(recipientId, {
-        title: '👥 New Friend Request',
+        title: '\ud83d\udc65 New Friend Request',
         body: `${senderName} wants to be your friend`,
         data: {
           type: 'friend_request',
@@ -234,11 +229,8 @@ export class PushNotificationService {
     matchId: string
   ): Promise<boolean> {
     try {
-      const isOnline = await this.isUserOnline(recipientId);
-      if (isOnline) return false;
-
       return await this.sendPushNotification(recipientId, {
-        title: '💕 New Match!',
+        title: '\ud83d\udc95 New Match!',
         body: `You matched with ${matchedUserName}`,
         data: {
           type: 'new_match',
@@ -250,6 +242,34 @@ export class PushNotificationService {
       });
     } catch (error) {
       logger.error({ error, recipientId }, 'Error sending match push notification');
+      return false;
+    }
+  }
+
+  /**
+   * Send push notification for incoming voice call
+   */
+  static async sendVoiceCallNotification(
+    recipientId: string,
+    callerId: string,
+    callerName: string,
+    callId: string
+  ): Promise<boolean> {
+    try {
+      return await this.sendPushNotification(recipientId, {
+        title: `📞 Incoming Call`,
+        body: `${callerName} is calling you`,
+        data: {
+          type: 'incoming_call',
+          callId,
+          callerId,
+          callerName,
+        },
+        sound: 'default',
+        priority: 'high',
+      });
+    } catch (error) {
+      logger.error({ error, recipientId }, 'Error sending voice call push notification');
       return false;
     }
   }

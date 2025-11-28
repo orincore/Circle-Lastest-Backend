@@ -110,7 +110,29 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   // Start a voice call
   socket.on('voice:start-call', async (data: { receiverId: string; callType?: string }) => {
     try {
-      
+      // Check if receiver is already in an active call (busy)
+      const existingReceiverCalls = await getActiveCallsFromDB(data.receiverId);
+      if (existingReceiverCalls.length > 0) {
+        console.warn('⚠️ Receiver is already in an active call, rejecting new call request');
+        socket.emit('voice:error', {
+          error: 'User is already on another call. Please wait until their current call ends.',
+          reason: 'user_busy',
+          receiverId: data.receiverId,
+        });
+        return;
+      }
+
+      // Optional: also prevent caller from starting multiple calls at once
+      const existingCallerCalls = await getActiveCallsFromDB(userId);
+      if (existingCallerCalls.length > 0) {
+        console.warn('⚠️ Caller is already in an active call, rejecting new call request');
+        socket.emit('voice:error', {
+          error: 'You are already on another call. Please end it before starting a new one.',
+          reason: 'caller_busy',
+        });
+        return;
+      }
+
       // Check if users are friends (optional - you might want to allow calls to non-friends)
       // Accept both 'active' and 'accepted' status for compatibility
       const { data: friendship, error: friendshipError } = await supabase
@@ -164,8 +186,19 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
         callType
       };
 
-   
-      
+      // Send push notification so call rings even if receiver app is closed/backgrounded
+      try {
+        const { PushNotificationService } = await import('../services/pushNotificationService.js');
+        await PushNotificationService.sendVoiceCallNotification(
+          data.receiverId,
+          userId,
+          callerName,
+          callId
+        );
+      } catch (pushError) {
+        console.error('❌ Failed to send voice call push notification:', pushError);
+      }
+
       // Enhanced receiver connection check with multiple verification methods
       
       // Method 1: Check sockets in user room
@@ -188,18 +221,7 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
       
       if (effectiveReceiverSockets.length === 0) {
         console.warn('⚠️ Receiver is not connected to socket (verified by all methods)');
-        
-        // Update call status to missed since receiver is offline
-        await updateCallStatus(callId, 'missed', 'receiver_offline');
-        
-        // Notify caller that receiver is offline
-        socket.emit('voice:error', { 
-          error: 'User is currently offline and cannot receive calls',
-          reason: 'receiver_offline',
-          callId 
-        });
-        
-        return;
+        // Do not mark as missed immediately; push notification will ring on device.
       } else {
         
         // Ensure receiver is in their user room (fix any room issues)

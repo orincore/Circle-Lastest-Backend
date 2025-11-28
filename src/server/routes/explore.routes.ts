@@ -81,8 +81,8 @@ async function getAllSectionsLogic(currentUserId: string) {
     .in('blocked_id', [...userIds, currentUserId])
 
   // Create sets of user IDs to exclude
-  const friendIds = new Set()
-  const blockedIds = new Set()
+  const friendIds = new Set<string>()
+  const blockedIds = new Set<string>()
 
   friendships?.forEach(f => {
     if (f.user1_id === currentUserId) friendIds.add(f.user2_id)
@@ -94,9 +94,25 @@ async function getAllSectionsLogic(currentUserId: string) {
     blockedIds.add(b.blocked_id)
   })
 
+  // Also exclude users who are currently in an ACTIVE blind date match with the current user.
+  // Once a blind date is revealed, they can appear normally in explore/search.
+  const { data: blindMatches } = await supabase
+    .from('blind_date_matches')
+    .select('user_a, user_b, status')
+    .or(`user_a.eq.${currentUserId},user_b.eq.${currentUserId}`)
+    .eq('status', 'active')
+
+  const blindPartnerIds = new Set<string>()
+  blindMatches?.forEach((m: any) => {
+    const otherId = m.user_a === currentUserId ? m.user_b : m.user_a
+    if (otherId) blindPartnerIds.add(otherId)
+  })
+
   // Filter eligible users
   const eligibleUsers = allUsers?.filter(user => 
-    !friendIds.has(user.id) && !blockedIds.has(user.id)
+    !friendIds.has(user.id) &&
+    !blockedIds.has(user.id) &&
+    !blindPartnerIds.has(user.id)
   ) || []
 
   // Calculate scores and categorize users
@@ -327,8 +343,21 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
       if (f.user2_id === currentUserId) friendIds.add(f.user1_id)
     })
 
+    // Exclude users who are in an ACTIVE blind date match with the current user
+    const { data: blindMatches } = await supabase
+      .from('blind_date_matches')
+      .select('user_a, user_b, status')
+      .or(`user_a.eq.${currentUserId},user_b.eq.${currentUserId}`)
+      .eq('status', 'active')
+
+    const blindPartnerIds = new Set<string>()
+    blindMatches?.forEach((m: any) => {
+      const otherId = m.user_a === currentUserId ? m.user_b : m.user_a
+      if (otherId) blindPartnerIds.add(otherId)
+    })
+
     const filteredResults = searchResults
-      ?.filter(user => !blockedIds.has(user.id))
+      ?.filter(user => !blockedIds.has(user.id) && !blindPartnerIds.has(user.id))
       .map(user => ({
         id: user.id,
         name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),

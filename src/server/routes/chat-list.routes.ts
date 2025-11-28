@@ -60,6 +60,20 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
       }
     }
 
+    // Determine which chats are blind date chats with an ACTIVE match (ongoing, not yet revealed)
+    let blindDateMap = new Map<string, boolean>()
+    if (chatIds.length > 0) {
+      const { data: blindMatches } = await supabase
+        .from('blind_date_matches')
+        .select('chat_id, status')
+        .in('chat_id', chatIds)
+        .eq('status', 'active')
+
+      if (blindMatches) {
+        blindDateMap = new Map(blindMatches.map(m => [m.chat_id, true]))
+      }
+    }
+
     // Filter out archived by default unless includeArchived=true
     const includeArchived = String(req.query.includeArchived || 'false') === 'true'
 
@@ -67,6 +81,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     let items = inbox.map(item => {
       const s = settingsMap.get(item.chat.id) || { archived: false, pinned: false }
       const count = countsMap.get(item.chat.id)
+      const isBlindDateOngoing = !!blindDateMap.get(item.chat.id)
       return {
         chatId: item.chat.id,
         lastMessageAt: item.chat.last_message_at,
@@ -91,6 +106,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
         archived: s.archived,
         pinned: s.pinned,
         messageCount: count,
+        isBlindDateOngoing,
       }
     })
 
