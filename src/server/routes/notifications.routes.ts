@@ -19,6 +19,18 @@ router.post('/register-token', requireAuth, async (req: AuthRequest, res) => {
 
     //console.log(`📱 Registering push token for user ${userId}:`, { token, deviceType, deviceName });
 
+    // Ensure this token is not active for any other users
+    try {
+      await supabase
+        .from('push_tokens')
+        .update({ enabled: false, updated_at: new Date().toISOString() })
+        .eq('token', token)
+        .neq('user_id', userId);
+    } catch (cleanupError) {
+      console.error('Error disabling token for other users:', cleanupError);
+      // Continue; not fatal for the current user registration
+    }
+
     // Check if token already exists for this user
     const { data: existingToken } = await supabase
       .from('push_tokens')
@@ -62,6 +74,35 @@ router.post('/register-token', requireAuth, async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('❌ Error registering push token:', error);
     res.status(500).json({ error: 'Failed to register push token' });
+  }
+});
+
+/**
+ * Unregister (disable) push notification token for current user
+ * If a token is provided, only that token is disabled.
+ * If no token is provided, all tokens for the user are disabled.
+ */
+router.post('/unregister-token', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const { token } = req.body as { token?: string };
+
+    const query = supabase
+      .from('push_tokens')
+      .update({ enabled: false, updated_at: new Date().toISOString() })
+      .eq('user_id', userId);
+
+    if (token) {
+      query.eq('token', token);
+    }
+
+    const { error } = await query;
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Push token(s) unregistered successfully' });
+  } catch (error) {
+    console.error('❌ Error unregistering push token:', error);
+    res.status(500).json({ error: 'Failed to unregister push token' });
   }
 });
 
