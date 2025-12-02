@@ -19,14 +19,14 @@ pipeline {
         CRON_IMAGE = "${DOCKER_REGISTRY}/circle-cron"
         
         // Paths
-        BACKEND_DIR = "Backend"
+        BACKEND_DIR = "."
         COMPOSE_FILE = "docker-compose.production.yml"
         ENV_FILE = "/opt/circle/.env.production"
         
         // Deployment (Update with your server details)
         DEPLOY_HOST = credentials('deploy-server-host')
         DEPLOY_USER = credentials('deploy-server-user')
-        DEPLOY_PATH = "/opt/circle/Backend"
+        DEPLOY_PATH = "/opt/circle"
         HEALTH_CHECK_RETRIES = "30"
         HEALTH_CHECK_INTERVAL = "5"
         
@@ -71,7 +71,11 @@ pipeline {
             steps {
                 dir(BACKEND_DIR) {
                     sh '''
-                        echo "📦 Installing dependencies..."
+                        echo "� Current directory: $(pwd)"
+                        echo "📂 Directory contents:"
+                        ls -la
+                        echo ""
+                        echo "�� Installing dependencies..."
                         npm ci --prefer-offline --no-audit
                         
                         if [ "${SKIP_TESTS}" != "true" ]; then
