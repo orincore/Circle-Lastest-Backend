@@ -230,7 +230,7 @@ pipeline {
                     sleep 5
                     
                     # Test API endpoint
-                    API_STATUS=\$(curl -sf -o /dev/null -w '%{http_code}' https://api.circleapp.in/health || echo "000")
+                    API_STATUS=\$(curl -sf -o /dev/null -w '%{http_code}' https://api.circle.orincore.com/health || echo "000")
                     
                     if [ "\$API_STATUS" = "200" ]; then
                         echo "✅ API is responding (HTTP \$API_STATUS)"
