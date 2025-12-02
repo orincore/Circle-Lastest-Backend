@@ -28,8 +28,8 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-# Increase memory for TypeScript compilation
-RUN NODE_OPTIONS="--max-old-space-size=1536" npm run build
+# Build TypeScript with adequate memory for 8GB server
+RUN rm -rf dist && node --max-old-space-size=2048 ./node_modules/.bin/tsc -p .
 
 # ============================================
 # Runtime Stage - Cron Worker
