@@ -5,6 +5,7 @@ import { CompatibilityService } from './compatibility.service.js'
 import { ContentFilterService, type PersonalInfoAnalysis } from './ai/content-filter.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
+import { PushNotificationService } from './pushNotificationService.js'
 import { randomUUID } from 'crypto'
 import { hashPassword } from '../utils/password.js'
 
@@ -70,6 +71,67 @@ export interface MessageFilterResult {
 }
 
 export class BlindDatingService {
+  
+  /**
+   * Check if two users are compatible for blind dating based on gender
+   * 
+   * Matching Rules:
+   * - Male <-> Female (traditional opposite gender)
+   * - LGBTQ+ users match within their community (same identity)
+   * - Unknown/null genders don't match
+   */
+  private static isGenderCompatible(gender1?: string, gender2?: string): boolean {
+    if (!gender1 || !gender2) {
+      return false // Don't match if gender is unknown
+    }
+    
+    const g1 = gender1.toLowerCase().trim()
+    const g2 = gender2.toLowerCase().trim()
+    
+    // Helper functions to identify gender categories
+    const isMale = (g: string) => g === 'male' || g === 'm' || g === 'man'
+    const isFemale = (g: string) => g === 'female' || g === 'f' || g === 'woman'
+    const isLGBTQ = (g: string) => {
+      const lgbtqIdentities = [
+        'gay', 'lesbian', 'bisexual', 'bi', 'pansexual', 'pan',
+        'transgender', 'trans', 'trans male', 'trans female', 'trans man', 'trans woman',
+        'non-binary', 'nonbinary', 'nb', 'enby',
+        'genderqueer', 'genderfluid', 'gender fluid',
+        'queer', 'questioning',
+        'asexual', 'ace', 'demisexual',
+        'intersex', 'two-spirit', 'agender',
+        'other', 'prefer not to say'
+      ]
+      return lgbtqIdentities.some(identity => g.includes(identity) || identity.includes(g))
+    }
+    
+    // Rule 1: Male <-> Female (traditional matching)
+    if ((isMale(g1) && isFemale(g2)) || (isFemale(g1) && isMale(g2))) {
+      return true
+    }
+    
+    // Rule 2: LGBTQ+ users match within their community
+    // If both users identify as LGBTQ+, they can match with each other
+    if (isLGBTQ(g1) && isLGBTQ(g2)) {
+      return true
+    }
+    
+    // Rule 3: Same LGBTQ+ identity matches (e.g., gay matches gay, lesbian matches lesbian)
+    if (g1 === g2 && isLGBTQ(g1)) {
+      return true
+    }
+    
+    // Rule 4: Don't match straight same-gender users
+    // (male-male or female-female where neither is LGBTQ+)
+    return false
+  }
+  
+  /**
+   * @deprecated Use isGenderCompatible instead
+   */
+  private static isOppositeGender(gender1?: string, gender2?: string): boolean {
+    return this.isGenderCompatible(gender1, gender2)
+  }
   
   /**
    * Get or create blind dating settings for a user
@@ -307,9 +369,18 @@ export class BlindDatingService {
           return null
         }
 
-        // Filter out suspended/invisible users and check max matches
+        // Filter out suspended/invisible users, check max matches, and enforce gender compatibility
         const validProfiles: typeof profiles = []
+        const userGender = userProfile.gender?.toLowerCase()
+        
         for (const profile of (profiles || [])) {
+          // IMPORTANT: Only match compatible genders (opposite for straight, same community for LGBTQ+)
+          const candidateGender = profile.gender?.toLowerCase()
+          if (!this.isGenderCompatible(userGender, candidateGender)) {
+            logger.debug({ userId, candidateId: profile.id, userGender, candidateGender }, 'Skipping incompatible gender candidate')
+            continue
+          }
+          
           // Check if user has reached their max active matches
           const userSettings = enabledSettings?.find(s => s.user_id === profile.id)
           const maxMatches = userSettings?.max_active_matches || 3
@@ -355,37 +426,48 @@ export class BlindDatingService {
     settings: BlindDateSettings
   ): Promise<BlindDateMatch | null> {
     try {
-      // Score and rank candidates
-      const scoredCandidates = candidates.map(candidate => {
-        const data = typeof candidate.compatibility_data === 'string'
-          ? JSON.parse(candidate.compatibility_data)
-          : candidate.compatibility_data
-        
-        const compatibility = CompatibilityService.calculateEnhancedCompatibility(
-          {
-            age: userProfile.age,
-            interests: userProfile.interests,
-            needs: userProfile.needs
-          },
-          {
-            age: data.age,
-            interests: data.interests,
-            needs: data.needs
+      const userGender = userProfile.gender?.toLowerCase()
+      
+      // Filter candidates to only compatible genders and score them
+      const scoredCandidates = candidates
+        .map(candidate => {
+          const data = typeof candidate.compatibility_data === 'string'
+            ? JSON.parse(candidate.compatibility_data)
+            : candidate.compatibility_data
+          
+          const candidateGender = data.gender?.toLowerCase()
+          
+          // CRITICAL: Only match compatible genders
+          if (!this.isGenderCompatible(userGender, candidateGender)) {
+            return null // Skip incompatible gender candidates
           }
-        )
-        
-        // Add a base score to ensure matches happen even with low compatibility
-        // This ensures users get matched even if they have few common interests
-        const baseScore = 5 // Minimum base score for any potential match
-        const adjustedScore = Math.max(compatibility.score, baseScore)
-        
-        return {
-          userId: candidate.user_id,
-          score: adjustedScore,
-          rawScore: compatibility.score,
-          compatibility
-        }
-      })
+          
+          const compatibility = CompatibilityService.calculateEnhancedCompatibility(
+            {
+              age: userProfile.age,
+              interests: userProfile.interests,
+              needs: userProfile.needs
+            },
+            {
+              age: data.age,
+              interests: data.interests,
+              needs: data.needs
+            }
+          )
+          
+          // Add a base score to ensure matches happen even with low compatibility
+          // This ensures users get matched even if they have few common interests
+          const baseScore = 5 // Minimum base score for any potential match
+          const adjustedScore = Math.max(compatibility.score, baseScore)
+          
+          return {
+            userId: candidate.user_id,
+            score: adjustedScore,
+            rawScore: compatibility.score,
+            compatibility
+          }
+        })
+        .filter((c): c is NonNullable<typeof c> => c !== null) // Remove null entries (same-gender)
 
       // Sort by score (highest first)
       scoredCandidates.sort((a, b) => b.score - a.score)
@@ -396,11 +478,10 @@ export class BlindDatingService {
         topScores: scoredCandidates.slice(0, 5).map(c => ({ userId: c.userId, score: c.score, rawScore: c.rawScore }))
       }, 'Scored candidates for blind dating')
 
-      // Get the best match - ALWAYS match if there are candidates
-      // The minimum threshold is now 0 - we want users to get matches!
+      // Get the best match - ALWAYS match if there are compatible candidates
       const bestMatch = scoredCandidates[0]
       if (!bestMatch) {
-        logger.info({ userId }, 'No candidates available for matching')
+        logger.info({ userId, userGender }, 'No compatible candidates available for matching')
         return null
       }
       
@@ -514,6 +595,22 @@ export class BlindDatingService {
         message: 'You have a new anonymous match! Start chatting to discover who they are.',
         data: { matchId: match.id, chatId: match.chat_id }
       })
+
+      // Send push notifications to both users
+      await Promise.all([
+        PushNotificationService.sendBlindDateMatchNotification(
+          userId,
+          match.id,
+          match.chat_id || ''
+        ),
+        PushNotificationService.sendBlindDateMatchNotification(
+          otherUserId,
+          match.id,
+          match.chat_id || ''
+        )
+      ])
+      
+      logger.info({ matchId: match.id, userId, otherUserId }, 'Sent blind date match push notifications')
 
       // Send anonymized email notifications to both users if emails are available
       const { default: EmailService }: any = await import('./emailService.js')
@@ -1389,8 +1486,20 @@ export class BlindDatingService {
           let excluded = false
           let excludeReason = ''
 
+          // CRITICAL: Check gender compatibility first
+          const userGender = user.gender?.toLowerCase()
+          const candidateGender = candidate.gender?.toLowerCase()
+          
+          if (!this.isGenderCompatible(userGender, candidateGender)) {
+            excluded = true
+            if (!userGender || !candidateGender) {
+              excludeReason = 'Gender not specified'
+            } else {
+              excludeReason = 'Not compatible (gender preference)'
+            }
+          }
           // Check if candidate has blind dating enabled
-          if (!candidateSettings?.is_enabled) {
+          else if (!candidateSettings?.is_enabled) {
             excluded = true
             excludeReason = 'Blind dating not enabled'
           }
@@ -1432,18 +1541,21 @@ export class BlindDatingService {
           result.status = 'no_match'
           
           // Determine specific reason
+          const allGenderIncompatible = eligibleCandidates.every(c => c.excludeReason?.includes('Gender') || c.excludeReason?.includes('compatible'))
           const allDisabled = eligibleCandidates.every(c => c.excludeReason === 'Blind dating not enabled')
           const allAlreadyMatched = eligibleCandidates.every(c => c.excludeReason?.includes('Already in active match'))
           const allAtMax = eligibleCandidates.every(c => c.excludeReason?.includes('At max matches'))
           
           if (allUsers!.length <= 1) {
             result.reason = 'No other users in the system'
+          } else if (allGenderIncompatible) {
+            result.reason = 'No compatible users available with blind dating enabled'
           } else if (allDisabled) {
-            result.reason = 'No other users have blind dating enabled'
+            result.reason = 'No compatible users have blind dating enabled'
           } else if (allAlreadyMatched) {
-            result.reason = 'Already matched with all available users'
+            result.reason = 'Already matched with all compatible users'
           } else if (allAtMax) {
-            result.reason = 'All potential matches are at their maximum match limit'
+            result.reason = 'All compatible users are at their maximum match limit'
           } else {
             result.reason = `No eligible candidates (${eligibleCandidates.length} users checked, all excluded)`
           }

@@ -273,5 +273,59 @@ export class PushNotificationService {
       return false;
     }
   }
+
+  /**
+   * Send push notification for new blind date match
+   */
+  static async sendBlindDateMatchNotification(
+    recipientId: string,
+    matchId: string,
+    chatId: string
+  ): Promise<boolean> {
+    try {
+      return await this.sendPushNotification(recipientId, {
+        title: '🎭 New Blind Date Found!',
+        body: 'You have a new anonymous match! Start chatting to discover who they are.',
+        data: {
+          type: 'blind_date_match',
+          matchId,
+          chatId,
+        },
+        sound: 'default',
+        priority: 'high',
+      });
+    } catch (error) {
+      logger.error({ error, recipientId }, 'Error sending blind date match push notification');
+      return false;
+    }
+  }
+
+  /**
+   * Send push notification for blind date identity reveal
+   */
+  static async sendBlindDateRevealNotification(
+    recipientId: string,
+    revealerName: string,
+    matchId: string,
+    chatId: string
+  ): Promise<boolean> {
+    try {
+      return await this.sendPushNotification(recipientId, {
+        title: '🎉 Identity Revealed!',
+        body: `${revealerName} has revealed their identity to you!`,
+        data: {
+          type: 'blind_date_reveal',
+          matchId,
+          chatId,
+          revealerName,
+        },
+        sound: 'default',
+        priority: 'high',
+      });
+    } catch (error) {
+      logger.error({ error, recipientId }, 'Error sending blind date reveal push notification');
+      return false;
+    }
+  }
 }
 
