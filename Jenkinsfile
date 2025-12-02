@@ -18,21 +18,8 @@ pipeline {
         MATCHMAKING_IMAGE = "${DOCKER_REGISTRY}/circle-matchmaking"
         CRON_IMAGE = "${DOCKER_REGISTRY}/circle-cron"
         
-        // Paths
+        // Paths (Jenkins checks out repo root where Dockerfiles live)
         BACKEND_DIR = "."
-        COMPOSE_FILE = "docker-compose.production.yml"
-        ENV_FILE = "/opt/circle/.env.production"
-        
-        // Deployment (Update with your server details)
-        DEPLOY_HOST = credentials('deploy-server-host')
-        DEPLOY_USER = credentials('deploy-server-user')
-        DEPLOY_PATH = "/opt/circle"
-        HEALTH_CHECK_RETRIES = "30"
-        HEALTH_CHECK_INTERVAL = "5"
-        
-        // Slack Notifications (Optional)
-        SLACK_CHANNEL = "#deployments"
-        ENABLE_SLACK = "false"
     }
 
     options {
@@ -45,7 +32,6 @@ pipeline {
     parameters {
         booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip tests during build')
         booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild without cache')
-        choice(name: 'DEPLOY_ENV', choices: ['production', 'staging'], description: 'Deployment environment')
     }
 
     stages {
@@ -239,175 +225,7 @@ pipeline {
             }
         }
 
-        // ============================================
-        // Stage 5: Zero-Downtime Rolling Deployment
-        // ============================================
-        stage('Deploy') {
-            steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-                    script {
-                        try {
-                            sh '''
-                                ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
-                                    set -e
-                                    cd ${DEPLOY_PATH}
-                                    
-                                    echo "📦 Pulling latest images..."
-                                    export TAG=${DOCKER_TAG}
-                                    docker-compose -f ${COMPOSE_FILE} pull
-                                    
-                                    echo "💾 Creating backup of current deployment..."
-                                    docker-compose -f ${COMPOSE_FILE} ps -q > /tmp/circle_backup_containers.txt
-                                    
-                                    echo "🔄 Rolling update: API server..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build api
-                            
-                            echo "⏳ Waiting for API health check..."
-                            for i in $(seq 1 ${HEALTH_CHECK_RETRIES}); do
-                                if docker-compose -f ${COMPOSE_FILE} exec -T api curl -sf http://localhost:8080/health > /dev/null 2>&1; then
-                                    echo "✅ API is healthy!"
-                                    break
-                                fi
-                                if [ $i -eq ${HEALTH_CHECK_RETRIES} ]; then
-                                    echo "❌ API health check failed!"
-                                    docker-compose -f ${COMPOSE_FILE} logs --tail=50 api
-                                    exit 1
-                                fi
-                                echo "Waiting... ($i/${HEALTH_CHECK_RETRIES})"
-                                sleep ${HEALTH_CHECK_INTERVAL}
-                            done
-                            
-                            echo "🔄 Rolling update: Socket server..."
-                            docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build socket
-                            
-                            echo "⏳ Waiting for Socket health check..."
-                            for i in $(seq 1 ${HEALTH_CHECK_RETRIES}); do
-                                if docker-compose -f ${COMPOSE_FILE} exec -T socket curl -sf http://localhost:8081/health > /dev/null 2>&1; then
-                                    echo "✅ Socket is healthy!"
-                                    break
-                                fi
-                                if [ $i -eq ${HEALTH_CHECK_RETRIES} ]; then
-                                    echo "❌ Socket health check failed!"
-                                    docker-compose -f ${COMPOSE_FILE} logs --tail=50 socket
-                                    exit 1
-                                fi
-                                echo "Waiting... ($i/${HEALTH_CHECK_RETRIES})"
-                                sleep ${HEALTH_CHECK_INTERVAL}
-                            done
-                            
-                            echo "🔄 Updating workers..."
-                            docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build matchmaking cron
-                            
-                            echo "🔄 Reloading NGINX..."
-                            docker-compose -f ${COMPOSE_FILE} exec -T nginx nginx -s reload || \
-                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps nginx
-                            
-                                    echo "🧹 Cleaning up old images..."
-                                    docker image prune -f --filter "until=48h"
-                                    
-                                    echo "✅ Deployment complete!"
-                                    docker-compose -f ${COMPOSE_FILE} ps
-                                    
-                                    # Save deployment info
-                                    echo "${DOCKER_TAG}" > /tmp/circle_last_deployment.txt
-                                    echo "Deployed at: $(date)" >> /tmp/circle_last_deployment.txt
-ENDSSH
-                            '''
-                        } catch (Exception e) {
-                            echo "❌ Deployment failed: ${e.message}"
-                            echo "🔄 Initiating automatic rollback..."
-                            currentBuild.result = 'FAILURE'
-                            throw e
-                        }
-                    }
-                }
-            }
-        }
-
-        // ============================================
-        // Stage 6: Post-Deployment Verification
-        // ============================================
-        stage('Verify Deployment') {
-            steps {
-                script {
-                    try {
-                        sh '''
-                            echo "🔍 Verifying deployment..."
-                            
-                            # Wait for services to stabilize
-                            sleep 10
-                            
-                            # Health check via public endpoint
-                            HEALTH_PASSED=false
-                            for i in $(seq 1 10); do
-                                HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${DEPLOY_HOST}/health || echo "000")
-                                if [ "$HTTP_STATUS" = "200" ]; then
-                                    echo "✅ Public health check passed!"
-                                    HEALTH_PASSED=true
-                                    break
-                                fi
-                                echo "Waiting for public endpoint... ($i/10) - Status: $HTTP_STATUS"
-                                sleep 5
-                            done
-                            
-                            if [ "$HEALTH_PASSED" = "false" ]; then
-                                echo "❌ Health check failed after 10 attempts"
-                                exit 1
-                            fi
-                            
-                            # Verify all containers are running
-                            ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
-                                cd ${DEPLOY_PATH}
-                                UNHEALTHY=$(docker-compose -f ${COMPOSE_FILE} ps | grep -iE "unhealthy|restarting" || true)
-                                if [ ! -z "$UNHEALTHY" ]; then
-                                    echo "❌ Some containers are unhealthy:"
-                                    echo "$UNHEALTHY"
-                                    exit 1
-                                fi
-                                echo "✅ All containers are healthy"
-ENDSSH
-                        '''
-                    } catch (Exception e) {
-                        echo "❌ Verification failed: ${e.message}"
-                        currentBuild.result = 'FAILURE'
-                        error("Deployment verification failed. Please check logs and consider rollback.")
-                    }
-                }
-            }
-        }
-        
-        // ============================================
-        // Stage 7: Rollback (Only on Failure)
-        // ============================================
-        stage('Rollback') {
-            when {
-                expression { currentBuild.result == 'FAILURE' }
-            }
-            steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-                    sh '''
-                        echo "🔄 Rolling back to previous version..."
-                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
-                            set -e
-                            cd ${DEPLOY_PATH}
-                            
-                            echo "📦 Pulling previous images..."
-                            export TAG=previous
-                            docker-compose -f ${COMPOSE_FILE} pull
-                            
-                            echo "🔄 Restoring services..."
-                            docker-compose -f ${COMPOSE_FILE} up -d
-                            
-                            echo "⏳ Waiting for services to stabilize..."
-                            sleep 15
-                            
-                            echo "✅ Rollback complete!"
-                            docker-compose -f ${COMPOSE_FILE} ps
-ENDSSH
-                    '''
-                }
-            }
-        }
+        // (No deployment stages here: this pipeline stops after building and pushing Docker images.)
     }
 
     // ============================================
@@ -415,7 +233,7 @@ ENDSSH
     // ============================================
     post {
         success {
-            echo "✅ Build #${env.BUILD_NUMBER} deployed successfully!"
+            echo "✅ Build #${env.BUILD_NUMBER} built and pushed Docker images successfully!"
             // Uncomment to enable Slack notifications
             // slackSend(
             //     color: 'good',
