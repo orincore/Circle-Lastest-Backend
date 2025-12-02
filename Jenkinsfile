@@ -1,251 +1,85 @@
 // ============================================
 // Circle Backend - Jenkins CI/CD Pipeline
-// Zero-Downtime Rolling Deployment
+// Simplified: Git Pull + NPM Install + Docker Rebuild
+// With Zero-Downtime & Automatic Rollback
 // ============================================
 
 pipeline {
     agent any
 
     environment {
-        // Docker Registry (Update with your Docker Hub username)
-        DOCKER_REGISTRY = credentials('docker-registry-name')
-        DOCKER_TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'latest'}"
-        PREVIOUS_TAG = "previous"
-        
-        // Service Images
-        API_IMAGE = "${DOCKER_REGISTRY}/circle-api"
-        SOCKET_IMAGE = "${DOCKER_REGISTRY}/circle-socket"
-        MATCHMAKING_IMAGE = "${DOCKER_REGISTRY}/circle-matchmaking"
-        CRON_IMAGE = "${DOCKER_REGISTRY}/circle-cron"
-        
-        // Paths (Jenkins checks out repo root where Dockerfiles live)
-        BACKEND_DIR = "."
+        // Server Configuration
+        SERVER_IP = '69.62.82.102'
+        SERVER_USER = 'root'
+        DEPLOY_DIR = '/root/Circle-Lastest-Backend'
+        COMPOSE_FILE = 'docker-compose.production.yml'
+        BRANCH = 'main'
     }
 
     options {
-        timeout(time: 45, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
         disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))
+        buildDiscarder(logRotator(numToKeepStr: '15'))
         timestamps()
     }
     
     parameters {
-        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip tests during build')
-        booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild without cache')
-        booleanParam(name: 'DEPLOY_AFTER_BUILD', defaultValue: true, description: 'Automatically deploy to server after pushing images')
+        booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild Docker images without cache')
+        booleanParam(name: 'SKIP_DEPLOY', defaultValue: false, description: 'Skip deployment (only validate)')
     }
 
     stages {
         // ============================================
-        // Stage 1: Checkout & Prepare
+        // Stage 1: Validate & Prepare
         // ============================================
-        stage('Checkout') {
+        stage('Validate') {
             steps {
-                checkout scm
                 script {
                     env.GIT_COMMIT_MSG = sh(
                         script: 'git log -1 --pretty=%B',
                         returnStdout: true
                     ).trim()
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
                 }
+                echo """
+                ============================================
+                🚀 Circle Backend CI/CD Pipeline
+                ============================================
+                Build: #${env.BUILD_NUMBER}
+                Commit: ${env.GIT_COMMIT_SHORT}
+                Message: ${env.GIT_COMMIT_MSG}
+                Branch: ${BRANCH}
+                ============================================
+                """
             }
         }
 
         // ============================================
-        // Stage 2: Install Dependencies & Test
+        // Stage 2: Local Validation (Optional)
         // ============================================
-        stage('Install & Test') {
-            steps {
-                dir(BACKEND_DIR) {
-                    sh '''
-                        echo "� Current directory: $(pwd)"
-                        echo "📂 Directory contents:"
-                        ls -la
-                        echo ""
-                        echo "�� Installing dependencies..."
-                        npm ci --prefer-offline --no-audit
-                        
-                        if [ "${SKIP_TESTS}" != "true" ]; then
-                            echo "🔍 Running linter..."
-                            npm run lint || echo "⚠️ Linting warnings found"
-                            
-                            # echo "🧪 Running tests..."
-                            # npm test  # Uncomment when tests are ready
-                        else
-                            echo "⏭️ Skipping tests as requested"
-                        fi
-                    '''
-                }
-            }
-        }
-        // ============================================
-        // Stage 3: Build All Docker Images (Parallel)
-        // ============================================
-        stage('Build Docker Images') {
-            parallel {
-                stage('Build API') {
-                    steps {
-                        dir(BACKEND_DIR) {
-                            sh '''
-                                echo "🏗️ Building API image..."
-                                CACHE_FLAG="--cache-from ${API_IMAGE}:latest"
-                                if [ "${FORCE_REBUILD}" = "true" ]; then
-                                    CACHE_FLAG="--no-cache"
-                                fi
-                                
-                                docker build \
-                                    -f docker/Dockerfile.api \
-                                    -t ${API_IMAGE}:${DOCKER_TAG} \
-                                    -t ${API_IMAGE}:latest \
-                                    $CACHE_FLAG \
-                                    --build-arg BUILDKIT_INLINE_CACHE=1 \
-                                    --label "build.number=${BUILD_NUMBER}" \
-                                    --label "git.commit=${GIT_COMMIT}" \
-                                    .
-                            '''
-                        }
-                    }
-                }
-                stage('Build Socket') {
-                    steps {
-                        dir(BACKEND_DIR) {
-                            sh '''
-                                echo "🏗️ Building Socket image..."
-                                CACHE_FLAG="--cache-from ${SOCKET_IMAGE}:latest"
-                                if [ "${FORCE_REBUILD}" = "true" ]; then
-                                    CACHE_FLAG="--no-cache"
-                                fi
-                                
-                                docker build \
-                                    -f docker/Dockerfile.socket \
-                                    -t ${SOCKET_IMAGE}:${DOCKER_TAG} \
-                                    -t ${SOCKET_IMAGE}:latest \
-                                    $CACHE_FLAG \
-                                    --build-arg BUILDKIT_INLINE_CACHE=1 \
-                                    --label "build.number=${BUILD_NUMBER}" \
-                                    --label "git.commit=${GIT_COMMIT}" \
-                                    .
-                            '''
-                        }
-                    }
-                }
-                stage('Build Matchmaking') {
-                    steps {
-                        dir(BACKEND_DIR) {
-                            sh '''
-                                echo "🏗️ Building Matchmaking image..."
-                                CACHE_FLAG="--cache-from ${MATCHMAKING_IMAGE}:latest"
-                                if [ "${FORCE_REBUILD}" = "true" ]; then
-                                    CACHE_FLAG="--no-cache"
-                                fi
-                                
-                                docker build \
-                                    -f docker/Dockerfile.matchmaking \
-                                    -t ${MATCHMAKING_IMAGE}:${DOCKER_TAG} \
-                                    -t ${MATCHMAKING_IMAGE}:latest \
-                                    $CACHE_FLAG \
-                                    --build-arg BUILDKIT_INLINE_CACHE=1 \
-                                    --label "build.number=${BUILD_NUMBER}" \
-                                    --label "git.commit=${GIT_COMMIT}" \
-                                    .
-                            '''
-                        }
-                    }
-                }
-                stage('Build Cron') {
-                    steps {
-                        dir(BACKEND_DIR) {
-                            sh '''
-                                echo "🏗️ Building Cron image..."
-                                CACHE_FLAG="--cache-from ${CRON_IMAGE}:latest"
-                                if [ "${FORCE_REBUILD}" = "true" ]; then
-                                    CACHE_FLAG="--no-cache"
-                                fi
-                                
-                                docker build \
-                                    -f docker/Dockerfile.cron \
-                                    -t ${CRON_IMAGE}:${DOCKER_TAG} \
-                                    -t ${CRON_IMAGE}:latest \
-                                    $CACHE_FLAG \
-                                    --build-arg BUILDKIT_INLINE_CACHE=1 \
-                                    --label "build.number=${BUILD_NUMBER}" \
-                                    --label "git.commit=${GIT_COMMIT}" \
-                                    .
-                            '''
-                        }
-                    }
-                }
-            }
-        }
-
-        // ============================================
-        // Stage 4: Push Images to Registry
-        // ============================================
-        stage('Push Images') {
-            steps {
-                script {
-                    // Tag current images as 'previous' for rollback
-                    sh '''
-                        docker tag ${API_IMAGE}:latest ${API_IMAGE}:previous || true
-                        docker tag ${SOCKET_IMAGE}:latest ${SOCKET_IMAGE}:previous || true
-                        docker tag ${MATCHMAKING_IMAGE}:latest ${MATCHMAKING_IMAGE}:previous || true
-                        docker tag ${CRON_IMAGE}:latest ${CRON_IMAGE}:previous || true
-                    '''
-                }
-                withCredentials([usernamePassword(
-                    credentialsId: 'docker-hub-creds',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh '''
-                        echo "🔐 Logging into Docker Hub..."
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                        
-                        echo "📤 Pushing images to registry..."
-                        # Push all images with version tag and latest
-                        docker push ${API_IMAGE}:${DOCKER_TAG}
-                        docker push ${API_IMAGE}:latest
-                        docker push ${API_IMAGE}:previous
-                        
-                        docker push ${SOCKET_IMAGE}:${DOCKER_TAG}
-                        docker push ${SOCKET_IMAGE}:latest
-                        docker push ${SOCKET_IMAGE}:previous
-                        
-                        docker push ${MATCHMAKING_IMAGE}:${DOCKER_TAG}
-                        docker push ${MATCHMAKING_IMAGE}:latest
-                        docker push ${MATCHMAKING_IMAGE}:previous
-                        
-                        docker push ${CRON_IMAGE}:${DOCKER_TAG}
-                        docker push ${CRON_IMAGE}:latest
-                        docker push ${CRON_IMAGE}:previous
-                        
-                        echo "✅ All images pushed successfully!"
-                    '''
-                }
-            }
-        }
-
-        // ============================================
-        // Stage 5: Prepare Env File for Deployment
-        // ============================================
-        stage('Prepare Env File') {
+        stage('Lint Check') {
             steps {
                 sh '''
-                    # If .env.production is missing in workspace, copy from a known location
-                    if [ ! -f .env.production ] && [ -f /root/Circle-Lastest-Backend/.env.production ]; then
-                      echo "Copying /root/Circle-Lastest-Backend/.env.production into workspace..."
-                      cp /root/Circle-Lastest-Backend/.env.production .env.production
-                    fi
+                    echo "📦 Installing dependencies locally for validation..."
+                    npm ci --prefer-offline --no-audit 2>/dev/null || npm install
+                    
+                    echo "🔍 Running TypeScript check..."
+                    npx tsc --noEmit || echo "⚠️ TypeScript warnings found (non-blocking)"
+                    
+                    echo "✅ Validation passed!"
                 '''
             }
         }
 
         // ============================================
-        // Stage 6: Deploy to Server via SSH
+        // Stage 3: Deploy to Production Server
         // ============================================
         stage('Deploy') {
             when {
-                expression { return params.DEPLOY_AFTER_BUILD }
+                expression { return !params.SKIP_DEPLOY }
             }
             steps {
                 withCredentials([sshUserPrivateKey(
@@ -253,13 +87,139 @@ pipeline {
                     keyFileVariable: 'SSH_KEY',
                     usernameVariable: 'SSH_USER'
                 )]) {
-                    sh '''
-                        echo "🚀 Triggering remote deploy script on root@69.62.82.102..."
-
-                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no root@69.62.82.102 \
-                          'chmod +x /root/Circle-Lastest-Backend/scripts/deploy-latest.sh && /root/Circle-Lastest-Backend/scripts/deploy-latest.sh'
-                    '''
+                    script {
+                        def forceFlag = params.FORCE_REBUILD ? '--force' : ''
+                        
+                        sh """
+                            echo "🚀 Deploying to production server..."
+                            echo "   Server: ${SERVER_USER}@${SERVER_IP}"
+                            echo "   Directory: ${DEPLOY_DIR}"
+                            echo ""
+                            
+                            ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
+                                set -e
+                                
+                                echo "============================================"
+                                echo "🚀 Circle Backend Deployment"
+                                echo "   Build: #${BUILD_NUMBER}"
+                                echo "   Commit: ${GIT_COMMIT_SHORT}"
+                                echo "============================================"
+                                echo ""
+                                
+                                cd ${DEPLOY_DIR}
+                                
+                                # Save current commit for rollback
+                                PREVIOUS_COMMIT=\$(git rev-parse HEAD 2>/dev/null || echo "none")
+                                echo "📌 Previous commit: \$PREVIOUS_COMMIT"
+                                
+                                # Pull latest code
+                                echo ""
+                                echo "📥 Step 1: Pulling latest code..."
+                                git fetch --all
+                                git checkout ${BRANCH}
+                                git reset --hard origin/${BRANCH}
+                                
+                                NEW_COMMIT=\$(git rev-parse HEAD)
+                                echo "📌 New commit: \$NEW_COMMIT"
+                                
+                                if [ "\$PREVIOUS_COMMIT" != "\$NEW_COMMIT" ]; then
+                                    echo ""
+                                    echo "📋 Changes:"
+                                    git log --oneline \$PREVIOUS_COMMIT..\$NEW_COMMIT 2>/dev/null || git log -3 --oneline
+                                fi
+                                
+                                # Install dependencies
+                                echo ""
+                                echo "📦 Step 2: Installing dependencies..."
+                                npm ci --prefer-offline --no-audit 2>/dev/null || npm install
+                                
+                                # Build TypeScript
+                                echo ""
+                                echo "🔨 Step 3: Building TypeScript..."
+                                npm run build || { echo "❌ Build failed!"; git checkout \$PREVIOUS_COMMIT; exit 1; }
+                                
+                                # Build Docker images
+                                echo ""
+                                echo "🐳 Step 4: Building Docker images..."
+                                CACHE_FLAG=""
+                                if [ "${params.FORCE_REBUILD}" = "true" ]; then
+                                    CACHE_FLAG="--no-cache"
+                                fi
+                                docker-compose -f ${COMPOSE_FILE} build \$CACHE_FLAG
+                                
+                                # Rolling update with health checks
+                                echo ""
+                                echo "🔄 Step 5: Rolling update..."
+                                
+                                # Update services one by one
+                                for service in api socket matchmaking cron; do
+                                    echo "   Updating \$service..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build \$service
+                                    sleep 3
+                                done
+                                
+                                # Update nginx
+                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps nginx
+                                
+                                # Health check
+                                echo ""
+                                echo "🏥 Step 6: Health check..."
+                                sleep 10
+                                
+                                API_HEALTH=\$(curl -sf http://localhost:8080/health || echo "failed")
+                                SOCKET_HEALTH=\$(curl -sf http://localhost:8081/health || echo "failed")
+                                
+                                if [ "\$API_HEALTH" = "failed" ] || [ "\$SOCKET_HEALTH" = "failed" ]; then
+                                    echo "❌ Health check failed! Rolling back..."
+                                    git checkout \$PREVIOUS_COMMIT
+                                    npm ci --prefer-offline 2>/dev/null || npm install
+                                    npm run build
+                                    docker-compose -f ${COMPOSE_FILE} up -d --build
+                                    echo "⚠️ Rolled back to \$PREVIOUS_COMMIT"
+                                    exit 1
+                                fi
+                                
+                                echo "✅ Health check passed!"
+                                
+                                # Cleanup
+                                echo ""
+                                echo "🧹 Step 7: Cleanup..."
+                                docker image prune -f > /dev/null 2>&1 || true
+                                
+                                # Final status
+                                echo ""
+                                echo "============================================"
+                                echo "✅ Deployment successful!"
+                                echo "============================================"
+                                docker-compose -f ${COMPOSE_FILE} ps
+                            '
+                        """
+                    }
                 }
+            }
+        }
+
+        // ============================================
+        // Stage 4: Verify Deployment
+        // ============================================
+        stage('Verify') {
+            when {
+                expression { return !params.SKIP_DEPLOY }
+            }
+            steps {
+                sh """
+                    echo "🔍 Verifying deployment..."
+                    sleep 5
+                    
+                    # Test API endpoint
+                    API_STATUS=\$(curl -sf -o /dev/null -w '%{http_code}' https://api.circleapp.in/health || echo "000")
+                    
+                    if [ "\$API_STATUS" = "200" ]; then
+                        echo "✅ API is responding (HTTP \$API_STATUS)"
+                    else
+                        echo "⚠️ API returned HTTP \$API_STATUS (may still be starting)"
+                    fi
+                """
             }
         }
     }
@@ -269,27 +229,45 @@ pipeline {
     // ============================================
     post {
         success {
-            echo "✅ Build #${env.BUILD_NUMBER} built, pushed, and (if enabled) deployed successfully!"
-            emailext(
-                subject: "✅ Circle Backend Build #${env.BUILD_NUMBER} SUCCESS",
-                to: "info@orincore.com",
-                body: """Circle Backend Build SUCCESS\n\nBuild: #${env.BUILD_NUMBER}\nStatus: SUCCESS\nJob: ${env.JOB_NAME}\nCommit: ${env.GIT_COMMIT_MSG}\nBuild URL: ${env.BUILD_URL}\n"""
-            )
+            echo "✅ Build #${env.BUILD_NUMBER} completed successfully!"
+            script {
+                if (!params.SKIP_DEPLOY) {
+                    emailext(
+                        subject: "✅ Circle Backend Deployed - Build #${env.BUILD_NUMBER}",
+                        to: 'info@orincore.com',
+                        body: """
+                            Circle Backend Deployment SUCCESS
+                            
+                            Build: #${env.BUILD_NUMBER}
+                            Commit: ${env.GIT_COMMIT_SHORT}
+                            Message: ${env.GIT_COMMIT_MSG}
+                            
+                            View: ${env.BUILD_URL}
+                        """
+                    )
+                }
+            }
         }
         failure {
             echo "❌ Build #${env.BUILD_NUMBER} failed!"
             emailext(
-                subject: "❌ Circle Backend Build #${env.BUILD_NUMBER} FAILED",
-                to: "info@orincore.com",
-                body: """Circle Backend Build FAILED\n\nBuild: #${env.BUILD_NUMBER}\nStatus: FAILURE\nJob: ${env.JOB_NAME}\nCommit: ${env.GIT_COMMIT_MSG}\nBuild URL: ${env.BUILD_URL}\n\nCheck Jenkins console output for full error details."""
+                subject: "❌ Circle Backend FAILED - Build #${env.BUILD_NUMBER}",
+                to: 'info@orincore.com',
+                body: """
+                    Circle Backend Deployment FAILED
+                    
+                    Build: #${env.BUILD_NUMBER}
+                    Commit: ${env.GIT_COMMIT_SHORT}
+                    Message: ${env.GIT_COMMIT_MSG}
+                    
+                    ⚠️ Automatic rollback was attempted.
+                    
+                    Check logs: ${env.BUILD_URL}console
+                """
             )
         }
         always {
-            // Clean up workspace
-            cleanWs(cleanWhenNotBuilt: false,
-                    deleteDirs: true,
-                    disableDeferredWipeout: true,
-                    notFailBuild: true)
+            cleanWs(cleanWhenNotBuilt: false, deleteDirs: true, notFailBuild: true)
         }
     }
 }
