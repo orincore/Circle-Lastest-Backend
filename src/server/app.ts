@@ -63,6 +63,7 @@ import chatListRouter from './routes/chat-list.routes.js'
 import announcementsRouter from './routes/announcements.routes.js'
 import adminAnnouncementsRouter from './routes/admin.announcements.routes.js'
 import blindDatingRouter from './routes/blind-dating.routes.js'
+import adminBlindDatingRouter from './routes/admin-blind-dating.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -284,6 +285,7 @@ app.use('/api/chat-list', chatListRouter)
 app.use('/api/announcements', announcementsRouter)
 app.use('/api/admin/announcements', adminAnnouncementsRouter)
 app.use('/api/blind-dating', blindDatingRouter)
+app.use('/api/admin/blind-dating', adminBlindDatingRouter)
 app.use('/api/upload', uploadRouter)
 
 // GraphQL will be set up in index.ts before error handlers
