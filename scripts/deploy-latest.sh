@@ -147,32 +147,24 @@ main() {
     DEPLOYMENT_STARTED=true
     
     # ============================================
-    # Step 3: Install dependencies
+    # Step 3: Build Docker images
     # ============================================
-    log_info "Step 3: Installing npm dependencies..."
-    npm ci --prefer-offline --no-audit || npm install
-    log_success "Dependencies installed!"
+    # NOTE: Skip npm install and TypeScript build on host
+    # Docker handles this inside containers with proper memory (2GB)
+    # This avoids the "heap out of memory" error on low-RAM servers
     
-    # ============================================
-    # Step 4: Build TypeScript (if applicable)
-    # ============================================
-    if [ -f "tsconfig.json" ]; then
-        log_info "Step 4: Building TypeScript..."
-        npm run build || { log_error "TypeScript build failed!"; rollback; }
-        log_success "TypeScript build complete!"
-    fi
-    
-    # ============================================
-    # Step 5: Build new Docker images
-    # ============================================
-    log_info "Step 5: Building new Docker images..."
-    docker-compose -f "$COMPOSE_FILE" build --no-cache
+    log_info "Step 3: Building Docker images..."
+    log_info "(TypeScript will be compiled inside Docker with 2GB memory)"
+    docker-compose -f "$COMPOSE_FILE" build --no-cache || {
+        log_error "Docker build failed!"
+        rollback
+    }
     log_success "Docker images built!"
     
     # ============================================
-    # Step 6: Rolling update - one service at a time
+    # Step 4: Rolling update - one service at a time
     # ============================================
-    log_info "Step 6: Performing rolling update..."
+    log_info "Step 4: Performing rolling update..."
     CONTAINERS_STOPPED=true
     
     # Update API first (with health check)
@@ -194,24 +186,24 @@ main() {
     docker-compose -f "$COMPOSE_FILE" up -d --no-deps nginx
     
     # ============================================
-    # Step 7: Verify deployment health
+    # Step 5: Verify deployment health
     # ============================================
-    log_info "Step 7: Verifying deployment health..."
+    log_info "Step 5: Verifying deployment health..."
     if ! wait_for_health; then
         log_error "Health check failed after deployment!"
         rollback
     fi
     
     # ============================================
-    # Step 8: Cleanup old images
+    # Step 6: Cleanup old images
     # ============================================
-    log_info "Step 8: Cleaning up old Docker images..."
+    log_info "Step 6: Cleaning up old Docker images..."
     docker image prune -f > /dev/null 2>&1 || true
     
     # ============================================
-    # Step 9: Save deployment info
+    # Step 7: Save deployment info
     # ============================================
-    log_info "Step 9: Saving deployment info..."
+    log_info "Step 7: Saving deployment info..."
     cat > "$BACKUP_DIR/last-deployment.txt" << EOF
 Deployment Time: $(date)
 Commit: $NEW_COMMIT
