@@ -181,9 +181,14 @@ main() {
     log_info "Updating background workers..."
     docker-compose -f "$COMPOSE_FILE" up -d --no-deps --build matchmaking cron
     
-    # Update nginx last
-    log_info "Updating NGINX..."
-    docker-compose -f "$COMPOSE_FILE" up -d --no-deps nginx
+    # Update nginx last (force recreate so config & upstreams are clean)
+    log_info "Updating NGINX (force recreate)..."
+    docker-compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate nginx
+    
+    # Brief local gateway check (optional)
+    log_info "Checking NGINX gateway locally..."
+    sleep 5
+    curl -sf http://localhost/ >/dev/null 2>&1 || log_warn "NGINX HTTP check failed or not reachable on localhost (may be behind external LB)"
     
     # ============================================
     # Step 5: Verify deployment health

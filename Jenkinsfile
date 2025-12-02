@@ -157,9 +157,14 @@ pipeline {
                                     sleep 5
                                 done
                                 
-                                # Update nginx last
-                                echo "   Updating nginx..."
-                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps nginx
+                                # Update nginx last (force recreate so config & upstreams are clean)
+                                echo "   Updating nginx (force recreate)..."
+                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate nginx
+                                
+                                # Optional: brief local gateway check to ensure nginx is serving
+                                echo "   Checking nginx gateway locally..."
+                                sleep 5
+                                curl -sf http://localhost/ >/dev/null 2>&1 || echo "   (nginx HTTP check skipped or not reachable on localhost, continuing)"
                                 
                                 # Health check with retries
                                 echo ""
