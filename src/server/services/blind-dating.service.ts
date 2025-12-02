@@ -1235,6 +1235,278 @@ export class BlindDatingService {
   }
 
   /**
+   * Run detailed matching for all users with comprehensive logging
+   * Returns detailed information about why each user was matched or not
+   */
+  static async runDetailedMatchingForAll(): Promise<{
+    summary: {
+      totalUsers: number;
+      processed: number;
+      matched: number;
+      skipped: number;
+      noMatch: number;
+      errors: number;
+      timestamp: string;
+    };
+    results: Array<{
+      userId: string;
+      userName: string;
+      userEmail: string;
+      status: 'matched' | 'skipped' | 'no_match' | 'error' | 'disabled';
+      reason: string;
+      details: {
+        blindDatingEnabled?: boolean;
+        activeMatchesCount?: number;
+        maxActiveMatches?: number;
+        eligibleCandidatesCount?: number;
+        matchedWithUserId?: string;
+        matchedWithUserName?: string;
+        compatibilityScore?: number;
+        matchId?: string;
+        candidatesExcludedReasons?: string[];
+      };
+      timestamp: string;
+    }>;
+  }> {
+    const timestamp = new Date().toISOString()
+    const results: Array<any> = []
+    const summary = {
+      totalUsers: 0,
+      processed: 0,
+      matched: 0,
+      skipped: 0,
+      noMatch: 0,
+      errors: 0,
+      timestamp
+    }
+
+    try {
+      // Get ALL users (not just enabled ones) to show complete picture
+      const { data: allUsers, error: usersError } = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, email, age, gender, interests, needs')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+
+      if (usersError) {
+        logger.error({ error: usersError }, 'Failed to get users for detailed matching')
+        throw usersError
+      }
+
+      summary.totalUsers = allUsers?.length || 0
+
+      // Get all blind dating settings
+      const { data: allSettings } = await supabase
+        .from('blind_dating_settings')
+        .select('*')
+
+      const settingsMap = new Map((allSettings || []).map(s => [s.user_id, s]))
+
+      // Get all active matches
+      const { data: allActiveMatches } = await supabase
+        .from('blind_date_matches')
+        .select('user_a, user_b, status')
+        .in('status', ['active', 'revealed'])
+
+      // Build a map of user -> active match partners
+      const activeMatchPartnersMap = new Map<string, Set<string>>()
+      for (const match of (allActiveMatches || [])) {
+        if (!activeMatchPartnersMap.has(match.user_a)) {
+          activeMatchPartnersMap.set(match.user_a, new Set())
+        }
+        if (!activeMatchPartnersMap.has(match.user_b)) {
+          activeMatchPartnersMap.set(match.user_b, new Set())
+        }
+        activeMatchPartnersMap.get(match.user_a)!.add(match.user_b)
+        activeMatchPartnersMap.get(match.user_b)!.add(match.user_a)
+      }
+
+      // Count active matches per user
+      const activeMatchCountMap = new Map<string, number>()
+      for (const match of (allActiveMatches || [])) {
+        activeMatchCountMap.set(match.user_a, (activeMatchCountMap.get(match.user_a) || 0) + 1)
+        activeMatchCountMap.set(match.user_b, (activeMatchCountMap.get(match.user_b) || 0) + 1)
+      }
+
+      logger.info({ totalUsers: summary.totalUsers }, '🔍 Starting detailed matching analysis')
+
+      // Process each user
+      for (const user of (allUsers || [])) {
+        const settings = settingsMap.get(user.id)
+        const activeMatchCount = activeMatchCountMap.get(user.id) || 0
+        const maxMatches = settings?.max_active_matches || 3
+        const activePartners = activeMatchPartnersMap.get(user.id) || new Set()
+
+        const result: any = {
+          userId: user.id,
+          userName: `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown',
+          userEmail: user.email || 'No email',
+          status: 'pending',
+          reason: '',
+          details: {
+            blindDatingEnabled: settings?.is_enabled || false,
+            activeMatchesCount: activeMatchCount,
+            maxActiveMatches: maxMatches
+          },
+          timestamp
+        }
+
+        // Check if blind dating is enabled
+        if (!settings?.is_enabled) {
+          result.status = 'disabled'
+          result.reason = 'Blind dating is not enabled for this user'
+          results.push(result)
+          continue
+        }
+
+        summary.processed++
+
+        // Check if at max matches
+        if (activeMatchCount >= maxMatches) {
+          result.status = 'skipped'
+          result.reason = `User has reached maximum active matches (${activeMatchCount}/${maxMatches})`
+          summary.skipped++
+          results.push(result)
+          continue
+        }
+
+        // Find eligible candidates for this user
+        const eligibleCandidates: Array<{
+          userId: string;
+          userName: string;
+          score: number;
+          excluded: boolean;
+          excludeReason?: string;
+        }> = []
+
+        for (const candidate of (allUsers || [])) {
+          if (candidate.id === user.id) continue
+
+          const candidateSettings = settingsMap.get(candidate.id)
+          const candidateActiveCount = activeMatchCountMap.get(candidate.id) || 0
+          const candidateMaxMatches = candidateSettings?.max_active_matches || 3
+
+          let excluded = false
+          let excludeReason = ''
+
+          // Check if candidate has blind dating enabled
+          if (!candidateSettings?.is_enabled) {
+            excluded = true
+            excludeReason = 'Blind dating not enabled'
+          }
+          // Check if already matched with this user
+          else if (activePartners.has(candidate.id)) {
+            excluded = true
+            excludeReason = 'Already in active match with this user'
+          }
+          // Check if candidate is at max matches
+          else if (candidateActiveCount >= candidateMaxMatches) {
+            excluded = true
+            excludeReason = `At max matches (${candidateActiveCount}/${candidateMaxMatches})`
+          }
+
+          // Calculate compatibility score
+          const compatibility = CompatibilityService.calculateEnhancedCompatibility(
+            { age: user.age, interests: user.interests, needs: user.needs },
+            { age: candidate.age, interests: candidate.interests, needs: candidate.needs }
+          )
+
+          eligibleCandidates.push({
+            userId: candidate.id,
+            userName: `${candidate.first_name || ''} ${candidate.last_name || ''}`.trim(),
+            score: compatibility.score,
+            excluded,
+            excludeReason
+          })
+        }
+
+        // Filter to only eligible candidates
+        const validCandidates = eligibleCandidates.filter(c => !c.excluded)
+        result.details.eligibleCandidatesCount = validCandidates.length
+        result.details.candidatesExcludedReasons = eligibleCandidates
+          .filter(c => c.excluded)
+          .slice(0, 5)
+          .map(c => `${c.userName}: ${c.excludeReason}`)
+
+        if (validCandidates.length === 0) {
+          result.status = 'no_match'
+          
+          // Determine specific reason
+          const allDisabled = eligibleCandidates.every(c => c.excludeReason === 'Blind dating not enabled')
+          const allAlreadyMatched = eligibleCandidates.every(c => c.excludeReason?.includes('Already in active match'))
+          const allAtMax = eligibleCandidates.every(c => c.excludeReason?.includes('At max matches'))
+          
+          if (allUsers!.length <= 1) {
+            result.reason = 'No other users in the system'
+          } else if (allDisabled) {
+            result.reason = 'No other users have blind dating enabled'
+          } else if (allAlreadyMatched) {
+            result.reason = 'Already matched with all available users'
+          } else if (allAtMax) {
+            result.reason = 'All potential matches are at their maximum match limit'
+          } else {
+            result.reason = `No eligible candidates (${eligibleCandidates.length} users checked, all excluded)`
+          }
+          
+          summary.noMatch++
+          results.push(result)
+          continue
+        }
+
+        // Sort by score and pick best match
+        validCandidates.sort((a, b) => b.score - a.score)
+        const bestCandidate = validCandidates[0]
+
+        try {
+          // Create the match
+          const match = await this.findMatch(user.id)
+          
+          if (match) {
+            result.status = 'matched'
+            result.reason = `Matched based on compatibility score of ${bestCandidate.score.toFixed(1)}`
+            result.details.matchedWithUserId = bestCandidate.userId
+            result.details.matchedWithUserName = bestCandidate.userName
+            result.details.compatibilityScore = bestCandidate.score
+            result.details.matchId = match.id
+            summary.matched++
+            
+            // Update the active partners map to prevent double matching
+            if (!activeMatchPartnersMap.has(user.id)) {
+              activeMatchPartnersMap.set(user.id, new Set())
+            }
+            if (!activeMatchPartnersMap.has(bestCandidate.userId)) {
+              activeMatchPartnersMap.set(bestCandidate.userId, new Set())
+            }
+            activeMatchPartnersMap.get(user.id)!.add(bestCandidate.userId)
+            activeMatchPartnersMap.get(bestCandidate.userId)!.add(user.id)
+            
+            // Update match counts
+            activeMatchCountMap.set(user.id, (activeMatchCountMap.get(user.id) || 0) + 1)
+            activeMatchCountMap.set(bestCandidate.userId, (activeMatchCountMap.get(bestCandidate.userId) || 0) + 1)
+          } else {
+            result.status = 'no_match'
+            result.reason = 'Match creation failed - candidate may have been matched by another process'
+            summary.noMatch++
+          }
+        } catch (error) {
+          result.status = 'error'
+          result.reason = error instanceof Error ? error.message : 'Unknown error during match creation'
+          summary.errors++
+        }
+
+        results.push(result)
+      }
+
+      logger.info(summary, '🏁 Detailed matching completed')
+
+      return { summary, results }
+    } catch (error) {
+      logger.error({ error }, 'Error in detailed matching')
+      throw error
+    }
+  }
+
+  /**
    * Get diagnostic info about blind dating eligibility
    */
   static async getDiagnostics(): Promise<{

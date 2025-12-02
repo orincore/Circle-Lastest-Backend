@@ -348,6 +348,76 @@ router.post('/force-match-all', requireAuth, requireAdmin, async (req: AdminRequ
 })
 
 /**
+ * POST /api/admin/blind-dating/run-detailed-matching
+ * Run detailed matching with comprehensive logging
+ * Returns detailed information about why each user was matched or not
+ */
+router.post('/run-detailed-matching', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    logger.info({ adminId: req.user!.id }, '🔍 Admin triggered detailed matching for all users')
+    const result = await BlindDatingService.runDetailedMatchingForAll()
+    
+    // Store the result in the database for history (optional - table may not exist)
+    try {
+      await supabase
+        .from('blind_date_matching_logs')
+        .insert({
+          admin_id: req.user!.id,
+          summary: result.summary,
+          results_count: result.results.length,
+          matched_count: result.summary.matched,
+          created_at: new Date().toISOString()
+        })
+    } catch (err) {
+      // Table might not exist, that's OK
+      logger.warn({ error: err }, 'Could not save matching log to database')
+    }
+    
+    res.json({
+      success: true,
+      message: `Processed ${result.summary.totalUsers} users: ${result.summary.matched} matched, ${result.summary.noMatch} no match, ${result.summary.skipped} skipped`,
+      ...result
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error in detailed matching')
+    res.status(500).json({ error: 'Failed to run detailed matching' })
+  }
+})
+
+/**
+ * GET /api/admin/blind-dating/matching-history
+ * Get history of matching runs
+ */
+router.get('/matching-history', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { data: history, error } = await supabase
+      .from('blind_date_matching_logs')
+      .select(`
+        *,
+        admin:profiles!blind_date_matching_logs_admin_id_fkey (
+          id,
+          first_name,
+          last_name,
+          email
+        )
+      `)
+      .order('created_at', { ascending: false })
+      .limit(50)
+    
+    if (error) {
+      // Table might not exist
+      logger.warn({ error }, 'Could not fetch matching history')
+      return res.json({ history: [] })
+    }
+    
+    res.json({ history })
+  } catch (error) {
+    logger.error({ error }, 'Error getting matching history')
+    res.status(500).json({ error: 'Failed to get matching history' })
+  }
+})
+
+/**
  * POST /api/admin/blind-dating/process-daily
  * Manually trigger daily matching process
  */
