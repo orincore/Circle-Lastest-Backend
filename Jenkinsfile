@@ -21,10 +21,8 @@ pipeline {
         // Paths (Jenkins checks out repo root where Dockerfiles live)
         BACKEND_DIR = "."
 
-        // Deployment target (for automatic container update)
-        DEPLOY_HOST = credentials('deploy-server-host')  // e.g. 69.62.82.102
-        DEPLOY_USER = credentials('deploy-server-user')  // usually "deploy"
-        DEPLOY_PATH = "/root/Circle-Lastest-Backend"   // adjust if different on server
+        // Deployment target directory on the same server where Jenkins runs
+        DEPLOY_PATH = "/root/Circle-Lastest-Backend"   // adjust if different on your server
     }
 
     options {
@@ -238,26 +236,22 @@ pipeline {
                 expression { return params.DEPLOY_AFTER_BUILD }
             }
             steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-                    sh '''
-                        echo "🚀 Starting deployment to ${DEPLOY_USER}@${DEPLOY_HOST}..."
+                sh '''
+                    echo "🚀 Starting local deployment from Jenkins node..."
 
-                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
-                            set -e
-                            cd ${DEPLOY_PATH}
+                    set -e
+                    cd ${DEPLOY_PATH}
 
-                            echo "📦 Pulling latest images (TAG=latest)..."
-                            export TAG=latest
-                            docker-compose -f docker-compose.production.yml pull
+                    echo "📦 Pulling latest images (TAG=latest)..."
+                    export TAG=latest
+                    docker-compose -f docker-compose.production.yml pull
 
-                            echo "🔄 Updating services with minimal downtime..."
-                            docker-compose -f docker-compose.production.yml up -d
+                    echo "🔄 Updating services with minimal downtime..."
+                    docker-compose -f docker-compose.production.yml up -d
 
-                            echo "✅ Current container status:"
-                            docker-compose -f docker-compose.production.yml ps
-ENDSSH
-                    '''
-                }
+                    echo "✅ Current container status:"
+                    docker-compose -f docker-compose.production.yml ps
+                '''
             }
         }
     }
