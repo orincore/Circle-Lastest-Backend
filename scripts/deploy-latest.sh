@@ -3,12 +3,8 @@ set -euo pipefail
 
 cd /root/Circle-Lastest-Backend
 
-echo "📦 Pulling latest images (TAG=latest)..."
-export TAG=latest
-docker-compose -f docker-compose.production.yml pull
-
-echo "🔄 Updating services..."
-docker-compose -f docker-compose.production.yml up -d
+echo "🔄 Rebuilding and updating services from local Dockerfiles..."
+docker-compose -f docker-compose.production.yml up -d --build
 
 echo "✅ Current container status:"
 docker-compose -f docker-compose.production.yml ps

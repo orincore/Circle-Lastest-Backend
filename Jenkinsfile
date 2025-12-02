@@ -241,25 +241,25 @@ pipeline {
         }
 
         // ============================================
-        // Stage 6: Deploy to Server (Simple Rolling Update)
+        // Stage 6: Deploy to Server via SSH
         // ============================================
         stage('Deploy') {
             when {
                 expression { return params.DEPLOY_AFTER_BUILD }
             }
             steps {
-                sh '''
-                    echo "🚀 Starting local deployment from Jenkins workspace..."
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'root-ssh-key',
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    sh '''
+                        echo "🚀 Triggering remote deploy script on root@69.62.82.102..."
 
-                    set -e
-                    cd ${WORKSPACE}
-
-                    echo " Updating services with locally built images..."
-                    docker-compose -f docker-compose.production.yml up -d
-
-                    echo "✅ Current container status:"
-                    docker-compose -f docker-compose.production.yml ps
-                '''
+                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no root@69.62.82.102 \
+                          '/root/Circle-Lastest-Backend/scripts/deploy-latest.sh'
+                    '''
+                }
             }
         }
     }
