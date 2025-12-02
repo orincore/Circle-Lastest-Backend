@@ -362,7 +362,7 @@ ENDSSH
                             # Verify all containers are running
                             ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
                                 cd ${DEPLOY_PATH}
-                                UNHEALTHY=$(docker-compose -f ${COMPOSE_FILE} ps | grep -i "unhealthy\|restarting" || true)
+                                UNHEALTHY=$(docker-compose -f ${COMPOSE_FILE} ps | grep -iE "unhealthy|restarting" || true)
                                 if [ ! -z "$UNHEALTHY" ]; then
                                     echo "❌ Some containers are unhealthy:"
                                     echo "$UNHEALTHY"
