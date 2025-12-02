@@ -2,7 +2,6 @@
 # Circle Backend - Production Docker Compose
 # Optimized for 8GB RAM / 2 vCPU instance
 # ============================================
-version: '3.8'
 
 # Shared configuration
 x-common-env: &common-env

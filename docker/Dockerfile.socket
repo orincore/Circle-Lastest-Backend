@@ -27,7 +27,8 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+# Increase memory for TypeScript compilation
+RUN NODE_OPTIONS="--max-old-space-size=1536" npm run build
 
 # ============================================
 # Runtime Stage - Socket.IO Server
