@@ -226,7 +226,22 @@ pipeline {
         }
 
         // ============================================
-        // Stage 5: Deploy to Server (Simple Rolling Update)
+        // Stage 5: Prepare Env File for Deployment
+        // ============================================
+        stage('Prepare Env File') {
+            steps {
+                sh '''
+                    # If .env.production is missing in workspace, copy from a known location
+                    if [ ! -f .env.production ] && [ -f /root/Circle-Lastest-Backend/.env.production ]; then
+                      echo "Copying /root/Circle-Lastest-Backend/.env.production into workspace..."
+                      cp /root/Circle-Lastest-Backend/.env.production .env.production
+                    fi
+                '''
+            }
+        }
+
+        // ============================================
+        // Stage 6: Deploy to Server (Simple Rolling Update)
         // ============================================
         stage('Deploy') {
             when {
