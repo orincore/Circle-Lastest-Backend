@@ -89,13 +89,6 @@ pipeline {
                         fi
                     '''
                 }
-                script {
-                    // Store current deployed tag for rollback
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} \
-                        "cd ${DEPLOY_PATH} && docker images --format '{{.Tag}}' ${API_IMAGE} | head -1 > /tmp/previous_tag.txt" || echo "latest" > /tmp/previous_tag.txt
-                    '''
-                }
             }
         }
 
@@ -251,11 +244,11 @@ pipeline {
         // ============================================
         stage('Deploy') {
             steps {
-                sshagent(['deploy-ssh-key']) {
+                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     script {
                         try {
                             sh '''
-                                ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
+                                ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
                                     set -e
                                     cd ${DEPLOY_PATH}
                                     
@@ -391,10 +384,10 @@ ENDSSH
                 expression { currentBuild.result == 'FAILURE' }
             }
             steps {
-                sshagent(['deploy-ssh-key']) {
+                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     sh '''
                         echo "🔄 Rolling back to previous version..."
-                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
+                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
                             set -e
                             cd ${DEPLOY_PATH}
                             
