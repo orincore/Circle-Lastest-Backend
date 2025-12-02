@@ -20,9 +20,6 @@ pipeline {
         
         // Paths (Jenkins checks out repo root where Dockerfiles live)
         BACKEND_DIR = "."
-
-        // Deployment target directory on the same server where Jenkins runs
-        DEPLOY_PATH = "/root/Circle-Lastest-Backend"   // adjust if different on your server
     }
 
     options {
@@ -237,10 +234,10 @@ pipeline {
             }
             steps {
                 sh '''
-                    echo "🚀 Starting local deployment from Jenkins node..."
+                    echo "🚀 Starting local deployment from Jenkins workspace..."
 
                     set -e
-                    cd ${DEPLOY_PATH}
+                    cd ${WORKSPACE}
 
                     echo "📦 Pulling latest images (TAG=latest)..."
                     export TAG=latest
