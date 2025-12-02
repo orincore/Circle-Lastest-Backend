@@ -1,0 +1,60 @@
+# ============================================
+# Circle Backend - Cron Worker Container
+# Handles scheduled tasks (blind dating, cleanup, etc.)
+# ============================================
+# syntax=docker/dockerfile:1
+
+FROM node:20-alpine AS base
+WORKDIR /app
+
+# Install cron and PM2
+RUN apk add --no-cache dcron && \
+    npm install -g pm2
+
+# ============================================
+# Dependencies Stage
+# ============================================
+FROM base AS deps
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+# ============================================
+# Build Stage
+# ============================================
+FROM base AS build
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# ============================================
+# Runtime Stage - Cron Worker
+# ============================================
+FROM base AS runtime
+
+# Set environment
+ENV NODE_ENV=production
+ENV SERVICE_TYPE=cron-worker
+
+WORKDIR /app
+
+# Copy dependencies and built files
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+
+# Copy cron configuration
+COPY docker/crontab /etc/crontabs/root
+COPY docker/cron-entrypoint.sh /entrypoint.sh
+
+RUN chmod +x /entrypoint.sh
+
+# Health check for cron
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+  CMD pgrep crond || exit 1
+
+# Start cron daemon
+ENTRYPOINT ["/entrypoint.sh"]

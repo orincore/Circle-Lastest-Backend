@@ -1,0 +1,19 @@
+# Circle Backend Cron Jobs
+# ============================================
+
+# Blind Dating Daily Matches - Run at 9:00 AM IST (3:30 AM UTC)
+30 3 * * * cd /app && node dist/server/workers/blind-dating-scheduler.js >> /var/log/cron/blind-dating.log 2>&1
+
+# Cleanup expired proposals - Every 5 minutes
+*/5 * * * * cd /app && node -e "require('./dist/server/services/matchmaking-optimized.js').heartbeat()" >> /var/log/cron/matchmaking-cleanup.log 2>&1
+
+# Cleanup old notifications - Daily at 2:00 AM UTC
+0 2 * * * cd /app && node -e "require('./dist/server/services/notificationService.js').NotificationService.cleanupOldNotifications(30)" >> /var/log/cron/notification-cleanup.log 2>&1
+
+# Database maintenance - Weekly on Sunday at 3:00 AM UTC
+0 3 * * 0 cd /app && node dist/server/workers/db-maintenance.js >> /var/log/cron/db-maintenance.log 2>&1
+
+# Health check heartbeat - Every minute (writes timestamp for monitoring)
+* * * * * echo "$(date): Cron worker alive" >> /var/log/cron/heartbeat.log
+
+# Empty line required at end of crontab

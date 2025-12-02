@@ -1,6 +1,48 @@
+# Dependencies
 node_modules
 npm-debug.log
-Dockerfile
+
+# Build artifacts
 dist
+
+# Docker files (copied separately)
+Dockerfile*
+docker-compose*.yml
+
+# Git
 .git
+.gitignore
+
+# Environment files (use .env.production separately)
 .env
+.env.local
+.env.development
+.env.*.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Logs
+*.log
+logs
+
+# Tests
+tests
+coverage
+*.test.ts
+*.spec.ts
+
+# Documentation
+docs
+*.md
+!README.md
+
+# Python services (separate container)
+python-services
+
+# Misc
+.DS_Store
+*.tgz

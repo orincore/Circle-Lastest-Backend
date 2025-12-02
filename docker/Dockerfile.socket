@@ -1,0 +1,68 @@
+# ============================================
+# Circle Backend - Socket.IO Server Container
+# Handles WebSocket connections for real-time features
+# ============================================
+# syntax=docker/dockerfile:1
+
+FROM node:20-alpine AS base
+WORKDIR /app
+
+# Install PM2 globally for process management
+RUN npm install -g pm2
+
+# ============================================
+# Dependencies Stage
+# ============================================
+FROM base AS deps
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+# ============================================
+# Build Stage
+# ============================================
+FROM base AS build
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# ============================================
+# Runtime Stage - Socket.IO Server
+# ============================================
+FROM base AS runtime
+
+# Set environment
+ENV NODE_ENV=production
+ENV SERVICE_TYPE=socket
+ENV PORT=8081
+
+# Create non-root user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+# Copy dependencies and built files
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+
+# Copy PM2 config for socket server
+COPY docker/ecosystem.socket.config.cjs ./ecosystem.config.cjs
+
+# Set ownership
+RUN chown -R nodejs:nodejs /app
+
+USER nodejs
+
+EXPOSE 8081
+
+# Health check for Socket.IO
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:8081/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"
+
+# Start with PM2 (single instance for Socket.IO with Redis adapter)
+CMD ["pm2-runtime", "ecosystem.config.cjs"]

@@ -1,5 +1,6 @@
 import { Server as IOServer } from 'socket.io'
 import type { Server } from 'http'
+import { createAdapter } from '@socket.io/redis-adapter'
 import { logger } from '../config/logger.js'
 import { verifyJwt } from '../utils/jwt.js'
 import { setTyping, getTyping } from '../services/chat.js'
@@ -239,6 +240,23 @@ export function initOptimizedSocket(server: Server) {
   })
   
   ioRef = io
+  
+  // Setup Redis adapter for horizontal scaling (multiple Socket.IO instances)
+  if (process.env.SOCKET_REDIS_ENABLED === 'true') {
+    try {
+      const pubClient = new Redis({
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379'),
+        maxRetriesPerRequest: 3,
+      })
+      const subClient = pubClient.duplicate()
+      
+      io.adapter(createAdapter(pubClient, subClient))
+      logger.info('Socket.IO Redis adapter enabled for horizontal scaling')
+    } catch (error) {
+      logger.error({ error }, 'Failed to setup Redis adapter for Socket.IO')
+    }
+  }
   
   // Initialize push notification service with IO reference
   import('../services/pushNotificationService.js').then(({ PushNotificationService }) => {

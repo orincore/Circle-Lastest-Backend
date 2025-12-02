@@ -1,0 +1,286 @@
+# ============================================
+# Circle Backend - Production Docker Compose
+# Optimized for 8GB RAM / 2 vCPU instance
+# ============================================
+version: '3.8'
+
+# Shared configuration
+x-common-env: &common-env
+  NODE_ENV: production
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  TZ: Asia/Kolkata
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-deploy-defaults: &deploy-defaults
+  restart_policy:
+    condition: on-failure
+    delay: 5s
+    max_attempts: 3
+    window: 120s
+
+services:
+  # ============================================
+  # NGINX Reverse Proxy & Load Balancer
+  # RAM: ~50-100MB | CPU: Low
+  # ============================================
+  nginx:
+    image: nginx:alpine
+    container_name: circle-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      api:
+        condition: service_healthy
+      socket:
+        condition: service_healthy
+    networks:
+      - circle-network
+    deploy:
+      <<: *deploy-defaults
+      resources:
+        limits:
+          memory: 100M
+          cpus: '0.25'
+        reservations:
+          memory: 50M
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      <<: *healthcheck-defaults
+    restart: unless-stopped
+
+  # ============================================
+  # Redis Cache & Pub/Sub
+  # RAM: ~200-300MB | CPU: Low
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: circle-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 60
+      --timeout 0
+      --tcp-backlog 511
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    volumes:
+      - redis_data:/data
+    networks:
+      - circle-network
+    deploy:
+      <<: *deploy-defaults
+      resources:
+        limits:
+          memory: 300M
+          cpus: '0.25'
+        reservations:
+          memory: 200M
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # ============================================
+  # API Server (REST + GraphQL)
+  # RAM: ~1-1.5GB | CPU: 1 core share
+  # ============================================
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    image: circle-backend/api:${TAG:-latest}
+    container_name: circle-api
+    environment:
+      <<: *common-env
+      PORT: 8080
+      SERVICE_TYPE: api
+    env_file:
+      - .env.production
+    expose:
+      - "8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - circle-network
+    deploy:
+      <<: *deploy-defaults
+      resources:
+        limits:
+          memory: 1536M
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
+      <<: *healthcheck-defaults
+    restart: unless-stopped
+
+  # ============================================
+  # Socket.IO Server (WebSocket)
+  # RAM: ~1-1.5GB | CPU: 1 core share
+  # ============================================
+  socket:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.socket
+    image: circle-backend/socket:${TAG:-latest}
+    container_name: circle-socket
+    environment:
+      <<: *common-env
+      PORT: 8081
+      SERVICE_TYPE: socket
+      SOCKET_REDIS_ENABLED: "true"
+    env_file:
+      - .env.production
+    expose:
+      - "8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - circle-network
+    deploy:
+      <<: *deploy-defaults
+      resources:
+        limits:
+          memory: 1536M
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8081/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
+      <<: *healthcheck-defaults
+    restart: unless-stopped
+
+  # ============================================
+  # Matchmaking Worker
+  # RAM: ~200-400MB | CPU: Low
+  # ============================================
+  matchmaking:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.matchmaking
+    image: circle-backend/matchmaking:${TAG:-latest}
+    container_name: circle-matchmaking
+    environment:
+      <<: *common-env
+      SERVICE_TYPE: matchmaking-worker
+    env_file:
+      - .env.production
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - circle-network
+    deploy:
+      <<: *deploy-defaults
+      resources:
+        limits:
+          memory: 400M
+          cpus: '0.25'
+        reservations:
+          memory: 150M
+    logging: *logging
+    restart: unless-stopped
+
+  # ============================================
+  # Cron Worker (Scheduled Tasks)
+  # RAM: ~200-300MB | CPU: Low
+  # ============================================
+  cron:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cron
+    image: circle-backend/cron:${TAG:-latest}
+    container_name: circle-cron
+    environment:
+      <<: *common-env
+      SERVICE_TYPE: cron-worker
+    env_file:
+      - .env.production
+    volumes:
+      - cron_logs:/var/log/cron
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - circle-network
+    deploy:
+      <<: *deploy-defaults
+      resources:
+        limits:
+          memory: 300M
+          cpus: '0.25'
+        reservations:
+          memory: 100M
+    logging: *logging
+    restart: unless-stopped
+
+  # ============================================
+  # Redis Commander (Optional - Dev/Debug)
+  # Disable in production by setting profile
+  # ============================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: circle-redis-ui
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis
+    networks:
+      - circle-network
+    profiles:
+      - debug
+    restart: unless-stopped
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  circle-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  redis_data:
+    driver: local
+  nginx_logs:
+    driver: local
+  cron_logs:
+    driver: local

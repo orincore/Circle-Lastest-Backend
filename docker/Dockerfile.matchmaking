@@ -1,0 +1,67 @@
+# ============================================
+# Circle Backend - Matchmaking Worker Container
+# Handles background matchmaking processing
+# ============================================
+# syntax=docker/dockerfile:1
+
+FROM node:20-alpine AS base
+WORKDIR /app
+
+# Install PM2 globally for process management
+RUN npm install -g pm2
+
+# ============================================
+# Dependencies Stage
+# ============================================
+FROM base AS deps
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+# ============================================
+# Build Stage
+# ============================================
+FROM base AS build
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# ============================================
+# Runtime Stage - Matchmaking Worker
+# ============================================
+FROM base AS runtime
+
+# Set environment
+ENV NODE_ENV=production
+ENV SERVICE_TYPE=matchmaking-worker
+
+# Create non-root user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+# Copy dependencies and built files
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+
+# Copy PM2 config for matchmaking worker
+COPY docker/ecosystem.matchmaking.config.cjs ./ecosystem.config.cjs
+
+# Set ownership
+RUN chown -R nodejs:nodejs /app
+
+USER nodejs
+
+# No port exposed - this is a background worker
+
+# Health check via file touch (worker writes heartbeat file)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD node -e "const fs = require('fs'); const stat = fs.statSync('/tmp/matchmaking-heartbeat'); if (Date.now() - stat.mtimeMs > 60000) process.exit(1);" || exit 0
+
+# Start with PM2
+CMD ["pm2-runtime", "ecosystem.config.cjs"]
