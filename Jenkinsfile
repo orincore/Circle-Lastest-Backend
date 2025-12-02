@@ -257,7 +257,7 @@ pipeline {
                         echo "🚀 Triggering remote deploy script on root@69.62.82.102..."
 
                         ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no root@69.62.82.102 \
-                          '/root/Circle-Lastest-Backend/scripts/deploy-latest.sh'
+                          'chmod +x /root/Circle-Lastest-Backend/scripts/deploy-latest.sh && /root/Circle-Lastest-Backend/scripts/deploy-latest.sh'
                     '''
                 }
             }

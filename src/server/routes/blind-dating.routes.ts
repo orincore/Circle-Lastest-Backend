@@ -527,6 +527,82 @@ router.post('/admin/process-daily-matches', async (req, res) => {
   }
 })
 
+/**
+ * Admin endpoint: Force match all eligible users
+ * POST /api/blind-dating/admin/force-match-all
+ */
+router.post('/admin/force-match-all', async (req, res) => {
+  try {
+    // Verify admin API key
+    const apiKey = req.headers['x-admin-api-key']
+    if (apiKey !== process.env.ADMIN_API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    
+    logger.info('🚀 Admin triggered force match all users')
+    const result = await BlindDatingService.forceMatchAllUsers()
+    
+    res.json({
+      success: true,
+      message: `Processed ${result.processed} users, created ${result.matched} matches`,
+      ...result
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error in force match all')
+    res.status(500).json({ error: 'Failed to force match users' })
+  }
+})
+
+/**
+ * Admin endpoint: Get blind dating diagnostics
+ * GET /api/blind-dating/admin/diagnostics
+ */
+router.get('/admin/diagnostics', async (req, res) => {
+  try {
+    // Verify admin API key
+    const apiKey = req.headers['x-admin-api-key']
+    if (apiKey !== process.env.ADMIN_API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    
+    const diagnostics = await BlindDatingService.getDiagnostics()
+    
+    res.json({
+      success: true,
+      diagnostics,
+      recommendations: getRecommendations(diagnostics)
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error getting diagnostics')
+    res.status(500).json({ error: 'Failed to get diagnostics' })
+  }
+})
+
+// Helper to provide recommendations based on diagnostics
+function getRecommendations(diagnostics: any): string[] {
+  const recommendations: string[] = []
+  
+  if (diagnostics.usersWithBlindDatingEnabled === 0) {
+    recommendations.push('❌ No users have blind dating enabled. Users need to enable it in settings.')
+  } else if (diagnostics.usersWithBlindDatingEnabled < 2) {
+    recommendations.push('⚠️ Only 1 user has blind dating enabled. Need at least 2 users for matching.')
+  }
+  
+  if (diagnostics.eligibleForNewMatches === 0 && diagnostics.usersWithBlindDatingEnabled > 0) {
+    recommendations.push('⚠️ All enabled users are at max matches. They need to end some matches first.')
+  }
+  
+  if (diagnostics.usersWithAutoMatch < diagnostics.usersWithBlindDatingEnabled) {
+    recommendations.push(`ℹ️ ${diagnostics.usersWithBlindDatingEnabled - diagnostics.usersWithAutoMatch} users have auto-match disabled.`)
+  }
+  
+  if (diagnostics.eligibleForNewMatches >= 2) {
+    recommendations.push('✅ System is ready for matching. Run force-match-all to create matches now.')
+  }
+  
+  return recommendations
+}
+
 // ============================================================
 // TEST ENDPOINTS FOR DEVELOPMENT
 // ============================================================
@@ -709,15 +785,27 @@ router.get('/test/debug-eligibility', requireAuth, async (req: AuthRequest, res)
     // Get user's active matches
     const activeMatches = settings?.is_enabled ? await BlindDatingService.getActiveMatches(userId) : []
     
-    // Get users that the current user has already matched with
-    const { data: pastMatches } = await supabase
+    // Get users that the current user has already matched with (active only)
+    const { data: activeMatchRecords } = await supabase
       .from('blind_date_matches')
       .select('user_a, user_b')
       .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+      .in('status', ['active', 'revealed'])
     
-    const matchedUserIds = new Set(
-      (pastMatches || []).flatMap(m => [m.user_a, m.user_b]).filter(id => id !== userId)
+    const activeMatchedUserIds = new Set(
+      (activeMatchRecords || []).flatMap(m => [m.user_a, m.user_b]).filter(id => id !== userId)
     )
+    
+    // Get all past matches (including ended)
+    const { data: allPastMatches } = await supabase
+      .from('blind_date_matches')
+      .select('user_a, user_b, status')
+      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+    
+    // Calculate eligible users (enabled, not already in active match with user)
+    const eligibleUserIds = (enabledUsers || [])
+      .map(u => u.user_id)
+      .filter(id => id !== userId && !activeMatchedUserIds.has(id))
     
     res.json({
       debug: {
@@ -725,18 +813,27 @@ router.get('/test/debug-eligibility', requireAuth, async (req: AuthRequest, res)
         yourSettings: {
           blindDatingEnabled: settings?.is_enabled || false,
           maxActiveMatches: settings?.max_active_matches || 3,
-          revealThreshold: settings?.preferred_reveal_threshold || 30
+          revealThreshold: settings?.preferred_reveal_threshold || 30,
+          autoMatch: settings?.auto_match ?? true
         },
         eligibility: {
           totalUsersInApp: totalUsers || 0,
           usersWithBlindDatingEnabled: (enabledUsers || []).length,
-          eligibleUserIds: (enabledUsers || []).map(u => u.user_id).filter(id => id !== userId),
-          usersYouAlreadyMatchedWith: Array.from(matchedUserIds),
-          yourCurrentActiveMatches: activeMatches.length
+          usersEligibleForYou: eligibleUserIds.length,
+          eligibleUserIds: eligibleUserIds,
+          usersInActiveMatchWithYou: Array.from(activeMatchedUserIds),
+          yourCurrentActiveMatches: activeMatches.length,
+          totalPastMatches: (allPastMatches || []).length
         },
         reason: getNoMatchReason({
           isEnabled: settings?.is_enabled,
-          enabledUsersCount: (enabledUsers || []).filter(u => u.user_id !== userId).length,
+          enabledUsersCount: eligibleUserIds.length,
+          activeMatchesCount: activeMatches.length,
+          maxActive: settings?.max_active_matches || 3
+        }),
+        nextSteps: getNextSteps({
+          isEnabled: settings?.is_enabled,
+          eligibleCount: eligibleUserIds.length,
           activeMatchesCount: activeMatches.length,
           maxActive: settings?.max_active_matches || 3
         })
@@ -745,6 +842,60 @@ router.get('/test/debug-eligibility', requireAuth, async (req: AuthRequest, res)
   } catch (error) {
     logger.error({ error, userId: req.user!.id }, 'Error debugging eligibility')
     res.status(500).json({ error: 'Failed to debug' })
+  }
+})
+
+/**
+ * POST /api/blind-dating/test/enable-for-all
+ * Enable blind dating for all users (admin/testing)
+ */
+router.post('/test/enable-for-all', async (req, res) => {
+  try {
+    // Verify admin API key
+    const apiKey = req.headers['x-admin-api-key']
+    if (apiKey !== process.env.ADMIN_API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    
+    // Get all users without blind dating settings
+    const { data: allUsers } = await supabase
+      .from('profiles')
+      .select('id')
+      .is('deleted_at', null)
+    
+    let enabled = 0
+    let errors = 0
+    
+    for (const user of (allUsers || [])) {
+      try {
+        await supabase
+          .from('blind_dating_settings')
+          .upsert({
+            user_id: user.id,
+            is_enabled: true,
+            auto_match: true,
+            max_active_matches: 3,
+            preferred_reveal_threshold: 30,
+            notifications_enabled: true,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'user_id' })
+        enabled++
+      } catch (error) {
+        errors++
+        logger.error({ error, userId: user.id }, 'Failed to enable blind dating for user')
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Enabled blind dating for ${enabled} users`,
+      enabled,
+      errors,
+      totalUsers: (allUsers || []).length
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error enabling blind dating for all')
+    res.status(500).json({ error: 'Failed to enable blind dating for all users' })
   }
 })
 
@@ -757,9 +908,31 @@ function getNoMatchReason(info: { isEnabled?: boolean; enabledUsersCount: number
     return `❌ You've reached max active matches (${info.activeMatchesCount}/${info.maxActive})`
   }
   if (info.enabledUsersCount === 0) {
-    return '❌ No other users have blind dating enabled. Use "Create Test Match" to test with AI bot!'
+    return '❌ No other eligible users found. Use "Create Test Match" to test with AI bot!'
   }
   return '✅ You should be eligible for matches'
+}
+
+// Helper to provide next steps for user
+function getNextSteps(info: { isEnabled?: boolean; eligibleCount: number; activeMatchesCount: number; maxActive: number }): string[] {
+  const steps: string[] = []
+  
+  if (!info.isEnabled) {
+    steps.push('1. Enable blind dating in your settings')
+    steps.push('2. Wait for matches or tap "Find Match"')
+  } else if (info.activeMatchesCount >= info.maxActive) {
+    steps.push('1. End some of your current blind dates to get new matches')
+    steps.push('2. Or increase your max active matches in settings')
+  } else if (info.eligibleCount === 0) {
+    steps.push('1. Try "Create Test Match" to test with AI bot')
+    steps.push('2. Wait for more users to enable blind dating')
+    steps.push('3. Ask admin to run "Enable for All" to enable for all users')
+  } else {
+    steps.push('1. Tap "Find Match" to get matched now')
+    steps.push('2. Or wait for the daily automatic matching')
+  }
+  
+  return steps
 }
 
 export default router

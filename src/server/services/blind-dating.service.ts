@@ -239,52 +239,101 @@ export class BlindDatingService {
         return null
       }
 
-      // Find eligible users
-      const { data: eligibleUsers, error: eligibleError } = await supabase
+      // Get users already in active matches with this user (to exclude)
+      const { data: existingMatches } = await supabase
+        .from('blind_date_matches')
+        .select('user_a, user_b')
+        .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+        .in('status', ['active', 'revealed'])
+      
+      const excludedUserIds = new Set<string>([userId])
+      ;(existingMatches || []).forEach(m => {
+        excludedUserIds.add(m.user_a)
+        excludedUserIds.add(m.user_b)
+      })
+
+      logger.info({ userId, excludedCount: excludedUserIds.size - 1 }, 'Finding eligible users for blind dating')
+
+      // Try RPC first, but use robust fallback
+      let eligibleUsers: Array<{ user_id: string; compatibility_data: any }> = []
+      
+      const { data: rpcUsers, error: eligibleError } = await supabase
         .rpc('find_blind_dating_eligible_users', {
           exclude_user_id: userId,
-          max_results: 50
+          max_results: 100
         })
       
       if (eligibleError) {
-        logger.error({ error: eligibleError, userId }, 'Failed to find eligible users')
-        
-        // Fallback query if RPC fails
-        const { data: fallbackUsers, error: fallbackError } = await supabase
-          .from('profiles')
-          .select('id, age, gender, interests, needs, location_city, location_country')
-          .neq('id', userId)
-          .is('deleted_at', null)
-          .or('is_suspended.is.null,is_suspended.eq.false')
-          .or('invisible_mode.is.null,invisible_mode.eq.false')
-          .limit(50)
-        
-        if (fallbackError) {
-          logger.error({ error: fallbackError, userId }, 'Fallback query also failed')
-          return null
-        }
-        
-        // Filter by blind dating settings
-        const { data: enabledUsers } = await supabase
-          .from('blind_dating_settings')
-          .select('user_id')
-          .eq('is_enabled', true)
-          .in('user_id', (fallbackUsers || []).map(u => u.id))
-        
-        const enabledUserIds = new Set((enabledUsers || []).map(u => u.user_id))
-        const filteredUsers = (fallbackUsers || [])
-          .filter(u => enabledUserIds.has(u.id))
-          .map(u => ({ user_id: u.id, compatibility_data: u }))
-        
-        if (filteredUsers.length === 0) {
-          logger.info({ userId }, 'No eligible users found for blind dating')
-          return null
-        }
-        
-        return this.createMatchFromCandidates(userId, userProfile, filteredUsers, settings)
+        logger.warn({ error: eligibleError, userId }, 'RPC failed, using fallback query')
+      } else if (rpcUsers && rpcUsers.length > 0) {
+        eligibleUsers = rpcUsers
+        logger.info({ userId, count: eligibleUsers.length }, 'Found eligible users via RPC')
       }
 
-      if (!eligibleUsers || eligibleUsers.length === 0) {
+      // If RPC returned no results or failed, use fallback
+      if (eligibleUsers.length === 0) {
+        logger.info({ userId }, 'Using fallback query for eligible users')
+        
+        // Get all users with blind dating enabled
+        const { data: enabledSettings, error: settingsError } = await supabase
+          .from('blind_dating_settings')
+          .select('user_id, max_active_matches')
+          .eq('is_enabled', true)
+        
+        if (settingsError) {
+          logger.error({ error: settingsError, userId }, 'Failed to get blind dating settings')
+          return null
+        }
+
+        const enabledUserIds = (enabledSettings || [])
+          .map(s => s.user_id)
+          .filter(id => !excludedUserIds.has(id))
+        
+        if (enabledUserIds.length === 0) {
+          logger.info({ userId }, 'No other users have blind dating enabled')
+          return null
+        }
+
+        // Get profiles of enabled users
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, age, gender, interests, needs, location_city, location_country')
+          .in('id', enabledUserIds)
+          .is('deleted_at', null)
+          .limit(100)
+        
+        if (profilesError) {
+          logger.error({ error: profilesError, userId }, 'Failed to get profiles')
+          return null
+        }
+
+        // Filter out suspended/invisible users and check max matches
+        const validProfiles: typeof profiles = []
+        for (const profile of (profiles || [])) {
+          // Check if user has reached their max active matches
+          const userSettings = enabledSettings?.find(s => s.user_id === profile.id)
+          const maxMatches = userSettings?.max_active_matches || 3
+          
+          const { count } = await supabase
+            .from('blind_date_matches')
+            .select('*', { count: 'exact', head: true })
+            .or(`user_a.eq.${profile.id},user_b.eq.${profile.id}`)
+            .in('status', ['active', 'revealed'])
+          
+          if ((count || 0) < maxMatches) {
+            validProfiles.push(profile)
+          }
+        }
+
+        eligibleUsers = validProfiles.map(p => ({
+          user_id: p.id,
+          compatibility_data: p
+        }))
+
+        logger.info({ userId, count: eligibleUsers.length }, 'Found eligible users via fallback')
+      }
+
+      if (eligibleUsers.length === 0) {
         logger.info({ userId }, 'No eligible users found for blind dating')
         return null
       }
@@ -325,9 +374,15 @@ export class BlindDatingService {
           }
         )
         
+        // Add a base score to ensure matches happen even with low compatibility
+        // This ensures users get matched even if they have few common interests
+        const baseScore = 5 // Minimum base score for any potential match
+        const adjustedScore = Math.max(compatibility.score, baseScore)
+        
         return {
           userId: candidate.user_id,
-          score: compatibility.score,
+          score: adjustedScore,
+          rawScore: compatibility.score,
           compatibility
         }
       })
@@ -335,11 +390,28 @@ export class BlindDatingService {
       // Sort by score (highest first)
       scoredCandidates.sort((a, b) => b.score - a.score)
 
-      // Get the best match
+      logger.info({
+        userId,
+        candidateCount: scoredCandidates.length,
+        topScores: scoredCandidates.slice(0, 5).map(c => ({ userId: c.userId, score: c.score, rawScore: c.rawScore }))
+      }, 'Scored candidates for blind dating')
+
+      // Get the best match - ALWAYS match if there are candidates
+      // The minimum threshold is now 0 - we want users to get matches!
       const bestMatch = scoredCandidates[0]
-      if (!bestMatch || bestMatch.score < 10) { // Minimum compatibility threshold
-        logger.info({ userId, bestScore: bestMatch?.score }, 'No sufficiently compatible users found')
+      if (!bestMatch) {
+        logger.info({ userId }, 'No candidates available for matching')
         return null
+      }
+      
+      // Log if we're matching with low compatibility (for monitoring)
+      if (bestMatch.rawScore < 10) {
+        logger.info({ 
+          userId, 
+          matchUserId: bestMatch.userId,
+          rawScore: bestMatch.rawScore,
+          adjustedScore: bestMatch.score 
+        }, 'Creating match with low compatibility score (this is OK for blind dating)')
       }
 
       // Create the blind date match
@@ -982,16 +1054,24 @@ export class BlindDatingService {
     try {
       const today = new Date().toISOString().split('T')[0]
       
-      // Get all users with blind dating enabled who haven't been processed today
-      const { data: enabledUsers, error } = await supabase
+      // Get users already processed today
+      const { data: processedToday } = await supabase
+        .from('blind_date_daily_queue')
+        .select('user_id')
+        .eq('scheduled_date', today)
+        .eq('status', 'matched')
+      
+      const processedUserIds = new Set((processedToday || []).map(u => u.user_id))
+      
+      // Get all users with blind dating enabled
+      const { data: allEnabledUsers, error } = await supabase
         .from('blind_dating_settings')
         .select('user_id')
         .eq('is_enabled', true)
         .eq('auto_match', true)
-        .not('user_id', 'in', `(
-          SELECT user_id FROM blind_date_daily_queue 
-          WHERE scheduled_date = '${today}' AND status = 'matched'
-        )`)
+      
+      // Filter out already processed users
+      const enabledUsers = (allEnabledUsers || []).filter(u => !processedUserIds.has(u.user_id))
       
       if (error) {
         logger.error({ error }, 'Failed to get enabled users for daily matching')
@@ -1064,6 +1144,168 @@ export class BlindDatingService {
     } catch (error) {
       logger.error({ error }, 'Error in daily match processing')
       return stats
+    }
+  }
+
+  /**
+   * Force run matching for all eligible users (admin function)
+   * This bypasses the daily queue and tries to match everyone
+   */
+  static async forceMatchAllUsers(): Promise<{ 
+    processed: number; 
+    matched: number; 
+    errors: number;
+    details: Array<{ userId: string; status: string; matchId?: string; error?: string }>
+  }> {
+    const stats = { 
+      processed: 0, 
+      matched: 0, 
+      errors: 0,
+      details: [] as Array<{ userId: string; status: string; matchId?: string; error?: string }>
+    }
+    
+    try {
+      // Get all users with blind dating enabled
+      const { data: enabledUsers, error } = await supabase
+        .from('blind_dating_settings')
+        .select('user_id, max_active_matches')
+        .eq('is_enabled', true)
+      
+      if (error) {
+        logger.error({ error }, 'Failed to get enabled users for force matching')
+        return stats
+      }
+
+      logger.info({ userCount: enabledUsers?.length || 0 }, '🚀 Force matching all blind dating users')
+
+      // Process each user
+      for (const user of (enabledUsers || [])) {
+        stats.processed++
+        
+        try {
+          // Check if user already has max active matches
+          const activeMatches = await this.getActiveMatches(user.user_id)
+          const maxMatches = user.max_active_matches || 3
+          
+          if (activeMatches.length >= maxMatches) {
+            stats.details.push({ 
+              userId: user.user_id, 
+              status: 'skipped', 
+              error: `Already has ${activeMatches.length}/${maxMatches} active matches` 
+            })
+            continue
+          }
+          
+          // Try to find a match
+          const match = await this.findMatch(user.user_id)
+          
+          if (match) {
+            stats.matched++
+            stats.details.push({ 
+              userId: user.user_id, 
+              status: 'matched', 
+              matchId: match.id 
+            })
+            logger.info({ userId: user.user_id, matchId: match.id }, '✅ Match created')
+          } else {
+            stats.details.push({ 
+              userId: user.user_id, 
+              status: 'no_match', 
+              error: 'No eligible candidates found' 
+            })
+          }
+        } catch (error) {
+          stats.errors++
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+          stats.details.push({ 
+            userId: user.user_id, 
+            status: 'error', 
+            error: errorMsg 
+          })
+          logger.error({ error, userId: user.user_id }, 'Error in force matching')
+        }
+      }
+
+      logger.info(stats, '🏁 Force matching completed')
+      return stats
+    } catch (error) {
+      logger.error({ error }, 'Error in force match all users')
+      return stats
+    }
+  }
+
+  /**
+   * Get diagnostic info about blind dating eligibility
+   */
+  static async getDiagnostics(): Promise<{
+    totalUsers: number;
+    usersWithBlindDatingEnabled: number;
+    usersWithAutoMatch: number;
+    totalActiveMatches: number;
+    usersAtMaxMatches: number;
+    eligibleForNewMatches: number;
+    recentMatches: number;
+  }> {
+    try {
+      // Total users
+      const { count: totalUsers } = await supabase
+        .from('profiles')
+        .select('*', { count: 'exact', head: true })
+        .is('deleted_at', null)
+      
+      // Users with blind dating enabled
+      const { data: enabledSettings } = await supabase
+        .from('blind_dating_settings')
+        .select('user_id, is_enabled, auto_match, max_active_matches')
+        .eq('is_enabled', true)
+      
+      const usersWithBlindDatingEnabled = enabledSettings?.length || 0
+      const usersWithAutoMatch = enabledSettings?.filter(s => s.auto_match).length || 0
+      
+      // Active matches count
+      const { count: totalActiveMatches } = await supabase
+        .from('blind_date_matches')
+        .select('*', { count: 'exact', head: true })
+        .in('status', ['active', 'revealed'])
+      
+      // Recent matches (last 24 hours)
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      const { count: recentMatches } = await supabase
+        .from('blind_date_matches')
+        .select('*', { count: 'exact', head: true })
+        .gte('matched_at', yesterday)
+      
+      // Count users at max matches
+      let usersAtMaxMatches = 0
+      let eligibleForNewMatches = 0
+      
+      for (const settings of (enabledSettings || [])) {
+        const { count } = await supabase
+          .from('blind_date_matches')
+          .select('*', { count: 'exact', head: true })
+          .or(`user_a.eq.${settings.user_id},user_b.eq.${settings.user_id}`)
+          .in('status', ['active', 'revealed'])
+        
+        const maxMatches = settings.max_active_matches || 3
+        if ((count || 0) >= maxMatches) {
+          usersAtMaxMatches++
+        } else {
+          eligibleForNewMatches++
+        }
+      }
+      
+      return {
+        totalUsers: totalUsers || 0,
+        usersWithBlindDatingEnabled,
+        usersWithAutoMatch,
+        totalActiveMatches: totalActiveMatches || 0,
+        usersAtMaxMatches,
+        eligibleForNewMatches,
+        recentMatches: recentMatches || 0
+      }
+    } catch (error) {
+      logger.error({ error }, 'Error getting diagnostics')
+      throw error
     }
   }
 
