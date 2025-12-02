@@ -20,6 +20,11 @@ pipeline {
         
         // Paths (Jenkins checks out repo root where Dockerfiles live)
         BACKEND_DIR = "."
+
+        // Deployment target (for automatic container update)
+        DEPLOY_HOST = credentials('deploy-server-host')  // e.g. 69.62.82.102
+        DEPLOY_USER = credentials('deploy-server-user')  // usually "deploy"
+        DEPLOY_PATH = "/root/Circle-Lastest-Backend"   // adjust if different on server
     }
 
     options {
@@ -32,6 +37,7 @@ pipeline {
     parameters {
         booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip tests during build')
         booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild without cache')
+        booleanParam(name: 'DEPLOY_AFTER_BUILD', defaultValue: true, description: 'Automatically deploy to server after pushing images')
     }
 
     stages {
@@ -225,7 +231,36 @@ pipeline {
             }
         }
 
-        // (No deployment stages here: this pipeline stops after building and pushing Docker images.)
+        // ============================================
+        // Stage 5: Deploy to Server (Simple Rolling Update)
+        // ============================================
+        stage('Deploy') {
+            when {
+                expression { return params.DEPLOY_AFTER_BUILD }
+            }
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    sh '''
+                        echo "🚀 Starting deployment to ${DEPLOY_USER}@${DEPLOY_HOST}..."
+
+                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} << 'ENDSSH'
+                            set -e
+                            cd ${DEPLOY_PATH}
+
+                            echo "📦 Pulling latest images (TAG=latest)..."
+                            export TAG=latest
+                            docker-compose -f docker-compose.production.yml pull
+
+                            echo "🔄 Updating services with minimal downtime..."
+                            docker-compose -f docker-compose.production.yml up -d
+
+                            echo "✅ Current container status:"
+                            docker-compose -f docker-compose.production.yml ps
+ENDSSH
+                    '''
+                }
+            }
+        }
     }
 
     // ============================================
