@@ -40,7 +40,6 @@ pipeline {
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))
         timestamps()
-        ansiColor('xterm')
     }
     
     parameters {
