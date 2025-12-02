@@ -220,7 +220,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
               error: 'Message blocked',
               reason: 'personal_info_detected',
               message: 'Focus on conversation! Once your vibe matches, we will allow you to share personal information.',
-              blockedReason: filterResult.blockedReason || 'Personal information detected'
+              blockedReason: (filterResult as any).blockedReason || 'Personal information detected'
             })
           }
         }

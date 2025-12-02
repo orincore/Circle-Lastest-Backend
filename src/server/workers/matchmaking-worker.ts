@@ -1,6 +1,6 @@
 import { heartbeat } from '../services/matchmaking-optimized.js'
 import { logger } from '../config/logger.js'
-import Redis from 'ioredis'
+import { Redis } from 'ioredis'
 
 // Redis client for worker coordination
 const redis = new Redis({

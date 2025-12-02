@@ -1,4 +1,4 @@
-import Redis from 'ioredis'
+import { Redis } from 'ioredis'
 import { findById, type Profile } from '../repos/profiles.repo.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { supabase } from '../config/supabase.js'
@@ -179,7 +179,7 @@ async function removeFromSearchQueue(userId: string): Promise<void> {
 async function getSearchingUsers(limit: number = BATCH_SIZE): Promise<SearchState[]> {
   try {
     const members = await redis.zrange(KEYS.SEARCHING_QUEUE, 0, limit - 1)
-    return members.map(member => JSON.parse(member) as SearchState)
+    return members.map((member: string) => JSON.parse(member) as SearchState)
   } catch (error) {
     logger.error({ error }, 'Failed to get searching users')
     return []

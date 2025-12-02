@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import nodemailer from 'nodemailer';
 import { google } from 'googleapis';
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { env } from '../config/env.js';
 
 const router = Router();

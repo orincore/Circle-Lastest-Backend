@@ -1,7 +1,7 @@
 import { logger } from '../config/logger.js'
 import { getConnectionMetrics } from '../sockets/optimized-socket.js'
 import { getMetrics as getMatchmakingMetrics } from './matchmaking-optimized.js'
-import Redis from 'ioredis'
+import { Redis } from 'ioredis'
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'localhost',
@@ -178,13 +178,13 @@ class MonitoringService {
     try {
       // Get metrics from all instances in the last 5 minutes
       const keys = await redis.keys('metrics:*')
-      const recentKeys = keys.filter(key => {
+      const recentKeys = keys.filter((key: string) => {
         const timestamp = parseInt(key.split(':')[2])
         return Date.now() - timestamp < 300000 // 5 minutes
       })
 
       const metricsData = await Promise.all(
-        recentKeys.map(async key => {
+        recentKeys.map(async (key: string) => {
           try {
             const data = await redis.get(key)
             return data ? JSON.parse(data) as SystemMetrics : null
