@@ -269,20 +269,20 @@ pipeline {
     // ============================================
     post {
         success {
-            echo "✅ Build #${env.BUILD_NUMBER} built and pushed Docker images successfully!"
-            // Uncomment to enable Slack notifications
-            // slackSend(
-            //     color: 'good',
-            //     message: "✅ Circle Backend deployed!\nBuild: #${env.BUILD_NUMBER}\nCommit: ${env.GIT_COMMIT_MSG}"
-            // )
+            echo "✅ Build #${env.BUILD_NUMBER} built, pushed, and (if enabled) deployed successfully!"
+            emailext(
+                subject: "✅ Circle Backend Build #${env.BUILD_NUMBER} SUCCESS",
+                to: "info@orincore.com",
+                body: """Circle Backend Build SUCCESS\n\nBuild: #${env.BUILD_NUMBER}\nStatus: SUCCESS\nJob: ${env.JOB_NAME}\nCommit: ${env.GIT_COMMIT_MSG}\nBuild URL: ${env.BUILD_URL}\n"""
+            )
         }
         failure {
             echo "❌ Build #${env.BUILD_NUMBER} failed!"
-            // Uncomment to enable Slack notifications
-            // slackSend(
-            //     color: 'danger',
-            //     message: "❌ Circle Backend deployment failed!\nBuild: #${env.BUILD_NUMBER}\nCommit: ${env.GIT_COMMIT_MSG}"
-            // )
+            emailext(
+                subject: "❌ Circle Backend Build #${env.BUILD_NUMBER} FAILED",
+                to: "info@orincore.com",
+                body: """Circle Backend Build FAILED\n\nBuild: #${env.BUILD_NUMBER}\nStatus: FAILURE\nJob: ${env.JOB_NAME}\nCommit: ${env.GIT_COMMIT_MSG}\nBuild URL: ${env.BUILD_URL}\n\nCheck Jenkins console output for full error details."""
+            )
         }
         always {
             // Clean up workspace
