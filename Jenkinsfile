@@ -239,11 +239,7 @@ pipeline {
                     set -e
                     cd ${WORKSPACE}
 
-                    echo "📦 Pulling latest images (TAG=latest)..."
-                    export TAG=latest
-                    docker-compose -f docker-compose.production.yml pull
-
-                    echo "🔄 Updating services with minimal downtime..."
+                    echo " Updating services with locally built images..."
                     docker-compose -f docker-compose.production.yml up -d
 
                     echo "✅ Current container status:"
