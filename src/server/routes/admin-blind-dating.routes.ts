@@ -559,4 +559,162 @@ router.get('/daily-queue', requireAuth, requireAdmin, async (req: AdminRequest, 
   }
 })
 
+/**
+ * POST /api/admin/blind-dating/reset-all-matches
+ * Reset/remove all blind date matches (DANGEROUS OPERATION)
+ */
+router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { confirm } = req.body
+    
+    if (confirm !== 'RESET_ALL_BLIND_DATES') {
+      return res.status(400).json({ 
+        error: 'Confirmation required. Send { "confirm": "RESET_ALL_BLIND_DATES" } to proceed.' 
+      })
+    }
+    
+    logger.warn({ adminId: req.user!.id }, '🚨 ADMIN INITIATED RESET OF ALL BLIND DATE MATCHES')
+    
+    // Get counts before deletion
+    const { count: totalMatches } = await supabase
+      .from('blind_date_matches')
+      .select('*', { count: 'exact', head: true })
+    
+    const { count: totalMessages } = await supabase
+      .from('blind_date_messages')
+      .select('*', { count: 'exact', head: true })
+    
+    const { count: totalBlockedMessages } = await supabase
+      .from('blind_date_blocked_messages')
+      .select('*', { count: 'exact', head: true })
+    
+    const { count: totalQueue } = await supabase
+      .from('blind_date_daily_queue')
+      .select('*', { count: 'exact', head: true })
+    
+    // Delete all related data (in correct order to avoid foreign key constraints)
+    
+    // 1. Delete blocked messages first
+    const { error: blockedError } = await supabase
+      .from('blind_date_blocked_messages')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000') // Delete all
+    
+    if (blockedError) {
+      logger.error({ error: blockedError }, 'Error deleting blocked messages')
+    }
+    
+    // 2. Delete messages
+    const { error: messagesError } = await supabase
+      .from('blind_date_messages')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000') // Delete all
+    
+    if (messagesError) {
+      logger.error({ error: messagesError }, 'Error deleting messages')
+    }
+    
+    // 3. Delete matches
+    const { error: matchesError } = await supabase
+      .from('blind_date_matches')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000') // Delete all
+    
+    if (matchesError) {
+      logger.error({ error: matchesError }, 'Error deleting matches')
+    }
+    
+    // 4. Delete daily queue
+    const { error: queueError } = await supabase
+      .from('blind_date_daily_queue')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000') // Delete all
+    
+    if (queueError) {
+      logger.error({ error: queueError }, 'Error deleting daily queue')
+    }
+    
+    // 5. Optionally reset user settings (keep them enabled but reset counters)
+    const { error: settingsError } = await supabase
+      .from('blind_dating_settings')
+      .update({
+        updated_at: new Date().toISOString()
+      })
+      .neq('user_id', '00000000-0000-0000-0000-000000000000') // Update all
+    
+    if (settingsError) {
+      logger.error({ error: settingsError }, 'Error updating settings')
+    }
+    
+    const result = {
+      success: true,
+      message: 'All blind date data has been reset',
+      deletedCounts: {
+        matches: totalMatches || 0,
+        messages: totalMessages || 0,
+        blockedMessages: totalBlockedMessages || 0,
+        queueEntries: totalQueue || 0
+      },
+      timestamp: new Date().toISOString(),
+      adminId: req.user!.id
+    }
+    
+    logger.warn(result, '✅ BLIND DATE RESET COMPLETED')
+    
+    res.json(result)
+  } catch (error) {
+    logger.error({ error, adminId: req.user!.id }, 'Error resetting blind date matches')
+    res.status(500).json({ error: 'Failed to reset blind date matches' })
+  }
+})
+
+/**
+ * POST /api/admin/blind-dating/end-all-active-matches
+ * End all currently active matches (less destructive than full reset)
+ */
+router.post('/end-all-active-matches', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { reason = 'admin_bulk_end' } = req.body
+    
+    logger.info({ adminId: req.user!.id }, 'Admin ending all active blind date matches')
+    
+    // Get count of active matches
+    const { count: activeCount } = await supabase
+      .from('blind_date_matches')
+      .select('*', { count: 'exact', head: true })
+      .in('status', ['active', 'revealed'])
+    
+    // End all active and revealed matches
+    const { error } = await supabase
+      .from('blind_date_matches')
+      .update({
+        status: 'ended',
+        ended_at: new Date().toISOString(),
+        end_reason: reason,
+        updated_at: new Date().toISOString()
+      })
+      .in('status', ['active', 'revealed'])
+    
+    if (error) {
+      throw error
+    }
+    
+    logger.info({ 
+      adminId: req.user!.id, 
+      endedCount: activeCount,
+      reason 
+    }, 'Admin ended all active matches')
+    
+    res.json({
+      success: true,
+      message: `Ended ${activeCount || 0} active matches`,
+      endedCount: activeCount || 0,
+      reason
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error ending all active matches')
+    res.status(500).json({ error: 'Failed to end active matches' })
+  }
+})
+
 export default router

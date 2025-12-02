@@ -76,8 +76,9 @@ export class BlindDatingService {
    * Check if two users are compatible for blind dating based on gender
    * 
    * Matching Rules:
-   * - Male <-> Female (traditional opposite gender)
-   * - LGBTQ+ users match within their community (same identity)
+   * - Male <-> Female (traditional opposite gender matching)
+   * - LGBTQ+ users match within their community
+   * - Straight same-gender users NEVER match
    * - Unknown/null genders don't match
    */
   private static isGenderCompatible(gender1?: string, gender2?: string): boolean {
@@ -105,24 +106,26 @@ export class BlindDatingService {
       return lgbtqIdentities.some(identity => g.includes(identity) || identity.includes(g))
     }
     
-    // Rule 1: Male <-> Female (traditional matching)
+    // CRITICAL: Check for straight same-gender first (NEVER allow)
+    if ((isMale(g1) && isMale(g2)) || (isFemale(g1) && isFemale(g2))) {
+      // Only allow if BOTH users are LGBTQ+
+      if (isLGBTQ(g1) && isLGBTQ(g2)) {
+        return true // LGBTQ+ same-gender matching allowed
+      }
+      return false // Straight same-gender matching NOT allowed
+    }
+    
+    // Rule 1: Male <-> Female (traditional opposite gender matching)
     if ((isMale(g1) && isFemale(g2)) || (isFemale(g1) && isMale(g2))) {
       return true
     }
     
-    // Rule 2: LGBTQ+ users match within their community
-    // If both users identify as LGBTQ+, they can match with each other
+    // Rule 2: LGBTQ+ users match within their community (different genders)
     if (isLGBTQ(g1) && isLGBTQ(g2)) {
       return true
     }
     
-    // Rule 3: Same LGBTQ+ identity matches (e.g., gay matches gay, lesbian matches lesbian)
-    if (g1 === g2 && isLGBTQ(g1)) {
-      return true
-    }
-    
-    // Rule 4: Don't match straight same-gender users
-    // (male-male or female-female where neither is LGBTQ+)
+    // Rule 3: Default - no match for unrecognized combinations
     return false
   }
   
