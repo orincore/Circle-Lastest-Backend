@@ -111,8 +111,8 @@ services:
       SERVICE_TYPE: api
     env_file:
       - .env.production
-    expose:
-      - "8080"
+    ports:
+      - "8080:8080"
     depends_on:
       redis:
         condition: service_healthy
@@ -150,8 +150,8 @@ services:
       SOCKET_REDIS_ENABLED: "true"
     env_file:
       - .env.production
-    expose:
-      - "8081"
+    ports:
+      - "8081:8081"
     depends_on:
       redis:
         condition: service_healthy
