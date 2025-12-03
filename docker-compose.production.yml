@@ -40,6 +40,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "4007:4007"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./docker/ssl:/etc/nginx/ssl:ro
