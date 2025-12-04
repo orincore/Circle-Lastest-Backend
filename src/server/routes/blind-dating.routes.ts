@@ -274,12 +274,18 @@ router.post('/reveal/:matchId', requireAuth, async (req: AuthRequest, res) => {
       otherUserProfile = await BlindDatingService.getAnonymizedProfile(otherUserId, showFull || false)
     }
     
-    res.json({
+    const response = {
       ...result,
       match,
       otherUser: otherUserProfile,
       hasRevealedSelf: isUserA ? match?.user_a_revealed : match?.user_b_revealed,
       otherHasRevealed: isUserA ? match?.user_b_revealed : match?.user_a_revealed
+    }
+    
+    // Return with data wrapper for frontend compatibility
+    res.json({
+      ...response,
+      data: response
     })
   } catch (error) {
     logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error revealing identity')
