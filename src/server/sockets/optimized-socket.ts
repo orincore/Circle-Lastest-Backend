@@ -1216,7 +1216,7 @@ export function initOptimizedSocket(server: Server) {
         try {
           const { data: senderInfo, error: senderError } = await supabase
             .from('profiles')
-            .select('first_name, last_name, username, email')
+            .select('first_name, last_name, username, email, profile_photo_url')
             .eq('id', userId)
             .single()
           
@@ -1229,6 +1229,7 @@ export function initOptimizedSocket(server: Server) {
                 ? `${senderInfo.first_name} ${senderInfo.last_name}`.trim()
                 : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
             : 'Someone'
+          const senderAvatar = senderInfo?.profile_photo_url || null
           
           if (members) {
             // Process each member (parallel for better performance)
@@ -1247,7 +1248,8 @@ export function initOptimizedSocket(server: Server) {
                     io.to(member.user_id).emit('chat:message:background', { 
                       message: { 
                         ...msg, 
-                        senderName 
+                        senderName,
+                        senderAvatar
                       } 
                     })
                   } else {

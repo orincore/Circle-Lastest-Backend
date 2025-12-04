@@ -108,6 +108,7 @@ export class PushNotificationService {
   ): Promise<boolean> {
     try {
       const isIncomingCall = notification.data && notification.data.type === 'incoming_call';
+      const isNewMessage = notification.data && (notification.data.type === 'new_message' || notification.data.type === 'message');
 
       const message: any = {
         to: token,
@@ -122,6 +123,8 @@ export class PushNotificationService {
 
       if (isIncomingCall) {
         message.categoryId = 'call';
+      } else if (isNewMessage) {
+        message.categoryId = 'message_reply';
       }
 
       const response = await fetch('https://exp.host/--/api/v2/push/send', {
