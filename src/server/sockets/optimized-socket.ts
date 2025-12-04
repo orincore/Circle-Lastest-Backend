@@ -1236,15 +1236,15 @@ export function initOptimizedSocket(server: Server) {
             const memberPromises = members.map(async (member: { user_id: string }) => {
               if (member.user_id !== userId) { // Don't send to sender
                 try {
-                  // Check if user is online
+                  // Check if user is online (has active socket)
                   const userSockets = await io.fetchSockets()
                   const isOnline = userSockets.some((s: any) => {
                     const socketUser = (s.data as any)?.user
                     return socketUser?.id === member.user_id
                   })
                   
+                  // Always send socket event if user has connection
                   if (isOnline) {
-                    // User is online - send via socket
                     io.to(member.user_id).emit('chat:message:background', { 
                       message: { 
                         ...msg, 
@@ -1252,21 +1252,22 @@ export function initOptimizedSocket(server: Server) {
                         senderAvatar
                       } 
                     })
-                  } else {
-                    // User is offline - send push notification
-                    try {
-                      const { PushNotificationService } = await import('../services/pushNotificationService.js')
-                      await PushNotificationService.sendMessageNotification(
-                        member.user_id,
-                        senderName,
-                        msg.text || 'New message',
-                        chatId,
-                        msg.id
-                      )
-                      logger.debug({ recipientId: member.user_id, chatId }, 'Sent push notification for offline user')
-                    } catch (pushError) {
-                      logger.error({ error: pushError, recipientId: member.user_id }, 'Failed to send push notification')
-                    }
+                  }
+                  
+                  // Always send push notification for messages
+                  // (app may be backgrounded even with socket connected)
+                  try {
+                    const { PushNotificationService } = await import('../services/pushNotificationService.js')
+                    await PushNotificationService.sendMessageNotification(
+                      member.user_id,
+                      senderName,
+                      msg.text || 'New message',
+                      chatId,
+                      msg.id
+                    )
+                    logger.debug({ recipientId: member.user_id, chatId, isOnline }, 'Sent push notification for message')
+                  } catch (pushError) {
+                    logger.error({ error: pushError, recipientId: member.user_id }, 'Failed to send push notification')
                   }
                 } catch (error) {
                   logger.error({ error, recipientId: member.user_id }, 'Error processing message delivery')

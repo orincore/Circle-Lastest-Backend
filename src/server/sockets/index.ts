@@ -223,8 +223,9 @@ export function initSocket(server: Server) {
           //console.log('Resolved sender name:', senderName) // Debug log
           
           if (members) {
-            members.forEach((member: { user_id: string }) => {
+            for (const member of members) {
               if (member.user_id !== userId) { // Don't send to sender
+                // Send socket event
                 io.to(member.user_id).emit('chat:message:background', { 
                   message: { 
                     ...msg, 
@@ -232,8 +233,23 @@ export function initSocket(server: Server) {
                     senderAvatar
                   } 
                 })
+                
+                // Always send push notification for messages
+                // (app may be backgrounded even with socket connected)
+                try {
+                  const { PushNotificationService } = await import('../services/pushNotificationService.js')
+                  await PushNotificationService.sendMessageNotification(
+                    member.user_id,
+                    senderName,
+                    msg.text || 'New message',
+                    chatId,
+                    msg.id
+                  )
+                } catch (pushError) {
+                  console.error('Failed to send push notification:', pushError)
+                }
               }
-            })
+            }
           }
         } catch (e) {
           console.error('Failed to send background message:', e)
