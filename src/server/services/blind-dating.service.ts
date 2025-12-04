@@ -2294,11 +2294,22 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
       const userB = profiles.find(p => p.id === userBId)
       
       if (!userA || !userB) {
+        logger.warn({ userAId, userBId, foundProfiles: profiles?.length }, 'Admin match: One or both users not found')
         return { success: false, error: 'One or both users not found' }
       }
       
+      logger.info({ 
+        userAId, 
+        userBId, 
+        userAGender: userA.gender, 
+        userBGender: userB.gender,
+        userAName: userA.first_name,
+        userBName: userB.first_name
+      }, 'Admin match: Checking gender compatibility')
+      
       // Check gender compatibility (must be opposite genders)
       if (!this.isGenderCompatible(userA.gender, userB.gender)) {
+        logger.warn({ userAGender: userA.gender, userBGender: userB.gender }, 'Admin match: Gender incompatible')
         return { 
           success: false, 
           error: `Users must be opposite genders. User A: ${userA.gender || 'unknown'}, User B: ${userB.gender || 'unknown'}` 
@@ -2307,6 +2318,7 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
       
       // Check if they are already friends
       const areFriends = await this.areUsersFriends(userAId, userBId)
+      logger.info({ userAId, userBId, areFriends }, 'Admin match: Checked friendship status')
       if (areFriends) {
         return { success: false, error: 'Users are already friends. Cannot create blind date match between friends.' }
       }
@@ -2325,7 +2337,17 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
       }
       
       // Create chat for the users
-      const chat = await ensureChatForUsers(userAId, userBId)
+      let chat
+      try {
+        chat = await ensureChatForUsers(userAId, userBId)
+      } catch (chatError) {
+        logger.error({ error: chatError, userAId, userBId }, 'Failed to create/ensure chat for admin match')
+        return { success: false, error: 'Failed to create chat between users' }
+      }
+      
+      if (!chat || !chat.id) {
+        return { success: false, error: 'Failed to create chat - no chat ID returned' }
+      }
       
       // Calculate compatibility score
       const compatibility = CompatibilityService.calculateEnhancedCompatibility(
