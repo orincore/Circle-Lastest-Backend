@@ -82,16 +82,39 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
         for (const match of blindMatches) {
           const otherUserId = match.user_a === userId ? match.user_b : match.user_a
           
+          console.log('[BlindDate] Processing match:', { 
+            chatId: match.chat_id, 
+            userId, 
+            otherUserId,
+            user_a: match.user_a,
+            user_b: match.user_b
+          })
+          
           // Get other user's profile for gender, age, and name masking
-          const { data: otherProfile } = await supabase
+          const { data: otherProfile, error: profileError } = await supabase
             .from('profiles')
-            .select('first_name, last_name, gender, date_of_birth, needs')
+            .select('first_name, last_name, gender, age, date_of_birth, needs')
             .eq('id', otherUserId)
             .single()
           
-          // Calculate age from date_of_birth
-          let age: number | undefined
-          if (otherProfile?.date_of_birth) {
+          console.log('[BlindDate] Profile result:', { 
+            otherUserId, 
+            hasProfile: !!otherProfile,
+            firstName: otherProfile?.first_name,
+            lastName: otherProfile?.last_name,
+            gender: otherProfile?.gender,
+            age: otherProfile?.age,
+            needs: otherProfile?.needs,
+            error: profileError?.message
+          })
+          
+          if (profileError) {
+            console.error('Error fetching blind date profile:', profileError, 'userId:', otherUserId)
+          }
+          
+          // Calculate age - prefer direct age field, fallback to date_of_birth calculation
+          let age: number | undefined = otherProfile?.age
+          if (!age && otherProfile?.date_of_birth) {
             const dob = new Date(otherProfile.date_of_birth)
             const today = new Date()
             age = today.getFullYear() - dob.getFullYear()
@@ -102,39 +125,52 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           }
           
           // Mask name: "Adarsh Suradkar" -> "A***** S*******"
+          // Helper function to mask a word
+          const maskWord = (word: string) => {
+            if (!word || word.length === 0) return ''
+            if (word.length === 1) return word[0] + '*'
+            return word[0] + '*'.repeat(word.length - 1)
+          }
+          
           let maskedName = 'Anonymous'
-          if (otherProfile?.first_name) {
-            const maskWord = (word: string) => {
-              if (!word || word.length === 0) return ''
-              if (word.length === 1) return word[0] + '*'
-              return word[0] + '*'.repeat(word.length - 1)
-            }
-            const firstName = maskWord(otherProfile.first_name)
-            const lastName = otherProfile.last_name ? maskWord(otherProfile.last_name) : ''
+          if (otherProfile?.first_name && otherProfile.first_name.trim()) {
+            const firstName = maskWord(otherProfile.first_name.trim())
+            const lastName = otherProfile.last_name?.trim() ? maskWord(otherProfile.last_name.trim()) : ''
             maskedName = lastName ? `${firstName} ${lastName}` : firstName
           }
           
           // Determine match reason from needs (looking_for field)
           let matchReason = 'Connection'
-          if (otherProfile?.needs && Array.isArray(otherProfile.needs) && otherProfile.needs.length > 0) {
+          const needs = otherProfile?.needs
+          if (needs && Array.isArray(needs) && needs.length > 0) {
             // Map needs to friendly labels
             const needsLabels: Record<string, string> = {
               'friendship': 'Friendship',
-              'relationship': 'Relationship',
+              'relationship': 'Relationship', 
               'dating': 'Dating',
               'casual': 'Casual',
               'serious': 'Serious Relationship',
               'networking': 'Networking',
-              'chat': 'Chat Buddy'
+              'chat': 'Chat Buddy',
+              'friends': 'Friendship',
+              'love': 'Relationship',
+              'partner': 'Relationship'
             }
-            const primaryNeed = otherProfile.needs[0]?.toLowerCase()
-            matchReason = needsLabels[primaryNeed] || 'Connection'
+            const primaryNeed = String(needs[0] || '').toLowerCase().trim()
+            matchReason = needsLabels[primaryNeed] || (primaryNeed ? primaryNeed.charAt(0).toUpperCase() + primaryNeed.slice(1) : 'Connection')
+          }
+          
+          // Determine gender display
+          let genderDisplay = otherProfile?.gender
+          if (genderDisplay) {
+            // Capitalize first letter
+            genderDisplay = genderDisplay.charAt(0).toUpperCase() + genderDisplay.slice(1).toLowerCase()
           }
           
           blindDateMap.set(match.chat_id, {
             isOngoing: true,
             matchReason,
-            otherUserGender: otherProfile?.gender,
+            otherUserGender: genderDisplay || undefined,
             otherUserAge: age,
             maskedName
           })
