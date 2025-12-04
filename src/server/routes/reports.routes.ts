@@ -15,7 +15,7 @@ const router = express.Router()
  */
 router.post('/', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { reportedUserId, reportType, reason } = req.body
+    const { reportedUserId, reportType, reason, messageId, chatId, additionalDetails } = req.body
     const reporterId = req.user!.id
 
     // Validate input
@@ -46,31 +46,54 @@ router.post('/', requireAuth, async (req: AuthRequest, res) => {
     const oneDayAgo = new Date()
     oneDayAgo.setDate(oneDayAgo.getDate() - 1)
 
-    const { data: existingReport } = await supabase
+    // Build query for duplicate check
+    let duplicateQuery = supabase
       .from('user_reports')
       .select('id')
       .eq('reporter_id', reporterId)
       .eq('reported_user_id', reportedUserId)
       .gte('created_at', oneDayAgo.toISOString())
-      .single()
+
+    // If reporting a specific message, check for duplicate message reports
+    if (messageId) {
+      duplicateQuery = duplicateQuery.eq('message_id', messageId)
+    }
+
+    const { data: existingReport } = await duplicateQuery.maybeSingle()
 
     if (existingReport) {
       return res.status(429).json({
         error: 'Report already submitted',
-        message: 'You have already reported this user recently. Please wait before submitting another report.'
+        message: messageId 
+          ? 'You have already reported this message.'
+          : 'You have already reported this user recently. Please wait before submitting another report.'
       })
+    }
+
+    // Build report data
+    const reportData: any = {
+      reporter_id: reporterId,
+      reported_user_id: reportedUserId,
+      report_type: reportType,
+      reason: reason,
+      status: 'pending'
+    }
+
+    // Add optional fields if provided
+    if (messageId) {
+      reportData.message_id = messageId
+    }
+    if (chatId) {
+      reportData.chat_id = chatId
+    }
+    if (additionalDetails) {
+      reportData.additional_details = additionalDetails
     }
 
     // Create the report
     const { data: report, error } = await supabase
       .from('user_reports')
-      .insert({
-        reporter_id: reporterId,
-        reported_user_id: reportedUserId,
-        report_type: reportType,
-        reason: reason,
-        status: 'pending'
-      })
+      .insert(reportData)
       .select()
       .single()
 
@@ -82,7 +105,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res) => {
       })
     }
 
-    //console.log(`📝 Report submitted: ${reporterId} reported ${reportedUserId} for ${reportType}`)
+    console.log(`📝 Report submitted: ${reporterId} reported ${reportedUserId} for ${reportType}${messageId ? ` (message: ${messageId})` : ''}`)
 
     return res.status(201).json({
       success: true,
