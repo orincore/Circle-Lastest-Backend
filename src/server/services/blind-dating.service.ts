@@ -76,9 +76,8 @@ export class BlindDatingService {
    * Check if two users are compatible for blind dating based on gender
    * 
    * Matching Rules:
-   * - Male <-> Female (traditional opposite gender matching)
-   * - LGBTQ+ users match within their community
-   * - Straight same-gender users NEVER match
+   * - ONLY Male <-> Female (opposite gender matching)
+   * - Same gender users NEVER match
    * - Unknown/null genders don't match
    */
   private static isGenderCompatible(gender1?: string, gender2?: string): boolean {
@@ -92,40 +91,13 @@ export class BlindDatingService {
     // Helper functions to identify gender categories
     const isMale = (g: string) => g === 'male' || g === 'm' || g === 'man'
     const isFemale = (g: string) => g === 'female' || g === 'f' || g === 'woman'
-    const isLGBTQ = (g: string) => {
-      const lgbtqIdentities = [
-        'gay', 'lesbian', 'bisexual', 'bi', 'pansexual', 'pan',
-        'transgender', 'trans', 'trans male', 'trans female', 'trans man', 'trans woman',
-        'non-binary', 'nonbinary', 'nb', 'enby',
-        'genderqueer', 'genderfluid', 'gender fluid',
-        'queer', 'questioning',
-        'asexual', 'ace', 'demisexual',
-        'intersex', 'two-spirit', 'agender',
-        'other', 'prefer not to say'
-      ]
-      return lgbtqIdentities.some(identity => g.includes(identity) || identity.includes(g))
-    }
     
-    // CRITICAL: Check for straight same-gender first (NEVER allow)
-    if ((isMale(g1) && isMale(g2)) || (isFemale(g1) && isFemale(g2))) {
-      // Only allow if BOTH users are LGBTQ+
-      if (isLGBTQ(g1) && isLGBTQ(g2)) {
-        return true // LGBTQ+ same-gender matching allowed
-      }
-      return false // Straight same-gender matching NOT allowed
-    }
-    
-    // Rule 1: Male <-> Female (traditional opposite gender matching)
+    // ONLY allow opposite gender matching: Male <-> Female
     if ((isMale(g1) && isFemale(g2)) || (isFemale(g1) && isMale(g2))) {
       return true
     }
     
-    // Rule 2: LGBTQ+ users match within their community (different genders)
-    if (isLGBTQ(g1) && isLGBTQ(g2)) {
-      return true
-    }
-    
-    // Rule 3: Default - no match for unrecognized combinations
+    // All other combinations (same gender, unknown, etc.) are NOT allowed
     return false
   }
   
@@ -134,6 +106,32 @@ export class BlindDatingService {
    */
   private static isOppositeGender(gender1?: string, gender2?: string): boolean {
     return this.isGenderCompatible(gender1, gender2)
+  }
+  
+  /**
+   * Check if two users are already friends
+   * Returns true if they have an active/accepted friendship
+   */
+  private static async areUsersFriends(userId1: string, userId2: string): Promise<boolean> {
+    try {
+      const { data: friendship, error } = await supabase
+        .from('friendships')
+        .select('id')
+        .or(`and(user1_id.eq.${userId1},user2_id.eq.${userId2}),and(user1_id.eq.${userId2},user2_id.eq.${userId1})`)
+        .in('status', ['active', 'accepted'])
+        .limit(1)
+        .maybeSingle()
+      
+      if (error) {
+        logger.error({ error, userId1, userId2 }, 'Error checking friendship status')
+        return false
+      }
+      
+      return !!friendship
+    } catch (error) {
+      logger.error({ error, userId1, userId2 }, 'Error checking friendship status')
+      return false
+    }
   }
   
   /**
@@ -481,10 +479,21 @@ export class BlindDatingService {
         topScores: scoredCandidates.slice(0, 5).map(c => ({ userId: c.userId, score: c.score, rawScore: c.rawScore }))
       }, 'Scored candidates for blind dating')
 
-      // Get the best match - ALWAYS match if there are compatible candidates
-      const bestMatch = scoredCandidates[0]
+      // Find the best match that is NOT already a friend
+      let bestMatch = null
+      for (const candidate of scoredCandidates) {
+        // Check if they are already friends - skip if so
+        const areFriends = await this.areUsersFriends(userId, candidate.userId)
+        if (areFriends) {
+          logger.debug({ userId, candidateId: candidate.userId }, 'Skipping candidate - already friends')
+          continue
+        }
+        bestMatch = candidate
+        break
+      }
+      
       if (!bestMatch) {
-        logger.info({ userId, userGender }, 'No compatible candidates available for matching')
+        logger.info({ userId, userGender }, 'No compatible candidates available for matching (all are friends or incompatible)')
         return null
       }
       
@@ -2109,6 +2118,120 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
 
     const options = responses[personality] || responses.friendly_indian
     return options[Math.floor(Math.random() * options.length)]
+  }
+
+  /**
+   * Admin function to create a blind date match between two specific users
+   * Validates:
+   * - Both users exist
+   * - Users are opposite genders
+   * - Users are not already friends
+   * - Users don't already have an active blind date match together
+   */
+  static async adminCreateMatch(userAId: string, userBId: string): Promise<{
+    success: boolean;
+    match?: BlindDateMatch;
+    error?: string;
+  }> {
+    try {
+      // Get both user profiles
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, gender, age, interests, needs')
+        .in('id', [userAId, userBId])
+      
+      if (profilesError) {
+        return { success: false, error: 'Failed to fetch user profiles' }
+      }
+      
+      if (!profiles || profiles.length !== 2) {
+        return { success: false, error: 'One or both users not found' }
+      }
+      
+      const userA = profiles.find(p => p.id === userAId)
+      const userB = profiles.find(p => p.id === userBId)
+      
+      if (!userA || !userB) {
+        return { success: false, error: 'One or both users not found' }
+      }
+      
+      // Check gender compatibility (must be opposite genders)
+      if (!this.isGenderCompatible(userA.gender, userB.gender)) {
+        return { 
+          success: false, 
+          error: `Users must be opposite genders. User A: ${userA.gender || 'unknown'}, User B: ${userB.gender || 'unknown'}` 
+        }
+      }
+      
+      // Check if they are already friends
+      const areFriends = await this.areUsersFriends(userAId, userBId)
+      if (areFriends) {
+        return { success: false, error: 'Users are already friends. Cannot create blind date match between friends.' }
+      }
+      
+      // Check if they already have an active blind date match
+      const { data: existingMatch } = await supabase
+        .from('blind_date_matches')
+        .select('id, status')
+        .or(`and(user_a.eq.${userAId},user_b.eq.${userBId}),and(user_a.eq.${userBId},user_b.eq.${userAId})`)
+        .in('status', ['active', 'revealed'])
+        .limit(1)
+        .maybeSingle()
+      
+      if (existingMatch) {
+        return { success: false, error: 'Users already have an active blind date match' }
+      }
+      
+      // Create chat for the users
+      const chat = await ensureChatForUsers(userAId, userBId)
+      
+      // Calculate compatibility score
+      const compatibility = CompatibilityService.calculateEnhancedCompatibility(
+        { age: userA.age, interests: userA.interests, needs: userA.needs },
+        { age: userB.age, interests: userB.interests, needs: userB.needs }
+      )
+      
+      // Create the blind date match
+      const [sortedUserA, sortedUserB] = [userAId, userBId].sort()
+      
+      const { data: match, error: matchError } = await supabase
+        .from('blind_date_matches')
+        .insert({
+          user_a: sortedUserA,
+          user_b: sortedUserB,
+          chat_id: chat.id,
+          compatibility_score: Math.max(compatibility.score, 5), // Minimum score of 5
+          status: 'active',
+          message_count: 0,
+          reveal_threshold: 30,
+          user_a_revealed: false,
+          user_b_revealed: false,
+          matched_at: new Date().toISOString()
+        })
+        .select('*')
+        .single()
+      
+      if (matchError) {
+        logger.error({ error: matchError, userAId, userBId }, 'Failed to create admin blind date match')
+        return { success: false, error: 'Failed to create match in database' }
+      }
+      
+      // Notify both users
+      const matchData = match as BlindDateMatch
+      await this.notifyMatchCreated(userAId, userBId, matchData)
+      
+      logger.info({ 
+        matchId: match.id, 
+        userAId, 
+        userBId, 
+        score: compatibility.score 
+      }, '✅ Admin created blind date match')
+      
+      return { success: true, match: matchData }
+    } catch (error) {
+      logger.error({ error, userAId, userBId }, 'Error in admin create match')
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
   }
 }
 

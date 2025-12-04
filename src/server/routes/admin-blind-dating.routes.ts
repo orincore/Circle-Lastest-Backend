@@ -348,6 +348,45 @@ router.post('/force-match-all', requireAuth, requireAdmin, async (req: AdminRequ
 })
 
 /**
+ * POST /api/admin/blind-dating/create-match
+ * Create a blind date match between two specific users
+ * Validates: opposite genders, not already friends, no existing active match
+ */
+router.post('/create-match', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { userAId, userBId } = req.body
+    
+    if (!userAId || !userBId) {
+      return res.status(400).json({ error: 'Both userAId and userBId are required' })
+    }
+    
+    if (userAId === userBId) {
+      return res.status(400).json({ error: 'Cannot create a match between the same user' })
+    }
+    
+    logger.info({ adminId: req.user!.id, userAId, userBId }, '🎯 Admin creating specific blind date match')
+    
+    const result = await BlindDatingService.adminCreateMatch(userAId, userBId)
+    
+    if (!result.success) {
+      return res.status(400).json({ 
+        success: false, 
+        error: result.error 
+      })
+    }
+    
+    res.json({
+      success: true,
+      message: 'Blind date match created successfully',
+      match: result.match
+    })
+  } catch (error) {
+    logger.error({ error }, 'Error creating specific blind date match')
+    res.status(500).json({ error: 'Failed to create blind date match' })
+  }
+})
+
+/**
  * POST /api/admin/blind-dating/run-detailed-matching
  * Run detailed matching with comprehensive logging
  * Returns detailed information about why each user was matched or not
@@ -562,6 +601,7 @@ router.get('/daily-queue', requireAuth, requireAdmin, async (req: AdminRequest, 
 /**
  * POST /api/admin/blind-dating/reset-all-matches
  * Reset/remove all blind date matches (DANGEROUS OPERATION)
+ * This will delete all blind date data INCLUDING the associated chats
  */
 router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
@@ -592,6 +632,15 @@ router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRe
       .from('blind_date_daily_queue')
       .select('*', { count: 'exact', head: true })
     
+    // Get all chat IDs associated with blind date matches BEFORE deleting matches
+    const { data: blindDateMatches } = await supabase
+      .from('blind_date_matches')
+      .select('chat_id')
+      .not('chat_id', 'is', null)
+    
+    const chatIds = blindDateMatches?.map(m => m.chat_id).filter(Boolean) || []
+    logger.info({ chatCount: chatIds.length }, 'Found blind date chats to delete')
+    
     // Delete all related data (in correct order to avoid foreign key constraints)
     
     // 1. Delete blocked messages first
@@ -604,17 +653,17 @@ router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRe
       logger.error({ error: blockedError }, 'Error deleting blocked messages')
     }
     
-    // 2. Delete messages
+    // 2. Delete blind date messages
     const { error: messagesError } = await supabase
       .from('blind_date_messages')
       .delete()
       .neq('id', '00000000-0000-0000-0000-000000000000') // Delete all
     
     if (messagesError) {
-      logger.error({ error: messagesError }, 'Error deleting messages')
+      logger.error({ error: messagesError }, 'Error deleting blind date messages')
     }
     
-    // 3. Delete matches
+    // 3. Delete blind date matches
     const { error: matchesError } = await supabase
       .from('blind_date_matches')
       .delete()
@@ -634,10 +683,59 @@ router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRe
       logger.error({ error: queueError }, 'Error deleting daily queue')
     }
     
-    // 5. Optionally reset user settings (keep them enabled but reset counters)
+    // 5. Delete chat messages for blind date chats
+    let deletedChatMessages = 0
+    if (chatIds.length > 0) {
+      const { error: chatMessagesError, count: msgCount } = await supabase
+        .from('messages')
+        .delete({ count: 'exact' })
+        .in('chat_id', chatIds)
+      
+      if (chatMessagesError) {
+        logger.error({ error: chatMessagesError }, 'Error deleting chat messages')
+      } else {
+        deletedChatMessages = msgCount || 0
+        logger.info({ deletedChatMessages }, 'Deleted chat messages for blind date chats')
+      }
+    }
+    
+    // 6. Delete chat members for blind date chats
+    let deletedChatMembers = 0
+    if (chatIds.length > 0) {
+      const { error: chatMembersError, count: memberCount } = await supabase
+        .from('chat_members')
+        .delete({ count: 'exact' })
+        .in('chat_id', chatIds)
+      
+      if (chatMembersError) {
+        logger.error({ error: chatMembersError }, 'Error deleting chat members')
+      } else {
+        deletedChatMembers = memberCount || 0
+        logger.info({ deletedChatMembers }, 'Deleted chat members for blind date chats')
+      }
+    }
+    
+    // 7. Delete the chats themselves
+    let deletedChats = 0
+    if (chatIds.length > 0) {
+      const { error: chatsError, count: chatCount } = await supabase
+        .from('chats')
+        .delete({ count: 'exact' })
+        .in('id', chatIds)
+      
+      if (chatsError) {
+        logger.error({ error: chatsError }, 'Error deleting chats')
+      } else {
+        deletedChats = chatCount || 0
+        logger.info({ deletedChats }, 'Deleted blind date chats')
+      }
+    }
+    
+    // 8. Reset user settings (keep them enabled but reset last_match_at)
     const { error: settingsError } = await supabase
       .from('blind_dating_settings')
       .update({
+        last_match_at: null,
         updated_at: new Date().toISOString()
       })
       .neq('user_id', '00000000-0000-0000-0000-000000000000') // Update all
@@ -648,18 +746,21 @@ router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRe
     
     const result = {
       success: true,
-      message: 'All blind date data has been reset',
+      message: 'All blind date data has been completely reset including chats',
       deletedCounts: {
         matches: totalMatches || 0,
-        messages: totalMessages || 0,
+        blindDateMessages: totalMessages || 0,
         blockedMessages: totalBlockedMessages || 0,
-        queueEntries: totalQueue || 0
+        queueEntries: totalQueue || 0,
+        chats: deletedChats,
+        chatMessages: deletedChatMessages,
+        chatMembers: deletedChatMembers
       },
       timestamp: new Date().toISOString(),
       adminId: req.user!.id
     }
     
-    logger.warn(result, '✅ BLIND DATE RESET COMPLETED')
+    logger.warn(result, '✅ BLIND DATE RESET COMPLETED - ALL DATA REMOVED')
     
     res.json(result)
   } catch (error) {
