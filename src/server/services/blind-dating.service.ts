@@ -1112,8 +1112,8 @@ export class BlindDatingService {
         ])
 
         // Create automatic friendship FIRST before emitting events
-        await this.createFriendshipForRevealedMatch(match.user_a, match.user_b)
-        logger.info({ matchId, userA: match.user_a, userB: match.user_b }, '[BlindDate] Friendship created for revealed match')
+        const friendshipCreated = await this.createFriendshipForRevealedMatch(match.user_a, match.user_b)
+        logger.info({ matchId, userA: match.user_a, userB: match.user_b, friendshipCreated }, '[BlindDate] Friendship creation result')
 
         // Emit to user A with user B's profile
         emitToUser(match.user_a, 'blind_date:revealed', {
@@ -1122,8 +1122,10 @@ export class BlindDatingService {
           otherUser: profile2,
           otherUserId: match.user_b,
           bothRevealed: true,
-          friendshipCreated: true,
-          message: 'Identity revealed! You can now see each other\'s full profile.'
+          friendshipCreated,
+          message: friendshipCreated 
+            ? 'Identity revealed! You are now friends and can see each other\'s full profile.'
+            : 'Identity revealed! You can now see each other\'s full profile.'
         })
 
         // Emit to user B with user A's profile
@@ -1133,8 +1135,10 @@ export class BlindDatingService {
           otherUser: profile1,
           otherUserId: match.user_a,
           bothRevealed: true,
-          friendshipCreated: true,
-          message: 'Identity revealed! You can now see each other\'s full profile.'
+          friendshipCreated,
+          message: friendshipCreated 
+            ? 'Identity revealed! You are now friends and can see each other\'s full profile.'
+            : 'Identity revealed! You can now see each other\'s full profile.'
         })
       } else {
         // First user revealed - notify other user
@@ -1166,31 +1170,82 @@ export class BlindDatingService {
 
   /**
    * Create friendship when both users reveal
+   * Uses the same schema as friend request acceptance:
+   * - user1_id: smaller UUID
+   * - user2_id: larger UUID  
+   * - sender_id: who initiated (userA in this case - first to reveal)
+   * - status: 'accepted' or 'active'
    */
-  private static async createFriendshipForRevealedMatch(userA: string, userB: string): Promise<void> {
+  private static async createFriendshipForRevealedMatch(userA: string, userB: string): Promise<boolean> {
     try {
-      // Check if friendship already exists
-      const { data: existing } = await supabase
+      const smallerId = userA < userB ? userA : userB
+      const largerId = userA < userB ? userB : userA
+      
+      logger.info({ userA, userB, smallerId, largerId }, '[BlindDate] Attempting to create friendship')
+      
+      // Check if friendship already exists (check all statuses)
+      const { data: existing, error: checkError } = await supabase
         .from('friendships')
-        .select('id')
-        .or(`and(user1_id.eq.${userA},user2_id.eq.${userB}),and(user1_id.eq.${userB},user2_id.eq.${userA})`)
+        .select('id, status')
+        .eq('user1_id', smallerId)
+        .eq('user2_id', largerId)
         .maybeSingle()
 
-      if (!existing) {
-        await supabase
-          .from('friendships')
-          .insert({
-            user1_id: userA < userB ? userA : userB,
-            user2_id: userA < userB ? userB : userA,
-            status: 'active',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-        
-        logger.info({ userA, userB }, 'Created friendship for revealed blind date match')
+      if (checkError && checkError.code !== 'PGRST116') {
+        logger.error({ checkError, userA, userB }, '[BlindDate] Error checking existing friendship')
       }
+
+      if (existing) {
+        logger.info({ userA, userB, existingStatus: existing.status }, '[BlindDate] Friendship already exists')
+        // If it exists but not active/accepted, update it
+        if (existing.status !== 'active' && existing.status !== 'accepted') {
+          const { error: updateError } = await supabase
+            .from('friendships')
+            .update({ 
+              status: 'accepted', 
+              updated_at: new Date().toISOString() 
+            })
+            .eq('id', existing.id)
+          
+          if (updateError) {
+            logger.error({ updateError, userA, userB }, '[BlindDate] Error updating friendship status')
+            return false
+          }
+          logger.info({ userA, userB }, '[BlindDate] Updated existing friendship to accepted')
+        }
+        return true
+      }
+
+      // Create new friendship with all required fields
+      const now = new Date().toISOString()
+      const { data: newFriendship, error: insertError } = await supabase
+        .from('friendships')
+        .insert({
+          user1_id: smallerId,
+          user2_id: largerId,
+          sender_id: userA, // First user to reveal is considered the "sender"
+          status: 'accepted', // Use 'accepted' to match friend request acceptance
+          created_at: now,
+          updated_at: now
+        })
+        .select('id')
+        .single()
+      
+      if (insertError) {
+        // Check if it's a duplicate key error (23505) - that's okay
+        if (insertError.code === '23505') {
+          logger.info({ userA, userB }, '[BlindDate] Friendship already exists (duplicate key)')
+          return true
+        }
+        logger.error({ insertError, code: insertError.code, message: insertError.message, details: insertError.details }, '[BlindDate] Error inserting friendship')
+        return false
+      }
+      
+      logger.info({ userA, userB, friendshipId: newFriendship?.id }, '[BlindDate] Successfully created friendship')
+      return true
     } catch (error) {
-      logger.error({ error, userA, userB }, 'Failed to create friendship for revealed match')
+      logger.error({ error, userA, userB }, '[BlindDate] Failed to create friendship for revealed match')
+      return false
     }
   }
 

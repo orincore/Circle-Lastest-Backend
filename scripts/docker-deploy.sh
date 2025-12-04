@@ -1,7 +1,14 @@
 #!/bin/bash
 # ============================================
-# Circle Backend - Docker Deployment Script
-# Production deployment with zero-downtime
+# Circle Backend - Blue-Green Deployment Script
+# Zero-downtime deployment with rolling updates
+# ============================================
+#
+# Architecture:
+# - Blue and Green container sets run simultaneously
+# - During updates: one set is updated while other handles traffic
+# - Load balancer distributes traffic across both sets
+# - Automatic failover if one set is unhealthy
 # ============================================
 
 set -e
@@ -11,6 +18,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
@@ -19,6 +27,12 @@ ENV_FILE="${ENV_FILE:-.env.production}"
 TAG="${TAG:-latest}"
 HEALTH_CHECK_RETRIES=30
 HEALTH_CHECK_INTERVAL=5
+DRAIN_WAIT_SECONDS=10
+
+# Service sets
+BLUE_SERVICES=("api-blue" "socket-blue" "matchmaking-blue")
+GREEN_SERVICES=("api-green" "socket-green" "matchmaking-green")
+ALL_SERVICES=("api-blue" "api-green" "socket-blue" "socket-green" "matchmaking-blue" "matchmaking-green" "cron")
 
 # Functions
 log_info() {
@@ -37,6 +51,14 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+log_blue() {
+    echo -e "${CYAN}[BLUE]${NC} $1"
+}
+
+log_green() {
+    echo -e "${GREEN}[GREEN]${NC} $1"
+}
+
 check_prerequisites() {
     log_info "Checking prerequisites..."
     
@@ -45,7 +67,7 @@ check_prerequisites() {
         exit 1
     fi
     
-    if ! command -v docker-compose &> /dev/null; then
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
         log_error "Docker Compose is not installed!"
         exit 1
     fi
@@ -63,6 +85,15 @@ check_prerequisites() {
     log_success "Prerequisites check passed!"
 }
 
+# Docker compose wrapper (supports both v1 and v2)
+dc() {
+    if docker compose version &> /dev/null; then
+        docker compose -f "$COMPOSE_FILE" "$@"
+    else
+        docker-compose -f "$COMPOSE_FILE" "$@"
+    fi
+}
+
 health_check() {
     local service=$1
     local port=$2
@@ -71,7 +102,7 @@ health_check() {
     log_info "Waiting for $service health check..."
     
     for i in $(seq 1 $retries); do
-        if docker-compose -f "$COMPOSE_FILE" exec -T "$service" \
+        if dc exec -T "$service" \
             wget -q --spider "http://localhost:$port/health" 2>/dev/null; then
             log_success "$service is healthy!"
             return 0
@@ -79,7 +110,7 @@ health_check() {
         
         if [ $i -eq $retries ]; then
             log_error "$service health check failed after $retries attempts!"
-            docker-compose -f "$COMPOSE_FILE" logs --tail=50 "$service"
+            dc logs --tail=50 "$service"
             return 1
         fi
         
@@ -88,57 +119,143 @@ health_check() {
     done
 }
 
+# Check if a service is running and healthy
+is_service_healthy() {
+    local service=$1
+    local port=$2
+    
+    if dc exec -T "$service" wget -q --spider "http://localhost:$port/health" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Deploy a single service with health check
 deploy_service() {
     local service=$1
     local port=$2
     
     log_info "Deploying $service..."
     
-    # Pull latest image
-    docker-compose -f "$COMPOSE_FILE" pull "$service" 2>/dev/null || true
-    
-    # Update service with zero-downtime
-    docker-compose -f "$COMPOSE_FILE" up -d --no-deps --build "$service"
+    # Build and start the service
+    dc up -d --no-deps --build "$service"
     
     # Health check if port is provided
     if [ -n "$port" ]; then
         health_check "$service" "$port"
+    else
+        # Wait a bit for services without health endpoints
+        sleep 5
     fi
 }
 
-# Main deployment function
+# Deploy a color set (blue or green)
+deploy_color_set() {
+    local color=$1
+    
+    if [ "$color" = "blue" ]; then
+        log_blue "Deploying BLUE set..."
+        deploy_service "api-blue" "8080"
+        deploy_service "socket-blue" "8081"
+        deploy_service "matchmaking-blue" ""
+        log_blue "BLUE set deployment complete!"
+    else
+        log_green "Deploying GREEN set..."
+        deploy_service "api-green" "8080"
+        deploy_service "socket-green" "8081"
+        deploy_service "matchmaking-green" ""
+        log_green "GREEN set deployment complete!"
+    fi
+}
+
+# Rolling update - update one set at a time
+rolling_update() {
+    log_info "Starting rolling update..."
+    log_info "Traffic will be handled by the healthy set during update"
+    
+    # Check which set is currently healthy
+    local blue_healthy=false
+    local green_healthy=false
+    
+    if is_service_healthy "api-blue" "8080" 2>/dev/null; then
+        blue_healthy=true
+        log_blue "Blue set is healthy"
+    fi
+    
+    if is_service_healthy "api-green" "8080" 2>/dev/null; then
+        green_healthy=true
+        log_green "Green set is healthy"
+    fi
+    
+    # Update blue first, then green
+    log_info "Phase 1: Updating BLUE set (GREEN handles traffic)..."
+    if $green_healthy; then
+        log_info "Green set will handle all traffic during blue update"
+    else
+        log_warning "Green set not healthy - deploying it first for safety"
+        deploy_color_set "green"
+    fi
+    
+    # Wait for connections to drain from blue
+    log_info "Waiting ${DRAIN_WAIT_SECONDS}s for connections to drain..."
+    sleep $DRAIN_WAIT_SECONDS
+    
+    # Update blue set
+    deploy_color_set "blue"
+    
+    log_info "Phase 2: Updating GREEN set (BLUE handles traffic)..."
+    log_info "Blue set will handle all traffic during green update"
+    
+    # Wait for connections to drain from green
+    log_info "Waiting ${DRAIN_WAIT_SECONDS}s for connections to drain..."
+    sleep $DRAIN_WAIT_SECONDS
+    
+    # Update green set
+    deploy_color_set "green"
+    
+    log_success "Rolling update complete! Both sets are now running the latest version."
+}
+
+# Main deployment function - full deployment
 deploy() {
     log_info "Starting Circle Backend deployment..."
     log_info "Using compose file: $COMPOSE_FILE"
     log_info "Tag: $TAG"
+    echo ""
     
     check_prerequisites
     
     # Export tag for docker-compose
     export TAG
+    export CACHEBUST=$(date +%s)
     
     # Start Redis first (if not running)
     log_info "Ensuring Redis is running..."
-    docker-compose -f "$COMPOSE_FILE" up -d redis
+    dc up -d redis
     sleep 5
     
-    # Deploy API server
-    deploy_service "api" "8080"
+    # Check if this is a fresh deployment or update
+    local existing_containers=$(dc ps -q 2>/dev/null | wc -l)
     
-    # Deploy Socket server
-    deploy_service "socket" "8081"
+    if [ "$existing_containers" -gt 2 ]; then
+        # Existing deployment - do rolling update
+        log_info "Existing deployment detected - performing rolling update"
+        rolling_update
+    else
+        # Fresh deployment - start everything
+        log_info "Fresh deployment - starting all services"
+        deploy_color_set "blue"
+        deploy_color_set "green"
+    fi
     
-    # Deploy workers (no health check ports)
-    log_info "Deploying matchmaking worker..."
-    docker-compose -f "$COMPOSE_FILE" up -d --no-deps --build matchmaking
-    
+    # Deploy cron worker (single instance)
     log_info "Deploying cron worker..."
-    docker-compose -f "$COMPOSE_FILE" up -d --no-deps --build cron
+    dc up -d --no-deps --build cron
     
-    # Reload NGINX
-    log_info "Reloading NGINX..."
-    docker-compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload 2>/dev/null || \
-        docker-compose -f "$COMPOSE_FILE" up -d --no-deps nginx
+    # Start/reload NGINX
+    log_info "Starting/reloading NGINX..."
+    dc up -d nginx
+    dc exec -T nginx nginx -s reload 2>/dev/null || true
     
     # Cleanup old images
     log_info "Cleaning up old images..."
@@ -148,51 +265,124 @@ deploy() {
     
     # Show status
     echo ""
-    log_info "Current container status:"
-    docker-compose -f "$COMPOSE_FILE" ps
-    
-    echo ""
-    log_info "Resource usage:"
-    docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" 2>/dev/null || true
+    status
 }
 
-# Rollback function
+# Quick update - only update services, skip infrastructure
+quick_update() {
+    log_info "Starting quick update (services only)..."
+    
+    export TAG
+    export CACHEBUST=$(date +%s)
+    
+    rolling_update
+    
+    # Reload NGINX to pick up any changes
+    dc exec -T nginx nginx -s reload 2>/dev/null || true
+    
+    log_success "Quick update complete!"
+    echo ""
+    status
+}
+
+# Deploy only blue set
+deploy_blue() {
+    log_info "Deploying BLUE set only..."
+    export TAG
+    export CACHEBUST=$(date +%s)
+    
+    deploy_color_set "blue"
+    dc exec -T nginx nginx -s reload 2>/dev/null || true
+    
+    log_success "Blue set deployed!"
+}
+
+# Deploy only green set
+deploy_green() {
+    log_info "Deploying GREEN set only..."
+    export TAG
+    export CACHEBUST=$(date +%s)
+    
+    deploy_color_set "green"
+    dc exec -T nginx nginx -s reload 2>/dev/null || true
+    
+    log_success "Green set deployed!"
+}
+
+# Rollback function - rollback a specific color set
 rollback() {
     local previous_tag="${1:-previous}"
+    local color="${2:-both}"
     
     log_warning "Rolling back to tag: $previous_tag"
     
     export TAG="$previous_tag"
     
-    docker-compose -f "$COMPOSE_FILE" up -d api socket matchmaking cron
+    if [ "$color" = "blue" ] || [ "$color" = "both" ]; then
+        log_blue "Rolling back BLUE set..."
+        dc up -d api-blue socket-blue matchmaking-blue
+    fi
+    
+    if [ "$color" = "green" ] || [ "$color" = "both" ]; then
+        log_green "Rolling back GREEN set..."
+        dc up -d api-green socket-green matchmaking-green
+    fi
+    
+    dc exec -T nginx nginx -s reload 2>/dev/null || true
     
     log_success "Rollback complete!"
 }
 
 # Status function
 status() {
-    log_info "Circle Backend Status"
+    log_info "Circle Backend Status (Blue-Green Deployment)"
     echo ""
     
-    docker-compose -f "$COMPOSE_FILE" ps
+    # Container status
+    echo "=== Container Status ==="
+    dc ps
     
     echo ""
-    log_info "Resource Usage:"
-    docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"
+    echo "=== Health Status ==="
+    
+    # Check blue set
+    echo -n "API Blue:    "
+    if is_service_healthy "api-blue" "8080" 2>/dev/null; then
+        echo -e "${GREEN}HEALTHY${NC}"
+    else
+        echo -e "${RED}UNHEALTHY${NC}"
+    fi
+    
+    echo -n "API Green:   "
+    if is_service_healthy "api-green" "8080" 2>/dev/null; then
+        echo -e "${GREEN}HEALTHY${NC}"
+    else
+        echo -e "${RED}UNHEALTHY${NC}"
+    fi
+    
+    echo -n "Socket Blue: "
+    if is_service_healthy "socket-blue" "8081" 2>/dev/null; then
+        echo -e "${GREEN}HEALTHY${NC}"
+    else
+        echo -e "${RED}UNHEALTHY${NC}"
+    fi
+    
+    echo -n "Socket Green:"
+    if is_service_healthy "socket-green" "8081" 2>/dev/null; then
+        echo -e "${GREEN}HEALTHY${NC}"
+    else
+        echo -e "${RED}UNHEALTHY${NC}"
+    fi
     
     echo ""
-    log_info "Recent Logs (last 10 lines per service):"
-    for service in api socket matchmaking cron; do
-        echo ""
-        echo "=== $service ==="
-        docker-compose -f "$COMPOSE_FILE" logs --tail=10 "$service" 2>/dev/null || echo "Service not running"
-    done
+    echo "=== Resource Usage ==="
+    docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" 2>/dev/null || true
 }
 
 # Stop function
 stop() {
     log_warning "Stopping all services..."
-    docker-compose -f "$COMPOSE_FILE" down
+    dc down
     log_success "All services stopped!"
 }
 
@@ -201,9 +391,9 @@ logs() {
     local service="${1:-}"
     
     if [ -n "$service" ]; then
-        docker-compose -f "$COMPOSE_FILE" logs -f "$service"
+        dc logs -f "$service"
     else
-        docker-compose -f "$COMPOSE_FILE" logs -f
+        dc logs -f
     fi
 }
 
@@ -211,20 +401,50 @@ logs() {
 build() {
     log_info "Building all images..."
     
-    docker-compose -f "$COMPOSE_FILE" build --parallel
+    export CACHEBUST=$(date +%s)
+    dc build --parallel
     
     log_success "Build complete!"
 }
 
+# Scale function - adjust weights (for maintenance)
+scale() {
+    local color=$1
+    local action=$2
+    
+    if [ "$action" = "down" ]; then
+        log_warning "Scaling down $color set..."
+        if [ "$color" = "blue" ]; then
+            dc stop api-blue socket-blue matchmaking-blue
+        else
+            dc stop api-green socket-green matchmaking-green
+        fi
+        log_info "Traffic will be handled by the other set"
+    else
+        log_info "Scaling up $color set..."
+        if [ "$color" = "blue" ]; then
+            dc start api-blue socket-blue matchmaking-blue
+        else
+            dc start api-green socket-green matchmaking-green
+        fi
+    fi
+    
+    dc exec -T nginx nginx -s reload 2>/dev/null || true
+}
+
 # Help function
 show_help() {
-    echo "Circle Backend Docker Deployment Script"
+    echo "Circle Backend - Blue-Green Deployment Script"
     echo ""
     echo "Usage: $0 <command> [options]"
     echo ""
     echo "Commands:"
-    echo "  deploy              Deploy all services with zero-downtime"
-    echo "  rollback [tag]      Rollback to previous version"
+    echo "  deploy              Full deployment with rolling update"
+    echo "  quick-update        Quick rolling update (services only)"
+    echo "  deploy-blue         Deploy only the blue set"
+    echo "  deploy-green        Deploy only the green set"
+    echo "  rollback [tag] [color]  Rollback to previous version"
+    echo "  scale <color> <up|down> Scale a color set up or down"
     echo "  status              Show status of all services"
     echo "  stop                Stop all services"
     echo "  logs [service]      Show logs (optionally for specific service)"
@@ -237,10 +457,15 @@ show_help() {
     echo "  TAG                 Docker image tag (default: latest)"
     echo ""
     echo "Examples:"
-    echo "  $0 deploy"
-    echo "  $0 rollback v1.2.3"
-    echo "  $0 logs api"
-    echo "  TAG=v1.0.0 $0 deploy"
+    echo "  $0 deploy                    # Full deployment"
+    echo "  $0 quick-update              # Rolling update services"
+    echo "  $0 deploy-blue               # Update only blue set"
+    echo "  $0 rollback v1.2.3           # Rollback both sets"
+    echo "  $0 rollback v1.2.3 blue      # Rollback only blue set"
+    echo "  $0 scale blue down           # Take blue offline for maintenance"
+    echo "  $0 scale blue up             # Bring blue back online"
+    echo "  $0 logs api-blue             # View blue API logs"
+    echo "  TAG=v1.0.0 $0 deploy         # Deploy specific version"
 }
 
 # Main
@@ -248,8 +473,20 @@ case "${1:-}" in
     deploy)
         deploy
         ;;
+    quick-update)
+        quick_update
+        ;;
+    deploy-blue)
+        deploy_blue
+        ;;
+    deploy-green)
+        deploy_green
+        ;;
     rollback)
-        rollback "${2:-}"
+        rollback "${2:-}" "${3:-both}"
+        ;;
+    scale)
+        scale "${2:-}" "${3:-up}"
         ;;
     status)
         status

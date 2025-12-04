@@ -1,6 +1,23 @@
 # ============================================
 # Circle Backend - Production Docker Compose
+# Blue-Green Deployment with Load Balancing
 # Optimized for 8GB RAM / 2 vCPU instance
+# ============================================
+# 
+# Architecture:
+# - Two sets of containers (Blue & Green) for zero-downtime deployments
+# - Load balancing distributes traffic across both sets during normal operation
+# - Rolling updates: update one set while other handles traffic
+# - Resource allocation optimized for dual-set operation
+#
+# Memory Budget (8GB total):
+# - Redis: 256MB
+# - NGINX: 100MB
+# - API Blue: 768MB | API Green: 768MB
+# - Socket Blue: 768MB | Socket Green: 768MB
+# - Matchmaking Blue: 256MB | Matchmaking Green: 256MB
+# - Cron: 256MB
+# - OS/Buffer: ~2.8GB
 # ============================================
 
 # Shared configuration
@@ -29,10 +46,94 @@ x-deploy-defaults: &deploy-defaults
     max_attempts: 3
     window: 120s
 
+# ============================================
+# Shared API configuration for Blue/Green
+# ============================================
+x-api-base: &api-base
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.api
+    args:
+      CACHEBUST: ${CACHEBUST:-1}
+  image: circle-backend/api:${TAG:-latest}
+  env_file:
+    - .env.production
+  networks:
+    - circle-network
+  deploy:
+    <<: *deploy-defaults
+    resources:
+      limits:
+        memory: 768M
+        cpus: '0.5'
+      reservations:
+        memory: 384M
+        cpus: '0.25'
+  logging: *logging
+  healthcheck:
+    test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
+    <<: *healthcheck-defaults
+  restart: unless-stopped
+
+# ============================================
+# Shared Socket configuration for Blue/Green
+# ============================================
+x-socket-base: &socket-base
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.socket
+    args:
+      CACHEBUST: ${CACHEBUST:-1}
+  image: circle-backend/socket:${TAG:-latest}
+  env_file:
+    - .env.production
+  networks:
+    - circle-network
+  deploy:
+    <<: *deploy-defaults
+    resources:
+      limits:
+        memory: 768M
+        cpus: '0.5'
+      reservations:
+        memory: 384M
+        cpus: '0.25'
+  logging: *logging
+  healthcheck:
+    test: ["CMD", "node", "-e", "require('http').get('http://localhost:8081/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
+    <<: *healthcheck-defaults
+  restart: unless-stopped
+
+# ============================================
+# Shared Matchmaking configuration for Blue/Green
+# ============================================
+x-matchmaking-base: &matchmaking-base
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.matchmaking
+    args:
+      CACHEBUST: ${CACHEBUST:-1}
+  image: circle-backend/matchmaking:${TAG:-latest}
+  env_file:
+    - .env.production
+  networks:
+    - circle-network
+  deploy:
+    <<: *deploy-defaults
+    resources:
+      limits:
+        memory: 256M
+        cpus: '0.15'
+      reservations:
+        memory: 128M
+  logging: *logging
+  restart: unless-stopped
+
 services:
   # ============================================
   # NGINX Reverse Proxy & Load Balancer
   # RAM: ~50-100MB | CPU: Low
+  # Routes traffic to both Blue and Green sets
   # ============================================
   nginx:
     image: nginx:alpine
@@ -46,9 +147,13 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - nginx_logs:/var/log/nginx
     depends_on:
-      api:
+      api-blue:
         condition: service_healthy
-      socket:
+      api-green:
+        condition: service_healthy
+      socket-blue:
+        condition: service_healthy
+      socket-green:
         condition: service_healthy
     networks:
       - circle-network
@@ -71,6 +176,7 @@ services:
   # ============================================
   # Redis Cache & Pub/Sub
   # RAM: ~200-300MB | CPU: Low
+  # Shared by both Blue and Green sets
   # ============================================
   redis:
     image: redis:7-alpine
@@ -107,121 +213,108 @@ services:
     restart: unless-stopped
 
   # ============================================
-  # API Server (REST + GraphQL)
-  # RAM: ~1-1.5GB | CPU: 1 core share
+  # API Server - BLUE SET
   # ============================================
-  api:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.api
-      args:
-        CACHEBUST: ${CACHEBUST:-1}
-    image: circle-backend/api:${TAG:-latest}
-    container_name: circle-api
+  api-blue:
+    <<: *api-base
+    container_name: circle-api-blue
     environment:
       <<: *common-env
       PORT: 8080
       SERVICE_TYPE: api
-    env_file:
-      - .env.production
+      DEPLOYMENT_COLOR: blue
     expose:
       - "8080"
     depends_on:
       redis:
         condition: service_healthy
-    networks:
-      - circle-network
-    deploy:
-      <<: *deploy-defaults
-      resources:
-        limits:
-          memory: 1536M
-          cpus: '1.0'
-        reservations:
-          memory: 512M
-          cpus: '0.5'
-    logging: *logging
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
-      <<: *healthcheck-defaults
-    restart: unless-stopped
 
   # ============================================
-  # Socket.IO Server (WebSocket)
-  # RAM: ~1-1.5GB | CPU: 1 core share
+  # API Server - GREEN SET
   # ============================================
-  socket:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.socket
-      args:
-        CACHEBUST: ${CACHEBUST:-1}
-    image: circle-backend/socket:${TAG:-latest}
-    container_name: circle-socket
+  api-green:
+    <<: *api-base
+    container_name: circle-api-green
+    environment:
+      <<: *common-env
+      PORT: 8080
+      SERVICE_TYPE: api
+      DEPLOYMENT_COLOR: green
+    expose:
+      - "8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ============================================
+  # Socket.IO Server - BLUE SET
+  # ============================================
+  socket-blue:
+    <<: *socket-base
+    container_name: circle-socket-blue
     environment:
       <<: *common-env
       PORT: 8081
       SERVICE_TYPE: socket
       SOCKET_REDIS_ENABLED: "true"
-    env_file:
-      - .env.production
+      DEPLOYMENT_COLOR: blue
     expose:
       - "8081"
     depends_on:
       redis:
         condition: service_healthy
-    networks:
-      - circle-network
-    deploy:
-      <<: *deploy-defaults
-      resources:
-        limits:
-          memory: 1536M
-          cpus: '1.0'
-        reservations:
-          memory: 512M
-          cpus: '0.5'
-    logging: *logging
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8081/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
-      <<: *healthcheck-defaults
-    restart: unless-stopped
 
   # ============================================
-  # Matchmaking Worker
-  # RAM: ~200-400MB | CPU: Low
+  # Socket.IO Server - GREEN SET
   # ============================================
-  matchmaking:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.matchmaking
-      args:
-        CACHEBUST: ${CACHEBUST:-1}
-    image: circle-backend/matchmaking:${TAG:-latest}
-    container_name: circle-matchmaking
+  socket-green:
+    <<: *socket-base
+    container_name: circle-socket-green
     environment:
       <<: *common-env
-      SERVICE_TYPE: matchmaking-worker
-    env_file:
-      - .env.production
+      PORT: 8081
+      SERVICE_TYPE: socket
+      SOCKET_REDIS_ENABLED: "true"
+      DEPLOYMENT_COLOR: green
+    expose:
+      - "8081"
     depends_on:
       redis:
         condition: service_healthy
-    networks:
-      - circle-network
-    deploy:
-      <<: *deploy-defaults
-      resources:
-        limits:
-          memory: 400M
-          cpus: '0.25'
-        reservations:
-          memory: 150M
-    logging: *logging
-    restart: unless-stopped
 
   # ============================================
-  # Cron Worker (Scheduled Tasks)
+  # Matchmaking Worker - BLUE SET
+  # ============================================
+  matchmaking-blue:
+    <<: *matchmaking-base
+    container_name: circle-matchmaking-blue
+    environment:
+      <<: *common-env
+      SERVICE_TYPE: matchmaking-worker
+      DEPLOYMENT_COLOR: blue
+      MATCHMAKING_INSTANCE_ID: blue
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ============================================
+  # Matchmaking Worker - GREEN SET
+  # ============================================
+  matchmaking-green:
+    <<: *matchmaking-base
+    container_name: circle-matchmaking-green
+    environment:
+      <<: *common-env
+      SERVICE_TYPE: matchmaking-worker
+      DEPLOYMENT_COLOR: green
+      MATCHMAKING_INSTANCE_ID: green
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ============================================
+  # Cron Worker (Single Instance - No Blue/Green)
+  # Only one cron worker needed to avoid duplicate jobs
   # RAM: ~200-300MB | CPU: Low
   # ============================================
   cron:
@@ -248,8 +341,8 @@ services:
       <<: *deploy-defaults
       resources:
         limits:
-          memory: 300M
-          cpus: '0.25'
+          memory: 256M
+          cpus: '0.15'
         reservations:
           memory: 100M
     logging: *logging
