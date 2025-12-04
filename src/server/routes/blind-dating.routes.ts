@@ -248,13 +248,39 @@ router.post('/reveal/:matchId', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
     const { matchId } = req.params
     
+    logger.info({ userId, matchId }, '[BlindDate] Reveal endpoint called')
+    
     const result = await BlindDatingService.requestReveal(matchId, userId)
     
+    logger.info({ userId, matchId, result }, '[BlindDate] Reveal result')
+    
     if (!result.success) {
-      return res.status(400).json({ error: result.message })
+      return res.status(400).json({ 
+        error: result.message,
+        success: false,
+        bothRevealed: result.bothRevealed
+      })
     }
     
-    res.json(result)
+    // Get updated match data to return to client
+    const match = await BlindDatingService.getMatchById(matchId)
+    const isUserA = match?.user_a === userId
+    const otherUserId = isUserA ? match?.user_b : match?.user_a
+    
+    let otherUserProfile = null
+    if (otherUserId) {
+      // If both revealed, show full profile; otherwise show anonymized
+      const showFull = result.bothRevealed || (isUserA ? match?.user_b_revealed : match?.user_a_revealed)
+      otherUserProfile = await BlindDatingService.getAnonymizedProfile(otherUserId, showFull || false)
+    }
+    
+    res.json({
+      ...result,
+      match,
+      otherUser: otherUserProfile,
+      hasRevealedSelf: isUserA ? match?.user_a_revealed : match?.user_b_revealed,
+      otherHasRevealed: isUserA ? match?.user_b_revealed : match?.user_a_revealed
+    })
   } catch (error) {
     logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error revealing identity')
     res.status(500).json({ error: 'Failed to reveal identity' })

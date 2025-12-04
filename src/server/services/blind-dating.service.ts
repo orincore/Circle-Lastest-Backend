@@ -963,9 +963,15 @@ export class BlindDatingService {
 
   /**
    * Check if reveal is available for a match
-   * Uses dynamic threshold: base threshold, then check every 5 messages
+   * Once threshold is reached, reveal is always available
    */
   static isRevealAvailable(match: BlindDateMatch): boolean {
+    // Already revealed - no need to reveal again
+    if (match.status === 'revealed') {
+      return false
+    }
+    
+    // Match must be active
     if (match.status !== 'active') {
       return false
     }
@@ -973,23 +979,9 @@ export class BlindDatingService {
     const messageCount = match.message_count
     const threshold = match.reveal_threshold
 
-    // Not reached initial threshold yet
-    if (messageCount < threshold) {
-      return false
-    }
-
-    // At or past threshold - check if we're at a checkpoint
-    // Checkpoints: threshold, threshold+5, threshold+10, etc.
-    const messagesSinceThreshold = messageCount - threshold
-    const checkInterval = 5
-    
-    // Allow reveal at threshold itself
-    if (messagesSinceThreshold === 0) {
-      return true
-    }
-    
-    // After threshold, only at 5-message intervals
-    return messagesSinceThreshold % checkInterval === 0
+    // Once threshold is reached, reveal is always available
+    // This is more user-friendly than requiring exact checkpoints
+    return messageCount >= threshold
   }
 
   /**
@@ -1025,27 +1017,53 @@ export class BlindDatingService {
     try {
       const match = await this.getMatchById(matchId)
       if (!match) {
+        logger.error({ matchId, requestingUserId }, '[BlindDate] Reveal failed - match not found')
         return { success: false, bothRevealed: false, message: 'Match not found' }
       }
 
-      if (match.status !== 'active') {
+      logger.info({ 
+        matchId, 
+        requestingUserId, 
+        status: match.status,
+        messageCount: match.message_count,
+        threshold: match.reveal_threshold,
+        user_a: match.user_a,
+        user_b: match.user_b,
+        user_a_revealed: match.user_a_revealed,
+        user_b_revealed: match.user_b_revealed
+      }, '[BlindDate] Processing reveal request')
+
+      // Allow reveal for both active and already-revealed matches (for the second user)
+      if (match.status !== 'active' && match.status !== 'revealed') {
         return { success: false, bothRevealed: false, message: 'Match is not active' }
       }
 
-      if (!this.isRevealAvailable(match)) {
-        return { 
-          success: false, 
-          bothRevealed: false, 
-          message: `Need ${match.reveal_threshold - match.message_count} more messages before revealing` 
-        }
-      }
-
-      // Determine which user is requesting
+      // Check if user already revealed
       const isUserA = match.user_a === requestingUserId
       const isUserB = match.user_b === requestingUserId
       
       if (!isUserA && !isUserB) {
         return { success: false, bothRevealed: false, message: 'You are not part of this match' }
+      }
+
+      const alreadyRevealed = isUserA ? match.user_a_revealed : match.user_b_revealed
+      if (alreadyRevealed) {
+        // User already revealed, just return success
+        const bothRevealed = match.user_a_revealed && match.user_b_revealed
+        return { 
+          success: true, 
+          bothRevealed, 
+          message: bothRevealed ? 'Both identities revealed!' : 'You have already revealed your identity. Waiting for the other person.' 
+        }
+      }
+
+      if (!this.isRevealAvailable(match)) {
+        const messagesNeeded = Math.max(0, match.reveal_threshold - match.message_count)
+        return { 
+          success: false, 
+          bothRevealed: false, 
+          message: `Need ${messagesNeeded} more messages before revealing` 
+        }
       }
 
       // Update reveal status
@@ -1304,29 +1322,61 @@ export class BlindDatingService {
     otherUserProfile?: AnonymizedProfile
     canReveal: boolean
     messagesUntilReveal: number
+    hasRevealedSelf: boolean
+    otherHasRevealed: boolean
+    matchId?: string
   } | null> {
     try {
       const match = await this.getMatchByChatId(chatId)
       
       if (!match) {
-        return { isBlindDate: false, canReveal: false, messagesUntilReveal: 0 }
+        return { 
+          isBlindDate: false, 
+          canReveal: false, 
+          messagesUntilReveal: 0,
+          hasRevealedSelf: false,
+          otherHasRevealed: false
+        }
       }
 
       const isUserA = match.user_a === userId
       const otherUserId = isUserA ? match.user_b : match.user_a
-      const isRevealed = match.status === 'revealed' || 
-                        (isUserA ? match.user_b_revealed : match.user_a_revealed)
+      
+      // Determine reveal status for each user
+      const hasRevealedSelf = isUserA ? match.user_a_revealed : match.user_b_revealed
+      const otherHasRevealed = isUserA ? match.user_b_revealed : match.user_a_revealed
+      
+      // Show revealed profile if match is fully revealed OR if the other user has revealed
+      const showRevealedProfile = match.status === 'revealed' || otherHasRevealed
 
-      const otherUserProfile = await this.getAnonymizedProfile(otherUserId, isRevealed)
-      const canReveal = this.isRevealAvailable(match)
+      const otherUserProfile = await this.getAnonymizedProfile(otherUserId, showRevealedProfile)
+      
+      // Allow reveal if threshold is met (more permissive - once threshold is reached, always allow)
+      const canReveal = this.isRevealAvailable(match) && !hasRevealedSelf
       const messagesUntilReveal = this.getMessagesUntilReveal(match)
+
+      logger.info({ 
+        chatId, 
+        matchId: match.id,
+        userId, 
+        isUserA,
+        hasRevealedSelf, 
+        otherHasRevealed,
+        canReveal,
+        messageCount: match.message_count,
+        threshold: match.reveal_threshold,
+        status: match.status
+      }, '[BlindDate] getChatBlindDateStatus result')
 
       return {
         isBlindDate: true,
         match,
+        matchId: match.id,
         otherUserProfile: otherUserProfile || undefined,
         canReveal,
-        messagesUntilReveal
+        messagesUntilReveal,
+        hasRevealedSelf,
+        otherHasRevealed
       }
     } catch (error) {
       logger.error({ error, chatId, userId }, 'Error getting chat blind date status')
