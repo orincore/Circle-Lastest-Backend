@@ -321,7 +321,14 @@ router.get('/chat/:chatId/status', requireAuth, async (req: AuthRequest, res) =>
     
     const status = await BlindDatingService.getChatBlindDateStatus(chatId, userId)
     
-    res.json(status || { isBlindDate: false })
+    // Return both wrapped (for legacy frontend) and unwrapped format
+    const response = status || { isBlindDate: false, canReveal: false, messagesUntilReveal: 0, hasRevealedSelf: false, otherHasRevealed: false }
+    
+    // Frontend expects data.match.id - return in compatible format
+    res.json({
+      ...response,
+      data: response  // Legacy frontend compatibility
+    })
   } catch (error) {
     logger.error({ error, userId: req.user!.id, chatId: req.params.chatId }, 'Error getting chat blind date status')
     res.status(500).json({ error: 'Failed to get status' })
