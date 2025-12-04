@@ -312,6 +312,7 @@ export function initOptimizedSocket(server: Server) {
   })
 
   const roomCounts = new Map<string, number>() // key: chat:{chatId} -> count
+  const activeCounts = new Map<string, number>() // key: chat:{chatId} -> active viewers (foreground)
 
   function bumpRoom(io: IOServer, room: string, delta: number) {
     const prev = roomCounts.get(room) || 0
@@ -322,6 +323,17 @@ export function initOptimizedSocket(server: Server) {
       // Emit both `online` and `isOnline` for backward/forward compatibility with clients
       const isOnline = next > 1
       io.to(room).emit('chat:presence', { chatId, online: isOnline, isOnline })
+    }
+  }
+
+  function bumpActive(io: IOServer, room: string, delta: number) {
+    const prev = activeCounts.get(room) || 0
+    const next = Math.max(0, prev + delta)
+    activeCounts.set(room, next)
+    const chatId = room.startsWith('chat:') ? room.slice(5) : undefined
+    if (chatId) {
+      const isActive = next > 0
+      io.to(room).emit('chat:presence:active', { chatId, isActive })
     }
   }
 
@@ -576,6 +588,21 @@ export function initOptimizedSocket(server: Server) {
       } catch (error) {
         logger.error({ error, messageId, userId }, 'Failed to mark message as read')
       }
+    })
+
+    // Chat: active/inactive indicators for "currently viewing this chat" status
+    socket.on('chat:active', ({ chatId }: { chatId: string }) => {
+      resetTimeout()
+      if (!chatId) return
+      const room = `chat:${chatId}`
+      bumpActive(io, room, 1)
+    })
+
+    socket.on('chat:inactive', ({ chatId }: { chatId: string }) => {
+      resetTimeout()
+      if (!chatId) return
+      const room = `chat:${chatId}`
+      bumpActive(io, room, -1)
     })
 
     // Friend Status: Get friend status
@@ -1672,27 +1699,11 @@ export function initOptimizedSocket(server: Server) {
       }
       
       logger.info({ 
-        id: socket.id, 
-        reason, 
+        id: socket.id,
+        user,
         userId,
-        totalConnections,
-        userConnections: userId ? connectionCounts.get(userId) : 0
+        reason
       }, 'socket disconnected')
-      
-      // Best-effort: decrement all chat rooms this socket was in
-      try {
-        const rooms = Array.from(socket.rooms)
-        rooms.forEach((r) => { 
-          if (r.startsWith('chat:')) bumpRoom(io, r, -1) 
-        })
-      } catch (error) {
-        logger.error({ error, socketId: socket.id }, 'Failed to cleanup rooms on disconnect')
-      }
-    })
-
-    // Handle socket errors
-    socket.on('error', (error) => {
-      logger.error({ error, socketId: socket.id, userId }, 'Socket error occurred')
     })
   })
 
