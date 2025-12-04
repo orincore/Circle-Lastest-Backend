@@ -300,6 +300,12 @@ class DockerMonitoringService {
 
       return containers
     } catch (error) {
+      // If docker CLI is not available inside the container, return empty list instead of throwing
+      const message = (error as any)?.stderr || (error as any)?.message || ''
+      if (typeof message === 'string' && message.includes('docker: not found')) {
+        logger.warn({ error }, 'Docker CLI not available - returning empty container list')
+        return []
+      }
       logger.error({ error }, 'Failed to get containers')
       throw error
     }
@@ -325,6 +331,19 @@ class DockerMonitoringService {
         serverTime: new Date().toISOString()
       }
     } catch (error) {
+      const message = (error as any)?.stderr || (error as any)?.message || ''
+      if (typeof message === 'string' && message.includes('docker: not found')) {
+        logger.warn({ error }, 'Docker CLI not available - returning empty docker overview')
+        return {
+          totalContainers: 0,
+          runningContainers: 0,
+          pausedContainers: 0,
+          stoppedContainers: 0,
+          totalImages: 0,
+          dockerVersion: 'not_available',
+          serverTime: new Date().toISOString()
+        }
+      }
       logger.error({ error }, 'Failed to get docker overview')
       throw error
     }
@@ -497,6 +516,15 @@ class DockerMonitoringService {
 
       return { blue, green, activeColor }
     } catch (error) {
+      const message = (error as any)?.stderr || (error as any)?.message || ''
+      if (typeof message === 'string' && message.includes('docker: not found')) {
+        logger.warn({ error }, 'Docker CLI not available - returning unknown deployment status')
+        return {
+          blue: { api: 'unknown', socket: 'unknown', matchmaking: 'unknown' },
+          green: { api: 'unknown', socket: 'unknown', matchmaking: 'unknown' },
+          activeColor: 'none'
+        }
+      }
       logger.error({ error }, 'Failed to get deployment status')
       throw error
     }

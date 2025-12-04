@@ -8,17 +8,24 @@ const router = Router()
 /**
  * Get full monitoring data (overview, server, containers, deployment status)
  * GET /api/admin/docker/monitoring
+ *
+ * IMPORTANT:
+ * This endpoint should NEVER break the admin panel. If monitoring fails
+ * (for example, Docker CLI is not available inside the container),
+ * we return HTTP 200 with success=false and dockerAvailable=false
+ * instead of a 500 error.
  */
 router.get('/monitoring', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     const data = await dockerMonitoringService.getFullMonitoringData()
-    res.json({ success: true, data })
+    res.json({ success: true, dockerAvailable: true, data })
   } catch (error: any) {
     console.error('Failed to get monitoring data:', error)
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to get monitoring data',
-      message: error.message 
+    res.status(200).json({ 
+      success: false,
+      dockerAvailable: false,
+      error: 'Monitoring temporarily unavailable',
+      message: error?.message || 'Docker monitoring is not available inside this container'
     })
   }
 })

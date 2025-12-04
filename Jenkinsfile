@@ -304,12 +304,23 @@ pipeline {
                                 sleep 5
                                 
                                 # ============================================
-                                # Step 6: Reload NGINX
+                                # Step 6: Reload NGINX (no recreate to avoid downtime)
                                 # ============================================
                                 echo ""
                                 echo "🌐 Step 5: Reloading NGINX..."
-                                docker-compose -f ${COMPOSE_FILE} up -d nginx
-                                docker-compose -f ${COMPOSE_FILE} exec -T nginx nginx -s reload 2>/dev/null || true
+                                
+                                # If nginx container is already running, reload config only
+                                NGINX_ID=$(docker ps -q -f name=circle-nginx)
+                                if [ -n "${NGINX_ID}" ]; then
+                                    echo "   Reloading existing circle-nginx container..."
+                                    docker exec -T ${NGINX_ID} nginx -s reload 2>/dev/null || {
+                                        echo "   Reload failed, doing a safe restart..."
+                                        docker-compose -f ${COMPOSE_FILE} restart nginx
+                                    }
+                                else
+                                    echo "   circle-nginx is not running, starting it..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d nginx
+                                fi
                                 sleep 3
                                 
                                 # ============================================
