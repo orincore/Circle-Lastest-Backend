@@ -1236,23 +1236,15 @@ export function initOptimizedSocket(server: Server) {
             const memberPromises = members.map(async (member: { user_id: string }) => {
               if (member.user_id !== userId) { // Don't send to sender
                 try {
-                  // Check if user is online (has active socket)
-                  const userSockets = await io.fetchSockets()
-                  const isOnline = userSockets.some((s: any) => {
-                    const socketUser = (s.data as any)?.user
-                    return socketUser?.id === member.user_id
+                  // Always send socket event to user's personal room
+                  // This ensures chat list updates in real-time
+                  io.to(member.user_id).emit('chat:message:background', { 
+                    message: { 
+                      ...msg, 
+                      senderName,
+                      senderAvatar
+                    } 
                   })
-                  
-                  // Always send socket event if user has connection
-                  if (isOnline) {
-                    io.to(member.user_id).emit('chat:message:background', { 
-                      message: { 
-                        ...msg, 
-                        senderName,
-                        senderAvatar
-                      } 
-                    })
-                  }
                   
                   // Always send push notification for messages
                   // (app may be backgrounded even with socket connected)
@@ -1265,7 +1257,7 @@ export function initOptimizedSocket(server: Server) {
                       chatId,
                       msg.id
                     )
-                    logger.debug({ recipientId: member.user_id, chatId, isOnline }, 'Sent push notification for message')
+                    logger.debug({ recipientId: member.user_id, chatId }, 'Sent push notification for message')
                   } catch (pushError) {
                     logger.error({ error: pushError, recipientId: member.user_id }, 'Failed to send push notification')
                   }
@@ -1339,6 +1331,9 @@ export function initOptimizedSocket(server: Server) {
             io.to(member.user_id).emit('chat:read', { chatId, messageId, by: userId })
           })
         }
+        
+        // Emit updated unread count to the user who read the message
+        await emitUnreadCountUpdate(chatId, userId)
       } catch (error) {
         logger.error({ error, chatId, messageId, userId }, 'Failed to send read receipt to members')
       }

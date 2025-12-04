@@ -236,37 +236,57 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     
     // Emit real-time message to other user for chat list updates
     try {
-      //console.log(`📨 Emitting message to user ${otherUserId} for chat ${chatId}`)
-      emitToUser(otherUserId, 'chat:message', {
-        message: {
-          id: msg.id,
-          chatId: msg.chat_id,
-          senderId: msg.sender_id,
-          text: msg.text,
-          mediaUrl: msg.media_url,
-          mediaType: msg.media_type,
-          thumbnail: msg.thumbnail,
-          createdAt: new Date(msg.created_at).getTime(),
-          status: 'sent'
-        }
-      })
+      // Get sender info for notifications
+      const { data: senderInfo } = await supabase
+        .from('profiles')
+        .select('first_name, last_name, username, email, profile_photo_url')
+        .eq('id', userId)
+        .single()
+      
+      const senderName = senderInfo 
+        ? (senderInfo.first_name && senderInfo.last_name 
+            ? `${senderInfo.first_name} ${senderInfo.last_name}`.trim()
+            : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
+        : 'Someone'
+      const senderAvatar = senderInfo?.profile_photo_url || null
+      
+      const messagePayload = {
+        id: msg.id,
+        chatId: msg.chat_id,
+        senderId: msg.sender_id,
+        text: msg.text,
+        mediaUrl: msg.media_url,
+        mediaType: msg.media_type,
+        thumbnail: msg.thumbnail,
+        createdAt: new Date(msg.created_at).getTime(),
+        status: 'sent',
+        senderName,
+        senderAvatar
+      }
+      
+      // Emit to receiver - both chat:message and chat:message:background for chat list
+      emitToUser(otherUserId, 'chat:message', { message: messagePayload })
+      emitToUser(otherUserId, 'chat:message:background', { message: messagePayload })
       
       // Also emit to sender for confirmation
-      emitToUser(userId, 'chat:message', {
-        message: {
-          id: msg.id,
-          chatId: msg.chat_id,
-          senderId: msg.sender_id,
-          text: msg.text,
-          createdAt: new Date(msg.created_at).getTime(),
-          status: 'sent'
-        }
-      })
-      
-      //console.log(`✅ Message emitted successfully to both users`)
+      emitToUser(userId, 'chat:message', { message: messagePayload })
       
       // Emit unread count update to the receiver
       await emitUnreadCountUpdate(chatId, otherUserId)
+      
+      // Send push notification to the receiver
+      try {
+        const { PushNotificationService } = await import('../services/pushNotificationService.js')
+        await PushNotificationService.sendMessageNotification(
+          otherUserId,
+          senderName,
+          msg.text || 'New message',
+          chatId,
+          msg.id
+        )
+      } catch (pushError) {
+        console.error('Failed to send push notification:', pushError)
+      }
       
     } catch (error) {
       console.error('Failed to emit message via socket:', error)

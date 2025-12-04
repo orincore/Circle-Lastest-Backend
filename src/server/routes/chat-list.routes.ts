@@ -61,16 +61,84 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Determine which chats are blind date chats with an ACTIVE match (ongoing, not yet revealed)
-    let blindDateMap = new Map<string, boolean>()
+    // Also fetch match details for blind date info display
+    interface BlindDateInfo {
+      isOngoing: boolean
+      matchReason?: string
+      otherUserGender?: string
+      otherUserAge?: number
+      maskedName?: string
+    }
+    let blindDateMap = new Map<string, BlindDateInfo>()
     if (chatIds.length > 0) {
       const { data: blindMatches } = await supabase
         .from('blind_date_matches')
-        .select('chat_id, status')
+        .select('chat_id, status, user_a, user_b, compatibility_score')
         .in('chat_id', chatIds)
         .eq('status', 'active')
 
-      if (blindMatches) {
-        blindDateMap = new Map(blindMatches.map(m => [m.chat_id, true]))
+      if (blindMatches && blindMatches.length > 0) {
+        // Get other user profiles for blind date matches
+        for (const match of blindMatches) {
+          const otherUserId = match.user_a === userId ? match.user_b : match.user_a
+          
+          // Get other user's profile for gender, age, and name masking
+          const { data: otherProfile } = await supabase
+            .from('profiles')
+            .select('first_name, last_name, gender, date_of_birth, needs')
+            .eq('id', otherUserId)
+            .single()
+          
+          // Calculate age from date_of_birth
+          let age: number | undefined
+          if (otherProfile?.date_of_birth) {
+            const dob = new Date(otherProfile.date_of_birth)
+            const today = new Date()
+            age = today.getFullYear() - dob.getFullYear()
+            const monthDiff = today.getMonth() - dob.getMonth()
+            if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) {
+              age--
+            }
+          }
+          
+          // Mask name: "Adarsh Suradkar" -> "A***** S*******"
+          let maskedName = 'Anonymous'
+          if (otherProfile?.first_name) {
+            const maskWord = (word: string) => {
+              if (!word || word.length === 0) return ''
+              if (word.length === 1) return word[0] + '*'
+              return word[0] + '*'.repeat(word.length - 1)
+            }
+            const firstName = maskWord(otherProfile.first_name)
+            const lastName = otherProfile.last_name ? maskWord(otherProfile.last_name) : ''
+            maskedName = lastName ? `${firstName} ${lastName}` : firstName
+          }
+          
+          // Determine match reason from needs (looking_for field)
+          let matchReason = 'Connection'
+          if (otherProfile?.needs && Array.isArray(otherProfile.needs) && otherProfile.needs.length > 0) {
+            // Map needs to friendly labels
+            const needsLabels: Record<string, string> = {
+              'friendship': 'Friendship',
+              'relationship': 'Relationship',
+              'dating': 'Dating',
+              'casual': 'Casual',
+              'serious': 'Serious Relationship',
+              'networking': 'Networking',
+              'chat': 'Chat Buddy'
+            }
+            const primaryNeed = otherProfile.needs[0]?.toLowerCase()
+            matchReason = needsLabels[primaryNeed] || 'Connection'
+          }
+          
+          blindDateMap.set(match.chat_id, {
+            isOngoing: true,
+            matchReason,
+            otherUserGender: otherProfile?.gender,
+            otherUserAge: age,
+            maskedName
+          })
+        }
       }
     }
 
@@ -81,7 +149,9 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     let items = inbox.map(item => {
       const s = settingsMap.get(item.chat.id) || { archived: false, pinned: false }
       const count = countsMap.get(item.chat.id)
-      const isBlindDateOngoing = !!blindDateMap.get(item.chat.id)
+      const blindDateInfo = blindDateMap.get(item.chat.id)
+      const isBlindDateOngoing = !!blindDateInfo?.isOngoing
+      
       return {
         chatId: item.chat.id,
         lastMessageAt: item.chat.last_message_at,
@@ -100,13 +170,20 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
         } : null,
         otherUser: item.otherId ? {
           id: item.otherId,
-          name: item.otherName,
+          name: isBlindDateOngoing && blindDateInfo?.maskedName ? blindDateInfo.maskedName : item.otherName,
           profilePhoto: item.otherProfilePhoto,
         } : null,
         archived: s.archived,
         pinned: s.pinned,
         messageCount: count,
         isBlindDateOngoing,
+        // Blind date specific info
+        blindDateInfo: isBlindDateOngoing ? {
+          matchReason: blindDateInfo?.matchReason,
+          gender: blindDateInfo?.otherUserGender,
+          age: blindDateInfo?.otherUserAge,
+          maskedName: blindDateInfo?.maskedName
+        } : null,
       }
     })
 

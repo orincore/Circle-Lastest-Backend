@@ -683,19 +683,19 @@ export class BlindDatingService {
    */
   static async isBlindDateChat(chatId: string): Promise<boolean> {
     try {
-      const { data: match, error } = await supabase
+      const { data, error } = await supabase
         .from('blind_date_matches')
-        .select('id, status')
+        .select('id')
         .eq('chat_id', chatId)
         .in('status', ['active', 'revealed'])
-        .maybeSingle()
+        .limit(1)
       
-      if (error && error.code !== 'PGRST116') {
+      if (error) {
         logger.error({ error, chatId }, 'Error checking if chat is blind date')
         return false
       }
       
-      return !!match
+      return Array.isArray(data) ? data.length > 0 : !!data
     } catch (error) {
       logger.error({ error, chatId }, 'Error checking blind date chat')
       return false
