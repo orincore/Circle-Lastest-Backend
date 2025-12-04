@@ -135,6 +135,50 @@ router.get('/', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
 })
 
 /**
+ * Quick search for users (for modals/autocomplete)
+ * GET /api/admin/users/search
+ */
+router.get('/search', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { q = '', limit = '10' } = req.query
+    const searchTerm = (q as string).trim()
+    const limitNum = Math.min(parseInt(limit as string) || 10, 50)
+
+    if (searchTerm.length < 2) {
+      return res.json({ users: [] })
+    }
+
+    const searchPattern = `%${searchTerm}%`
+    
+    const { data: users, error } = await supabase
+      .from('profiles')
+      .select(`
+        id,
+        email,
+        username,
+        first_name,
+        last_name,
+        age,
+        gender,
+        profile_photo_url
+      `)
+      .is('deleted_at', null)
+      .or(`email.ilike.${searchPattern},username.ilike.${searchPattern},first_name.ilike.${searchPattern},last_name.ilike.${searchPattern}`)
+      .limit(limitNum)
+
+    if (error) {
+      console.error('Error searching users:', error)
+      return res.status(500).json({ error: 'Failed to search users' })
+    }
+
+    return res.json({ users: users || [] })
+  } catch (error) {
+    console.error('User search error:', error)
+    return res.status(500).json({ error: 'Failed to search users' })
+  }
+})
+
+/**
  * Get user details by ID
  * GET /api/admin/users/:userId
  */
