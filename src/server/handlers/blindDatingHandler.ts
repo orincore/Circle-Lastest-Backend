@@ -87,22 +87,57 @@ export function setupBlindDatingHandlers(io: IOServer, socket: Socket, userId: s
     }
   })
 
-  // Request identity reveal
-  socket.on('blind_date:request_reveal', async ({ matchId }: { matchId: string }) => {
+  // Request identity reveal - REAL-TIME via socket
+  socket.on('blind_date:request_reveal', async ({ matchId, chatId }: { matchId: string; chatId?: string }) => {
     try {
       if (!matchId) {
         socket.emit('blind_date:reveal:error', { error: 'Match ID required' })
         return
       }
 
+      logger.info({ userId, matchId, chatId }, '[BlindDate Socket] Reveal request received')
+
       const result = await BlindDatingService.requestReveal(matchId, userId)
       
       if (result.success) {
+        // Get updated match data
+        const match = await BlindDatingService.getMatchById(matchId)
+        if (!match) {
+          socket.emit('blind_date:reveal:error', { error: 'Match not found' })
+          return
+        }
+
+        const isUserA = match.user_a === userId
+        const otherUserId = isUserA ? match.user_b : match.user_a
+        
+        // Get profiles for both users
+        const [myProfile, otherProfile] = await Promise.all([
+          BlindDatingService.getAnonymizedProfile(userId, result.bothRevealed),
+          BlindDatingService.getAnonymizedProfile(otherUserId, result.bothRevealed)
+        ])
+
+        // Emit success to requesting user with full data
         socket.emit('blind_date:reveal:success', {
           matchId,
+          chatId: match.chat_id || chatId,
           bothRevealed: result.bothRevealed,
-          message: result.message
+          message: result.message,
+          hasRevealedSelf: true,
+          otherHasRevealed: isUserA ? match.user_b_revealed : match.user_a_revealed,
+          otherUser: otherProfile,
+          otherUserId,
+          friendshipCreated: result.bothRevealed,
+          match: {
+            ...match,
+            user_a_revealed: isUserA ? true : match.user_a_revealed,
+            user_b_revealed: isUserA ? match.user_b_revealed : true
+          }
         })
+
+        logger.info({ userId, matchId, bothRevealed: result.bothRevealed }, '[BlindDate Socket] Reveal success emitted to requester')
+
+        // Note: The BlindDatingService.requestReveal already emits to the other user
+        // via emitToUser for 'blind_date:revealed' or 'blind_date:reveal_requested'
       } else {
         socket.emit('blind_date:reveal:error', {
           matchId,
