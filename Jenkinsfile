@@ -310,10 +310,10 @@ pipeline {
                                 echo "🌐 Step 5: Reloading NGINX..."
                                 
                                 # If nginx container is already running, reload config only
-                                NGINX_ID=$(docker ps -q -f name=circle-nginx)
+                                NGINX_ID=\$(docker ps -q -f name=circle-nginx)
                                 if [ -n "${NGINX_ID}" ]; then
                                     echo "   Reloading existing circle-nginx container..."
-                                    docker exec -T ${NGINX_ID} nginx -s reload 2>/dev/null || {
+                                    docker exec -T \${NGINX_ID} nginx -s reload 2>/dev/null || {
                                         echo "   Reload failed, doing a safe restart..."
                                         docker-compose -f ${COMPOSE_FILE} restart nginx
                                     }
