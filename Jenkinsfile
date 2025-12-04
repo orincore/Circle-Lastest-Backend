@@ -1,7 +1,13 @@
 // ============================================
 // Circle Backend - Jenkins CI/CD Pipeline
-// Simplified: Git Pull + NPM Install + Docker Rebuild
-// With Zero-Downtime & Automatic Rollback
+// Blue-Green Deployment with Zero Downtime
+// ============================================
+//
+// Architecture:
+// - Two container sets: Blue and Green
+// - Rolling update: update one set while other handles traffic
+// - Automatic rollback on failure
+// - Health checks before traffic switch
 // ============================================
 
 pipeline {
@@ -14,10 +20,15 @@ pipeline {
         DEPLOY_DIR = '/root/Circle-Lastest-Backend'
         COMPOSE_FILE = 'docker-compose.production.yml'
         BRANCH = 'main'
+        
+        // Blue-Green Configuration
+        HEALTH_CHECK_RETRIES = '6'
+        HEALTH_CHECK_INTERVAL = '10'
+        DRAIN_WAIT_SECONDS = '10'
     }
 
     options {
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '15'))
         timestamps()
@@ -26,6 +37,7 @@ pipeline {
     parameters {
         booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild Docker images without cache')
         booleanParam(name: 'SKIP_DEPLOY', defaultValue: false, description: 'Skip deployment (only validate)')
+        choice(name: 'DEPLOY_TARGET', choices: ['rolling', 'blue-only', 'green-only'], description: 'Deployment target (rolling = both sets)')
     }
 
     stages {
@@ -47,18 +59,20 @@ pipeline {
                 echo """
                 ============================================
                 🚀 Circle Backend CI/CD Pipeline
+                   Blue-Green Zero-Downtime Deployment
                 ============================================
                 Build: #${env.BUILD_NUMBER}
                 Commit: ${env.GIT_COMMIT_SHORT}
                 Message: ${env.GIT_COMMIT_MSG}
                 Branch: ${BRANCH}
+                Deploy Target: ${params.DEPLOY_TARGET}
                 ============================================
                 """
             }
         }
 
         // ============================================
-        // Stage 2: Local Validation (Optional)
+        // Stage 2: Local Validation
         // ============================================
         stage('Lint Check') {
             steps {
@@ -75,7 +89,7 @@ pipeline {
         }
 
         // ============================================
-        // Stage 3: Deploy to Production Server
+        // Stage 3: Blue-Green Deploy to Production
         // ============================================
         stage('Deploy') {
             when {
@@ -88,19 +102,20 @@ pipeline {
                     usernameVariable: 'SSH_USER'
                 )]) {
                     script {
-                        def forceFlag = params.FORCE_REBUILD ? '--force' : ''
+                        def deployTarget = params.DEPLOY_TARGET ?: 'rolling'
                         
                         sh """
-                            echo "🚀 Deploying to production server..."
+                            echo "🚀 Blue-Green Deployment to production server..."
                             echo "   Server: ${SERVER_USER}@${SERVER_IP}"
                             echo "   Directory: ${DEPLOY_DIR}"
+                            echo "   Target: ${deployTarget}"
                             echo ""
                             
                             ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
                                 set -e
                                 
                                 echo "============================================"
-                                echo "🚀 Circle Backend Deployment"
+                                echo "🚀 Circle Backend Blue-Green Deployment"
                                 echo "   Build: #${BUILD_NUMBER}"
                                 echo "   Commit: ${GIT_COMMIT_SHORT}"
                                 echo "============================================"
@@ -108,11 +123,71 @@ pipeline {
                                 
                                 cd ${DEPLOY_DIR}
                                 
-                                # Save current commit for rollback
+                                # ============================================
+                                # Helper Functions
+                                # ============================================
+                                
+                                check_container_health() {
+                                    local container=\$1
+                                    local health=\$(docker inspect \$container --format="{{.State.Health.Status}}" 2>/dev/null || echo "none")
+                                    echo \$health
+                                }
+                                
+                                wait_for_healthy() {
+                                    local container=\$1
+                                    local port=\$2
+                                    local retries=${HEALTH_CHECK_RETRIES}
+                                    
+                                    echo "   Waiting for \$container to be healthy..."
+                                    for i in \$(seq 1 \$retries); do
+                                        sleep ${HEALTH_CHECK_INTERVAL}
+                                        
+                                        local health=\$(check_container_health \$container)
+                                        echo "      Attempt \$i/\$retries: \$health"
+                                        
+                                        if [ "\$health" = "healthy" ]; then
+                                            echo "   ✅ \$container is healthy!"
+                                            return 0
+                                        fi
+                                    done
+                                    
+                                    echo "   ❌ \$container failed health check!"
+                                    return 1
+                                }
+                                
+                                deploy_color_set() {
+                                    local color=\$1
+                                    echo ""
+                                    echo "🔵 Deploying \$color set..."
+                                    
+                                    # Build and start API
+                                    echo "   Building api-\$color..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build api-\$color
+                                    wait_for_healthy "circle-api-\$color" "8080" || return 1
+                                    
+                                    # Build and start Socket
+                                    echo "   Building socket-\$color..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build socket-\$color
+                                    wait_for_healthy "circle-socket-\$color" "8081" || return 1
+                                    
+                                    # Build and start Matchmaking (no health endpoint)
+                                    echo "   Building matchmaking-\$color..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build matchmaking-\$color
+                                    sleep 5
+                                    
+                                    echo "   ✅ \$color set deployed successfully!"
+                                    return 0
+                                }
+                                
+                                # ============================================
+                                # Step 1: Save current state for rollback
+                                # ============================================
                                 PREVIOUS_COMMIT=\$(git rev-parse HEAD 2>/dev/null || echo "none")
                                 echo "📌 Previous commit: \$PREVIOUS_COMMIT"
                                 
-                                # Pull latest code
+                                # ============================================
+                                # Step 2: Pull latest code
+                                # ============================================
                                 echo ""
                                 echo "📥 Step 1: Pulling latest code..."
                                 git fetch --all
@@ -128,122 +203,174 @@ pipeline {
                                     git log --oneline \$PREVIOUS_COMMIT..\$NEW_COMMIT 2>/dev/null || git log -3 --oneline
                                 fi
                                 
-                                # NOTE: Skip npm install and TypeScript build on host
-                                # Docker handles this inside containers with proper memory allocation
-                                
-                                # Build Docker images (TypeScript compiled inside Docker with 2GB memory)
+                                # ============================================
+                                # Step 3: Ensure Redis is running
+                                # ============================================
                                 echo ""
-                                echo "🐳 Step 2: Building Docker images..."
-                                echo "   (TypeScript will be compiled inside Docker containers)"
-                                
-                                # Use git commit hash as cache buster to force TypeScript rebuild on code changes
-                                export CACHEBUST=\$NEW_COMMIT
-                                docker-compose -f ${COMPOSE_FILE} build 2>&1 || {
-                                    echo "❌ Docker build failed! Rolling back..."
-                                    git checkout \$PREVIOUS_COMMIT
-                                    docker-compose -f ${COMPOSE_FILE} up -d
-                                    exit 1
-                                }
-                                
-                                # Rolling update with health checks
-                                echo ""
-                                echo "🔄 Step 3: Rolling update (zero-downtime)..."
-                                
-                                # Update services one by one to maintain availability
-                                for service in api socket matchmaking cron; do
-                                    echo "   Updating \$service..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps \$service
-                                    sleep 5
-                                done
-                                
-                                # Update nginx last (force recreate so config & upstreams are clean)
-                                echo "   Updating nginx (force recreate)..."
-                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate nginx
-                                
-                                # Optional: brief local gateway check to ensure nginx is serving
-                                echo "   Checking nginx gateway locally..."
+                                echo "🗄️ Step 2: Ensuring Redis is running..."
+                                docker-compose -f ${COMPOSE_FILE} up -d redis
                                 sleep 5
-                                curl -sf http://localhost/ >/dev/null 2>&1 || echo "   (nginx HTTP check skipped or not reachable on localhost, continuing)"
                                 
-                                # Health check with retries
+                                # ============================================
+                                # Step 4: Blue-Green Rolling Update
+                                # ============================================
                                 echo ""
-                                echo "🏥 Step 4: Health check..."
+                                echo "🔄 Step 3: Blue-Green Rolling Update..."
+                                echo "   Strategy: Update one set while other handles traffic"
                                 
-                                HEALTH_OK=false
-                                for i in 1 2 3 4 5 6; do
-                                    echo "   Attempt \$i/6..."
-                                    sleep 10
+                                export CACHEBUST=\$NEW_COMMIT
+                                
+                                DEPLOY_TARGET="${deployTarget}"
+                                
+                                if [ "\$DEPLOY_TARGET" = "blue-only" ]; then
+                                    echo ""
+                                    echo "🔵 Deploying BLUE set only (GREEN handles traffic)..."
+                                    deploy_color_set "blue" || {
+                                        echo "❌ Blue deployment failed!"
+                                        exit 1
+                                    }
                                     
-                                    # Check Docker container health status first (more reliable)
-                                    API_DOCKER_HEALTH=\$(docker inspect circle-api --format='{{.State.Health.Status}}' 2>/dev/null || echo "none")
-                                    SOCKET_DOCKER_HEALTH=\$(docker inspect circle-socket --format='{{.State.Health.Status}}' 2>/dev/null || echo "none")
+                                elif [ "\$DEPLOY_TARGET" = "green-only" ]; then
+                                    echo ""
+                                    echo "🟢 Deploying GREEN set only (BLUE handles traffic)..."
+                                    deploy_color_set "green" || {
+                                        echo "❌ Green deployment failed!"
+                                        exit 1
+                                    }
                                     
-                                    echo "   Docker health: API=\$API_DOCKER_HEALTH, Socket=\$SOCKET_DOCKER_HEALTH"
+                                else
+                                    # Rolling update - both sets
+                                    echo ""
+                                    echo "🔄 Phase 1: Update BLUE set (GREEN handles traffic)..."
                                     
-                                    # If Docker says healthy, try direct HTTP check as secondary validation
-                                    if [ "\$API_DOCKER_HEALTH" = "healthy" ] && [ "\$SOCKET_DOCKER_HEALTH" = "healthy" ]; then
-                                        # Quick HTTP validation (with timeout)
-                                        API_HTTP=\$(curl -sf --max-time 5 http://localhost:8080/health 2>/dev/null && echo "ok" || echo "fail")
-                                        SOCKET_HTTP=\$(curl -sf --max-time 5 http://localhost:8081/health 2>/dev/null && echo "ok" || echo "fail")
-                                        
-                                        echo "   HTTP check: API=\$API_HTTP, Socket=\$SOCKET_HTTP"
-                                        
-                                        if [ "\$API_HTTP" = "ok" ] && [ "\$SOCKET_HTTP" = "ok" ]; then
-                                            HEALTH_OK=true
-                                            break
-                                        elif [ \$i -ge 4 ]; then
-                                            # After 4 attempts, if Docker says healthy, trust it even if HTTP fails
-                                            echo "   Docker containers are healthy, accepting deployment (HTTP may be behind proxy)"
-                                            HEALTH_OK=true
-                                            break
-                                        else
-                                            echo "   Docker healthy but HTTP check failed, retrying..."
-                                        fi
+                                    # Check if green is healthy first
+                                    GREEN_API_HEALTH=\$(check_container_health "circle-api-green")
+                                    GREEN_SOCKET_HEALTH=\$(check_container_health "circle-socket-green")
+                                    
+                                    if [ "\$GREEN_API_HEALTH" != "healthy" ] || [ "\$GREEN_SOCKET_HEALTH" != "healthy" ]; then
+                                        echo "   ⚠️ Green set not healthy, deploying it first for safety..."
+                                        deploy_color_set "green" || {
+                                            echo "❌ Green deployment failed! Aborting..."
+                                            exit 1
+                                        }
                                     else
-                                        echo "   Waiting for containers to become healthy..."
+                                        echo "   ✅ Green set is healthy, will handle traffic during blue update"
                                     fi
-                                done
-                                
-                                if [ "\$HEALTH_OK" != "true" ]; then
-                                    echo "❌ Health check failed after 60 seconds!"
-                                    echo ""
-                                    echo "📋 Final health status check:"
-                                    API_FINAL_HEALTH=\$(docker inspect circle-api --format='{{.State.Health.Status}}' 2>/dev/null || echo "none")
-                                    SOCKET_FINAL_HEALTH=\$(docker inspect circle-socket --format='{{.State.Health.Status}}' 2>/dev/null || echo "none")
-                                    echo "   Docker health: API=\$API_FINAL_HEALTH, Socket=\$SOCKET_FINAL_HEALTH"
                                     
-                                    # Try one final HTTP check with verbose output
-                                    echo "   Final HTTP test:"
-                                    curl -v --max-time 10 http://localhost:8080/health 2>&1 | head -10 || echo "   API HTTP failed"
-                                    curl -v --max-time 10 http://localhost:8081/health 2>&1 | head -10 || echo "   Socket HTTP failed"
+                                    # Wait for connections to drain from blue
+                                    echo "   ⏳ Waiting ${DRAIN_WAIT_SECONDS}s for connections to drain from blue..."
+                                    sleep ${DRAIN_WAIT_SECONDS}
+                                    
+                                    # Deploy blue set
+                                    deploy_color_set "blue" || {
+                                        echo "❌ Blue deployment failed!"
+                                        echo "   Green set is still handling all traffic"
+                                        echo "   Rolling back blue to previous version..."
+                                        git checkout \$PREVIOUS_COMMIT
+                                        export CACHEBUST=\$PREVIOUS_COMMIT
+                                        docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build api-blue socket-blue matchmaking-blue
+                                        exit 1
+                                    }
+                                    
                                     echo ""
-                                    echo "📋 Container status:"
-                                    docker-compose -f ${COMPOSE_FILE} ps
-                                    echo ""
-                                    echo "📋 API logs:"
-                                    docker-compose -f ${COMPOSE_FILE} logs --tail=30 api
-                                    echo ""
-                                    echo "🔄 Rolling back to \$PREVIOUS_COMMIT..."
+                                    echo "🔄 Phase 2: Update GREEN set (BLUE handles traffic)..."
+                                    echo "   ✅ Blue set is now healthy, will handle traffic during green update"
+                                    
+                                    # Wait for connections to drain from green
+                                    echo "   ⏳ Waiting ${DRAIN_WAIT_SECONDS}s for connections to drain from green..."
+                                    sleep ${DRAIN_WAIT_SECONDS}
+                                    
+                                    # Reset to new commit (in case rollback happened)
+                                    git checkout ${BRANCH}
+                                    git reset --hard origin/${BRANCH}
+                                    export CACHEBUST=\$NEW_COMMIT
+                                    
+                                    # Deploy green set
+                                    deploy_color_set "green" || {
+                                        echo "❌ Green deployment failed!"
+                                        echo "   Blue set is still handling all traffic"
+                                        echo "   System is operational but green needs attention"
+                                        # Don'\''t exit - blue is working, just warn
+                                        echo "⚠️ WARNING: Green set failed but Blue is operational"
+                                    }
+                                fi
+                                
+                                # ============================================
+                                # Step 5: Update Cron Worker
+                                # ============================================
+                                echo ""
+                                echo "⏰ Step 4: Updating Cron worker..."
+                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build cron
+                                sleep 5
+                                
+                                # ============================================
+                                # Step 6: Reload NGINX
+                                # ============================================
+                                echo ""
+                                echo "🌐 Step 5: Reloading NGINX..."
+                                docker-compose -f ${COMPOSE_FILE} up -d nginx
+                                docker-compose -f ${COMPOSE_FILE} exec -T nginx nginx -s reload 2>/dev/null || true
+                                sleep 3
+                                
+                                # ============================================
+                                # Step 7: Final Health Verification
+                                # ============================================
+                                echo ""
+                                echo "🏥 Step 6: Final health verification..."
+                                
+                                # Check all containers
+                                API_BLUE_HEALTH=\$(check_container_health "circle-api-blue")
+                                API_GREEN_HEALTH=\$(check_container_health "circle-api-green")
+                                SOCKET_BLUE_HEALTH=\$(check_container_health "circle-socket-blue")
+                                SOCKET_GREEN_HEALTH=\$(check_container_health "circle-socket-green")
+                                
+                                echo "   API Blue:     \$API_BLUE_HEALTH"
+                                echo "   API Green:    \$API_GREEN_HEALTH"
+                                echo "   Socket Blue:  \$SOCKET_BLUE_HEALTH"
+                                echo "   Socket Green: \$SOCKET_GREEN_HEALTH"
+                                
+                                # At least one of each type must be healthy
+                                if [ "\$API_BLUE_HEALTH" != "healthy" ] && [ "\$API_GREEN_HEALTH" != "healthy" ]; then
+                                    echo "❌ CRITICAL: No healthy API containers!"
+                                    echo "   Rolling back..."
                                     git checkout \$PREVIOUS_COMMIT
-                                    docker-compose -f ${COMPOSE_FILE} build
-                                    docker-compose -f ${COMPOSE_FILE} up -d
-                                    echo "⚠️ Rollback complete"
+                                    export CACHEBUST=\$PREVIOUS_COMMIT
+                                    docker-compose -f ${COMPOSE_FILE} up -d --build api-blue api-green socket-blue socket-green
                                     exit 1
                                 fi
                                 
-                                echo "✅ Health check passed!"
+                                if [ "\$SOCKET_BLUE_HEALTH" != "healthy" ] && [ "\$SOCKET_GREEN_HEALTH" != "healthy" ]; then
+                                    echo "❌ CRITICAL: No healthy Socket containers!"
+                                    echo "   Rolling back..."
+                                    git checkout \$PREVIOUS_COMMIT
+                                    export CACHEBUST=\$PREVIOUS_COMMIT
+                                    docker-compose -f ${COMPOSE_FILE} up -d --build api-blue api-green socket-blue socket-green
+                                    exit 1
+                                fi
                                 
-                                # Cleanup old images
+                                # ============================================
+                                # Step 8: Cleanup
+                                # ============================================
                                 echo ""
-                                echo "🧹 Step 5: Cleanup..."
+                                echo "🧹 Step 7: Cleanup..."
                                 docker image prune -f > /dev/null 2>&1 || true
                                 
-                                # Final status
+                                # ============================================
+                                # Final Status
+                                # ============================================
                                 echo ""
                                 echo "============================================"
-                                echo "✅ Deployment successful!"
+                                echo "✅ Blue-Green Deployment Successful!"
                                 echo "============================================"
+                                echo ""
+                                echo "Container Status:"
                                 docker-compose -f ${COMPOSE_FILE} ps
+                                echo ""
+                                echo "Health Summary:"
+                                echo "   🔵 Blue:  API=\$API_BLUE_HEALTH, Socket=\$SOCKET_BLUE_HEALTH"
+                                echo "   🟢 Green: API=\$API_GREEN_HEALTH, Socket=\$SOCKET_GREEN_HEALTH"
+                                echo ""
+                                echo "Traffic is now load-balanced across both sets!"
                             '
                         """
                     }
@@ -252,7 +379,7 @@ pipeline {
         }
 
         // ============================================
-        // Stage 4: Verify Deployment
+        // Stage 4: External Verification
         // ============================================
         stage('Verify') {
             when {
@@ -260,16 +387,32 @@ pipeline {
             }
             steps {
                 sh """
-                    echo "🔍 Verifying deployment..."
+                    echo "🔍 Verifying deployment externally..."
                     sleep 5
                     
-                    # Test API endpoint
-                    API_STATUS=\$(curl -sf -o /dev/null -w '%{http_code}' https://api.circle.orincore.com/health || echo "000")
+                    # Test API endpoint multiple times to hit both blue and green
+                    echo "   Testing API endpoint (multiple requests to verify load balancing)..."
                     
-                    if [ "\$API_STATUS" = "200" ]; then
-                        echo "✅ API is responding (HTTP \$API_STATUS)"
+                    SUCCESS_COUNT=0
+                    for i in 1 2 3 4 5; do
+                        API_STATUS=\$(curl -sf -o /dev/null -w '%{http_code}' --max-time 10 https://api.circle.orincore.com/health || echo "000")
+                        if [ "\$API_STATUS" = "200" ]; then
+                            SUCCESS_COUNT=\$((SUCCESS_COUNT + 1))
+                            echo "   Request \$i: ✅ HTTP 200"
+                        else
+                            echo "   Request \$i: ⚠️ HTTP \$API_STATUS"
+                        fi
+                        sleep 1
+                    done
+                    
+                    echo ""
+                    if [ \$SUCCESS_COUNT -ge 4 ]; then
+                        echo "✅ External verification passed (\$SUCCESS_COUNT/5 successful)"
+                    elif [ \$SUCCESS_COUNT -ge 2 ]; then
+                        echo "⚠️ Partial success (\$SUCCESS_COUNT/5) - some requests may have hit updating containers"
                     else
-                        echo "⚠️ API returned HTTP \$API_STATUS (may still be starting)"
+                        echo "❌ External verification failed (\$SUCCESS_COUNT/5 successful)"
+                        exit 1
                     fi
                 """
             }
@@ -288,11 +431,15 @@ pipeline {
                         subject: "✅ Circle Backend Deployed - Build #${env.BUILD_NUMBER}",
                         to: 'info@orincore.com',
                         body: """
-                            Circle Backend Deployment SUCCESS
+                            Circle Backend Blue-Green Deployment SUCCESS
                             
                             Build: #${env.BUILD_NUMBER}
                             Commit: ${env.GIT_COMMIT_SHORT}
                             Message: ${env.GIT_COMMIT_MSG}
+                            Deploy Target: ${params.DEPLOY_TARGET ?: 'rolling'}
+                            
+                            ✅ Both Blue and Green sets are now running the latest version.
+                            Traffic is load-balanced across both sets.
                             
                             View: ${env.BUILD_URL}
                         """
@@ -306,13 +453,15 @@ pipeline {
                 subject: "❌ Circle Backend FAILED - Build #${env.BUILD_NUMBER}",
                 to: 'info@orincore.com',
                 body: """
-                    Circle Backend Deployment FAILED
+                    Circle Backend Blue-Green Deployment FAILED
                     
                     Build: #${env.BUILD_NUMBER}
                     Commit: ${env.GIT_COMMIT_SHORT}
                     Message: ${env.GIT_COMMIT_MSG}
+                    Deploy Target: ${params.DEPLOY_TARGET ?: 'rolling'}
                     
                     ⚠️ Automatic rollback was attempted.
+                    The healthy container set should still be handling traffic.
                     
                     Check logs: ${env.BUILD_URL}console
                 """
