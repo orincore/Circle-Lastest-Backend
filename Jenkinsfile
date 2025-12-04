@@ -136,11 +136,9 @@ pipeline {
                                 echo "🐳 Step 2: Building Docker images..."
                                 echo "   (TypeScript will be compiled inside Docker containers)"
                                 
-                                # Clear build cache to ensure fresh TypeScript compilation
-                                echo "   Clearing Docker build cache for clean build..."
-                                docker builder prune -f 2>/dev/null || true
-                                
-                                docker-compose -f ${COMPOSE_FILE} build --no-cache 2>&1 || {
+                                # Use git commit hash as cache buster to force TypeScript rebuild on code changes
+                                export CACHEBUST=\$NEW_COMMIT
+                                docker-compose -f ${COMPOSE_FILE} build 2>&1 || {
                                     echo "❌ Docker build failed! Rolling back..."
                                     git checkout \$PREVIOUS_COMMIT
                                     docker-compose -f ${COMPOSE_FILE} up -d

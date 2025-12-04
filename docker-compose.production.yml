@@ -114,6 +114,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
+      args:
+        CACHEBUST: ${CACHEBUST:-1}
     image: circle-backend/api:${TAG:-latest}
     container_name: circle-api
     environment:
@@ -152,6 +154,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.socket
+      args:
+        CACHEBUST: ${CACHEBUST:-1}
     image: circle-backend/socket:${TAG:-latest}
     container_name: circle-socket
     environment:
@@ -191,6 +195,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.matchmaking
+      args:
+        CACHEBUST: ${CACHEBUST:-1}
     image: circle-backend/matchmaking:${TAG:-latest}
     container_name: circle-matchmaking
     environment:
@@ -222,6 +228,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.cron
+      args:
+        CACHEBUST: ${CACHEBUST:-1}
     image: circle-backend/cron:${TAG:-latest}
     container_name: circle-cron
     environment:

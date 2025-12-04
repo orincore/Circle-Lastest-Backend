@@ -28,10 +28,13 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+# Cache bust arg - changes with each git commit to force rebuild
+ARG CACHEBUST=1
 # Build TypeScript with adequate memory for 8GB server
-RUN rm -rf dist && node --max-old-space-size=2048 ./node_modules/.bin/tsc -p . && \
-    ls -la dist/ && \
-    echo "TypeScript build completed successfully"
+RUN echo "Build cache bust: $CACHEBUST" && \
+    rm -rf dist && \
+    node --max-old-space-size=2048 ./node_modules/.bin/tsc -p . && \
+    test -d dist && echo "✅ TypeScript build successful"
 
 # ============================================
 # Runtime Stage - Cron Worker
