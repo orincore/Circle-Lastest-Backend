@@ -230,18 +230,74 @@ export class BlindDatingService {
    */
   static async getMatchByChatId(chatId: string): Promise<BlindDateMatch | null> {
     try {
+      // Primary lookup: by chat_id (newer matches should always have this set)
       const { data, error } = await supabase
         .from('blind_date_matches')
         .select('*')
         .eq('chat_id', chatId)
         .maybeSingle()
-      
+
       if (error && error.code !== 'PGRST116') {
         logger.error({ error, chatId }, 'Failed to get blind date match by chat ID')
         throw error
       }
-      
-      return data as BlindDateMatch | null
+
+      if (data) {
+        return data as BlindDateMatch
+      }
+
+      // Fallback for legacy matches where chat_id was not populated
+      // 1. Get chat members (we expect 1:1 chats for blind dating)
+      const { data: members, error: membersError } = await supabase
+        .from('chat_members')
+        .select('user_id')
+        .eq('chat_id', chatId)
+
+      if (membersError) {
+        logger.error({ error: membersError, chatId }, 'Failed to get chat members for blind date fallback lookup')
+        return null
+      }
+
+      const userIds = (members || []).map(m => m.user_id)
+      if (userIds.length !== 2) {
+        // Not a standard 1:1 chat, treat as no blind date match
+        return null
+      }
+
+      const [u1, u2] = userIds.sort()
+
+      // 2. Look for an active/revealed blind date match between these two users
+      const { data: fallbackMatch, error: fallbackError } = await supabase
+        .from('blind_date_matches')
+        .select('*')
+        .or(`and(user_a.eq.${u1},user_b.eq.${u2}),and(user_a.eq.${u2},user_b.eq.${u1})`)
+        .in('status', ['active', 'revealed'])
+        .order('matched_at', { ascending: false })
+        .maybeSingle()
+
+      if (fallbackError && fallbackError.code !== 'PGRST116') {
+        logger.error({ error: fallbackError, chatId, u1, u2 }, 'Failed fallback blind date lookup by users')
+        return null
+      }
+
+      if (!fallbackMatch) {
+        return null
+      }
+
+      // 3. Best-effort: backfill chat_id on the legacy match so future lookups are fast
+      if (!fallbackMatch.chat_id) {
+        try {
+          await supabase
+            .from('blind_date_matches')
+            .update({ chat_id: chatId })
+            .eq('id', fallbackMatch.id)
+          logger.info({ matchId: fallbackMatch.id, chatId, u1, u2 }, 'Backfilled chat_id on blind date match')
+        } catch (updateError) {
+          logger.error({ error: updateError, matchId: fallbackMatch.id, chatId }, 'Failed to backfill chat_id on blind date match')
+        }
+      }
+
+      return fallbackMatch as BlindDateMatch
     } catch (error) {
       logger.error({ error, chatId }, 'Error getting blind date match by chat ID')
       return null
