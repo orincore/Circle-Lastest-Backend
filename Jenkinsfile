@@ -290,7 +290,7 @@ pipeline {
                                         echo "❌ Green deployment failed!"
                                         echo "   Blue set is still handling all traffic"
                                         echo "   System is operational but green needs attention"
-                                        # Don'\''t exit - blue is working, just warn
+                                        # Do not exit - blue is working, just warn
                                         echo "⚠️ WARNING: Green set failed but Blue is operational"
                                     }
                                 fi
