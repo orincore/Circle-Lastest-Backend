@@ -116,18 +116,6 @@ async function testChatRealtime() {
       console.log(`   ${user2.first_name}'s unread count: ${user2UnreadCount}`)
     }
     
-    console.log('\n✅ Real-time chat test setup complete!')
-    console.log('\n📋 To test the real-time functionality:')
-    console.log('1. Open the chat list on two devices/browsers (logged in as different users)')
-    console.log('2. Send a message from one user to the other')
-    console.log('3. Observe that the chat list updates automatically without refresh')
-    console.log('4. Check that unread counts update in real-time')
-    console.log('5. Mark messages as read and see unread counts decrease')
-    
-    console.log('\n🔍 Socket events to watch for in browser console:')
-    console.log('- 📨 New message received in chat list: (message data)')
-    console.log('- 📊 Unread count update from server for chat (chatId): (count)')
-    console.log('- 🔌 Socket listeners registered for chat list')
     
   } catch (error) {
     console.error('💥 Test failed:', error)

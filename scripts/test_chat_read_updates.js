@@ -141,26 +141,7 @@ async function testChatReadUpdates() {
       console.log(`   ${profile.first_name} ${profile.last_name}: ${totalUnread} total unread`)
     }
     
-    console.log('\n✅ Chat read updates test setup complete!')
-    console.log('\n📋 To test the functionality:')
-    console.log('1. Open the app on two devices with different users from this chat')
-    console.log('2. Send a message from one user to the other')
-    console.log('3. Observe the chat list updates automatically (no refresh needed)')
-    console.log('4. Check that the Chat tab badge shows the correct total unread count')
-    console.log('5. Open the chat conversation to read the messages')
-    console.log('6. Observe that the chat list and tab badge update automatically when messages are read')
     
-    console.log('\n🔍 Socket events to watch for in browser console:')
-    console.log('- 📨 New message received in tab bar, updating unread count')
-    console.log('- 📊 Unread count update received in tab bar: chat (chatId), count (count)')
-    console.log('- 📊 Total unread messages loaded: (count)')
-    console.log('- 👁️ Read receipt received: (messageId, chatId, status)')
-    
-    console.log('\n🎯 Expected behavior:')
-    console.log('- Chat list updates automatically when messages are sent/read')
-    console.log('- Chat tab badge shows total unread count across all chats')
-    console.log('- Badge updates in real-time without manual refresh')
-    console.log('- Badge disappears when all messages are read')
     
   } catch (error) {
     console.error('💥 Test failed:', error)
