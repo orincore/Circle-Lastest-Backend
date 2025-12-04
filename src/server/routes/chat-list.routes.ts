@@ -93,7 +93,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           // Get other user's profile for gender, age, and name masking
           const { data: otherProfile, error: profileError } = await supabase
             .from('profiles')
-            .select('first_name, last_name, gender, age, date_of_birth, needs')
+            .select('first_name, last_name, gender, age, needs')
             .eq('id', otherUserId)
             .single()
           
@@ -112,17 +112,8 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
             console.error('Error fetching blind date profile:', profileError, 'userId:', otherUserId)
           }
           
-          // Calculate age - prefer direct age field, fallback to date_of_birth calculation
-          let age: number | undefined = otherProfile?.age
-          if (!age && otherProfile?.date_of_birth) {
-            const dob = new Date(otherProfile.date_of_birth)
-            const today = new Date()
-            age = today.getFullYear() - dob.getFullYear()
-            const monthDiff = today.getMonth() - dob.getMonth()
-            if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) {
-              age--
-            }
-          }
+          // Get age directly from profile
+          const age: number | undefined = otherProfile?.age
           
           // Mask name: "Adarsh Suradkar" -> "A***** S*******"
           // Helper function to mask a word
