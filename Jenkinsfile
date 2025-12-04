@@ -133,13 +133,14 @@ pipeline {
                                 
                                 # Build Docker images (TypeScript compiled inside Docker with 2GB memory)
                                 echo ""
-                                echo "� Step 2: Building Docker images..."
+                                echo "🐳 Step 2: Building Docker images..."
                                 echo "   (TypeScript will be compiled inside Docker containers)"
-                                CACHE_FLAG=""
-                                if [ "${params.FORCE_REBUILD}" = "true" ]; then
-                                    CACHE_FLAG="--no-cache"
-                                fi
-                                docker-compose -f ${COMPOSE_FILE} build \$CACHE_FLAG 2>&1 || {
+                                
+                                # Clear build cache to ensure fresh TypeScript compilation
+                                echo "   Clearing Docker build cache for clean build..."
+                                docker builder prune -f 2>/dev/null || true
+                                
+                                docker-compose -f ${COMPOSE_FILE} build --no-cache 2>&1 || {
                                     echo "❌ Docker build failed! Rolling back..."
                                     git checkout \$PREVIOUS_COMMIT
                                     docker-compose -f ${COMPOSE_FILE} up -d
