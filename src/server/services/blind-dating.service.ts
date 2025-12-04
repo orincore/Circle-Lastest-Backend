@@ -1111,27 +1111,40 @@ export class BlindDatingService {
           this.getAnonymizedProfile(match.user_b, true)
         ])
 
+        // Create automatic friendship FIRST before emitting events
+        await this.createFriendshipForRevealedMatch(match.user_a, match.user_b)
+        logger.info({ matchId, userA: match.user_a, userB: match.user_b }, '[BlindDate] Friendship created for revealed match')
+
+        // Emit to user A with user B's profile
         emitToUser(match.user_a, 'blind_date:revealed', {
           matchId,
           chatId: match.chat_id,
           otherUser: profile2,
+          otherUserId: match.user_b,
+          bothRevealed: true,
+          friendshipCreated: true,
           message: 'Identity revealed! You can now see each other\'s full profile.'
         })
 
+        // Emit to user B with user A's profile
         emitToUser(match.user_b, 'blind_date:revealed', {
           matchId,
           chatId: match.chat_id,
           otherUser: profile1,
+          otherUserId: match.user_a,
+          bothRevealed: true,
+          friendshipCreated: true,
           message: 'Identity revealed! You can now see each other\'s full profile.'
         })
-
-        // Create automatic friendship
-        await this.createFriendshipForRevealedMatch(match.user_a, match.user_b)
       } else {
-        // Notify other user about reveal request
+        // First user revealed - notify other user
+        const revealingUserProfile = await this.getAnonymizedProfile(requestingUserId, false)
+        
         emitToUser(otherUserId, 'blind_date:reveal_requested', {
           matchId,
           chatId: match.chat_id,
+          revealedByUserId: requestingUserId,
+          revealedByProfile: revealingUserProfile,
           message: 'Your match wants to reveal their identity! Tap to reveal yours too.'
         })
       }
