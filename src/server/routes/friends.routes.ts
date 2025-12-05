@@ -306,11 +306,13 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
     if (requests && requests.length > 0) {
       const senderIds = requests.map(r => r.sender_id)
       
-      // Get sender profiles
+      // Get sender profiles - exclude suspended/deleted accounts
       const { data: profiles, error: profilesErr } = await supabase
         .from('profiles')
         .select('id, first_name, last_name, username, profile_photo_url, instagram_username')
         .in('id', senderIds)
+        .is('deleted_at', null)
+        .or('is_suspended.is.null,is_suspended.eq.false')
 
       if (profilesErr) {
         console.error('Failed to get sender profiles:', profilesErr)
@@ -396,11 +398,13 @@ router.get('/list', requireAuth, async (req: AuthRequest, res) => {
 
     //console.log('Friend user IDs:', friendUserIds)
 
-    // Get friend profiles separately
+    // Get friend profiles separately - exclude suspended/deleted accounts
     const { data: profiles, error: profilesError } = await supabase
       .from('profiles')
       .select('id, first_name, last_name, email, profile_photo_url, instagram_username')
       .in('id', friendUserIds)
+      .is('deleted_at', null)
+      .or('is_suspended.is.null,is_suspended.eq.false')
 
     if (profilesError) {
       console.error('Error fetching friend profiles:', profilesError)
@@ -1024,35 +1028,20 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
         location_address,
         location_city,
         location_country,
-        phone_number
+        phone_number,
+        is_suspended,
+        deleted_at
       `)
       .eq('id', userId)
       .single()
     
     if (error) {
       console.error('❌ Error fetching user profile:', error)
-      console.error('❌ Error details:', JSON.stringify(error, null, 2))
-      console.error('❌ SQL query was selecting:', `
-        id,
-        first_name,
-        last_name,
-        username,
-        email,
-        profile_photo_url,
-        instagram_username,
-        age,
-        gender,
-        about,
-        interests,
-        needs,
-        created_at,
-        verification_status,
-        email_verified,
-        location_address,
-        location_city,
-        location_country,
-        phone_number
-      `)
+      return res.status(404).json({ error: 'User profile not found' })
+    }
+    
+    // Check if user is suspended or deleted - treat as not found
+    if (profile.deleted_at || profile.is_suspended) {
       return res.status(404).json({ error: 'User profile not found' })
     }
     

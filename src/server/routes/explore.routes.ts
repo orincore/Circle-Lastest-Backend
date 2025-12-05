@@ -55,6 +55,8 @@ async function getAllSectionsLogic(currentUserId: string) {
     .not('first_name', 'is', null)
     .not('last_name', 'is', null)
     .neq('invisible_mode', true) // Exclude users in invisible mode
+    .is('deleted_at', null) // Exclude deleted accounts
+    .or('is_suspended.is.null,is_suspended.eq.false') // Exclude suspended accounts
     .order('updated_at', { ascending: false })
     .limit(100) // Get more users for better distribution
 
@@ -307,6 +309,8 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
         email_verified
       `)
       .neq('id', currentUserId)
+      .is('deleted_at', null) // Exclude deleted accounts
+      .or('is_suspended.is.null,is_suspended.eq.false') // Exclude suspended accounts
       .or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,username.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
       .limit(parseInt(limit as string))
 
@@ -469,7 +473,9 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
         needs,
         created_at,
         verification_status,
-        email_verified
+        email_verified,
+        is_suspended,
+        deleted_at
       `)
       .eq('id', userId)
       .single()
@@ -489,6 +495,11 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
     
     if (!userProfile) {
       //console.log('No user profile found for userId:', userId)
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Check if user is suspended or deleted
+    if (userProfile.deleted_at || userProfile.is_suspended) {
       return res.status(404).json({ error: 'User not found' })
     }
 

@@ -93,9 +93,14 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           // Get other user's profile for gender, age, and name masking
           const { data: otherProfile, error: profileError } = await supabase
             .from('profiles')
-            .select('first_name, last_name, gender, age, needs')
+            .select('first_name, last_name, gender, age, needs, is_suspended, deleted_at')
             .eq('id', otherUserId)
             .single()
+          
+          // Skip if user is suspended or deleted
+          if (otherProfile?.is_suspended || otherProfile?.deleted_at) {
+            continue
+          }
           
           console.log('[BlindDate] Profile result:', { 
             otherUserId, 

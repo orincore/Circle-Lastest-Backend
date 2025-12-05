@@ -20,6 +20,7 @@ export interface ChatMessage {
   media_url?: string
   media_type?: string
   thumbnail?: string
+  reply_to_id?: string
   created_at: string
   updated_at?: string
   is_edited?: boolean
@@ -172,19 +173,31 @@ export async function getUserInbox(userId: string) {
     results.push({ chat, lastMessage, unreadCount, otherId })
   }
 
-  // fetch names and profile photos for others
+  // fetch names and profile photos for others - exclude suspended/deleted accounts
   if (otherIdsSet.size) {
     const { data: profiles, error: pErr } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name, profile_photo_url')
+      .select('id, first_name, last_name, profile_photo_url, is_suspended, deleted_at')
       .in('id', Array.from(otherIdsSet))
     if (!pErr && profiles) {
-      const nameMap = new Map((profiles as any[]).map((p) => [p.id, `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim()]))
-      const photoMap = new Map((profiles as any[]).map((p) => [p.id, p.profile_photo_url]))
+      // Filter out suspended/deleted users
+      const activeProfiles = profiles.filter((p: any) => !p.deleted_at && !p.is_suspended)
+      const nameMap = new Map((activeProfiles as any[]).map((p) => [p.id, `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim()]))
+      const photoMap = new Map((activeProfiles as any[]).map((p) => [p.id, p.profile_photo_url]))
+      // Track which users are suspended/deleted
+      const suspendedOrDeletedIds = new Set(
+        profiles.filter((p: any) => p.deleted_at || p.is_suspended).map((p: any) => p.id)
+      )
       for (const item of results) {
         if (item.otherId) {
-          item.otherName = nameMap.get(item.otherId)
-          item.otherProfilePhoto = photoMap.get(item.otherId)
+          // Mark suspended/deleted users
+          if (suspendedOrDeletedIds.has(item.otherId)) {
+            item.otherName = 'Deleted User'
+            item.otherProfilePhoto = undefined
+          } else {
+            item.otherName = nameMap.get(item.otherId)
+            item.otherProfilePhoto = photoMap.get(item.otherId)
+          }
         }
       }
     }
@@ -302,7 +315,8 @@ export async function insertMessage(
   text: string,
   mediaUrl?: string,
   mediaType?: string,
-  thumbnail?: string
+  thumbnail?: string,
+  replyToId?: string
 ): Promise<ChatMessage> {
   // Insert the message
   const messageData: any = { 
@@ -315,6 +329,7 @@ export async function insertMessage(
   if (mediaUrl) messageData.media_url = mediaUrl
   if (mediaType) messageData.media_type = mediaType
   if (thumbnail) messageData.thumbnail = thumbnail
+  if (replyToId) messageData.reply_to_id = replyToId
   
   //console.log('📝 Inserting message with data:', messageData)
   

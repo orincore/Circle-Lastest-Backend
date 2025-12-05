@@ -1220,13 +1220,17 @@ export async function initOptimizedSocket(server: Server) {
       text, 
       mediaUrl, 
       mediaType, 
-      thumbnail 
+      thumbnail,
+      replyToId,
+      tempId
     }: { 
       chatId: string; 
       text: string;
       mediaUrl?: string;
       mediaType?: string;
       thumbnail?: string;
+      replyToId?: string;
+      tempId?: string;
     }) => {
       resetTimeout()
       const userId: string | undefined = user?.id
@@ -1334,7 +1338,8 @@ export async function initOptimizedSocket(server: Server) {
           text?.trim() || '', 
           mediaUrl, 
           mediaType, 
-          thumbnail
+          thumbnail,
+          replyToId
         )
         const msg = { 
           id: row.id, 
@@ -1344,7 +1349,9 @@ export async function initOptimizedSocket(server: Server) {
           mediaUrl: row.media_url,
           mediaType: row.media_type,
           thumbnail: row.thumbnail,
-          createdAt: new Date(row.created_at).getTime() 
+          reply_to_id: row.reply_to_id,
+          createdAt: new Date(row.created_at).getTime(),
+          tempId // Include tempId for optimistic update matching
         }
         
         // Send to chat room (for users actively in the chat)
