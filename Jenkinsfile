@@ -185,17 +185,17 @@ pipeline {
                                     
                                     # Start API first (critical path)
                                     echo "   Starting api-\$color..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps api-\$color
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --remove-orphans api-\$color
                                     wait_for_healthy "circle-api-\$color" "8080" || return 1
                                     
                                     # Start Socket (critical for real-time)
                                     echo "   Starting socket-\$color..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps socket-\$color
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --remove-orphans socket-\$color
                                     wait_for_healthy "circle-socket-\$color" "8081" || return 1
                                     
                                     # Start Matchmaking (background service)
                                     echo "   Starting matchmaking-\$color..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps matchmaking-\$color
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --remove-orphans matchmaking-\$color
                                     sleep 3
                                     
                                     echo "   ✅ \$color set deployed successfully!"
@@ -231,7 +231,7 @@ pipeline {
                                 # ============================================
                                 echo ""
                                 echo "🗄️ Step 2: Ensuring Redis is running..."
-                                docker-compose -f ${COMPOSE_FILE} up -d redis
+                                docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans redis
                                 sleep 5
                                 
                                 # ============================================
@@ -293,7 +293,7 @@ pipeline {
                                         echo "   Rolling back blue to previous version..."
                                         git checkout \$PREVIOUS_COMMIT
                                         export CACHEBUST=\$PREVIOUS_COMMIT
-                                        docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build api-blue socket-blue matchmaking-blue
+                                        docker-compose -f ${COMPOSE_FILE} up -d --no-deps --remove-orphans --build api-blue socket-blue matchmaking-blue
                                         exit 1
                                     }
                                     
@@ -321,20 +321,20 @@ pipeline {
                                 fi
                                 
                                 # ============================================
-                                // Step 5: Update Cron Worker
-                                // ============================================
+                                # Step 5: Update Cron Worker
+                                # ============================================
                                 echo ""
                                 echo "⏰ Step 4: Updating Cron worker..."
-                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build cron
+                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps --remove-orphans --build cron
                                 sleep 5
                                 
                                 # ============================================
-                                // Step 6: Reload NGINX (graceful - zero downtime)
-                                // ============================================
+                                # Step 6: Reload NGINX (graceful - zero downtime)
+                                # ============================================
                                 echo ""
                                 echo "🌐 Step 5: Graceful NGINX reload..."
                                 
-                                // If nginx container is already running, reload config only
+                                # If nginx container is already running, reload config only
                                 NGINX_ID=\$(docker ps -q -f name=circle-nginx)
                                 if [ -n "\${NGINX_ID}" ]; then
                                     echo "   Testing nginx config..."
@@ -347,17 +347,17 @@ pipeline {
                                     }
                                 else
                                     echo "   circle-nginx is not running, starting it..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d nginx
+                                    docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans nginx
                                 fi
                                 sleep 2
                                 
-                                // ============================================
-                                // Step 7: Final Health Verification
-                                // ============================================
+                                # ============================================
+                                # Step 7: Final Health Verification
+                                # ============================================
                                 echo ""
                                 echo "🏥 Step 6: Final health verification..."
                                 
-                                // Check all containers
+                                # Check all containers
                                 API_BLUE_HEALTH=\$(check_container_health "circle-api-blue")
                                 API_GREEN_HEALTH=\$(check_container_health "circle-api-green")
                                 SOCKET_BLUE_HEALTH=\$(check_container_health "circle-socket-blue")
@@ -368,13 +368,13 @@ pipeline {
                                 echo "   Socket Blue:  \$SOCKET_BLUE_HEALTH"
                                 echo "   Socket Green: \$SOCKET_GREEN_HEALTH"
                                 
-                                // At least one of each type must be healthy
+                                # At least one of each type must be healthy
                                 if [ "\$API_BLUE_HEALTH" != "healthy" ] && [ "\$API_GREEN_HEALTH" != "healthy" ]; then
                                     echo "❌ CRITICAL: No healthy API containers!"
                                     echo "   Rolling back..."
                                     git checkout \$PREVIOUS_COMMIT
                                     export CACHEBUST=\$PREVIOUS_COMMIT
-                                    docker-compose -f ${COMPOSE_FILE} up -d --build api-blue api-green socket-blue socket-green
+                                    docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans --build api-blue api-green socket-blue socket-green
                                     exit 1
                                 fi
                                 
@@ -383,22 +383,22 @@ pipeline {
                                     echo "   Rolling back..."
                                     git checkout \$PREVIOUS_COMMIT
                                     export CACHEBUST=\$PREVIOUS_COMMIT
-                                    docker-compose -f ${COMPOSE_FILE} up -d --build api-blue api-green socket-blue socket-green
+                                    docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans --build api-blue api-green socket-blue socket-green
                                     exit 1
                                 fi
                                 
-                                // ============================================
-                                // Step 8: Aggressive Cleanup
-                                // ============================================
+                                # ============================================
+                                # Step 8: Aggressive Cleanup
+                                # ============================================
                                 echo ""
                                 echo "🧹 Step 7: Cleanup..."
                                 docker image prune -f > /dev/null 2>&1 || true
                                 docker container prune -f > /dev/null 2>&1 || true
                                 docker volume prune -f > /dev/null 2>&1 || true
                                 
-                                // ============================================
-                                // Final Status
-                                // ============================================
+                                # ============================================
+                                # Final Status
+                                # ============================================
                                 echo ""
                                 echo "============================================"
                                 echo "✅ Blue-Green Deployment Successful!"
