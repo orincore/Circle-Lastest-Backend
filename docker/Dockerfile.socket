@@ -68,7 +68,7 @@ HEALTHCHECK --interval=10s --timeout=10s --start-period=60s --retries=5 \
   CMD node -e "require('http').get('http://localhost:8081/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 # Node.js performance tuning for Socket.IO
-ENV NODE_OPTIONS="--max-old-space-size=512 --optimize-for-size"
+ENV NODE_OPTIONS="--max-old-space-size=512"
 ENV UV_THREADPOOL_SIZE=8
 
 # Start with PM2 (single instance for Socket.IO with Redis adapter)
