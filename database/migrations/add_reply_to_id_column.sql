@@ -1,9 +1,16 @@
 -- Migration: Add reply_to_id column to messages table for reply feature
 -- Run this SQL in your Supabase SQL Editor
 
--- Add reply_to_id column to messages table
+-- First, check the data type of the id column in messages table
+-- SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'id';
+
+-- Option 1: If messages.id is UUID type, use this:
+-- ALTER TABLE public.messages 
+-- ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES public.messages(id) ON DELETE SET NULL;
+
+-- Option 2: If messages.id is TEXT type (more common), use this:
 ALTER TABLE public.messages 
-ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES public.messages(id) ON DELETE SET NULL;
+ADD COLUMN IF NOT EXISTS reply_to_id TEXT;
 
 -- Create index for faster lookups of replies
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to_id ON public.messages(reply_to_id);
