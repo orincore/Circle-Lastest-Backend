@@ -174,6 +174,37 @@ export class PushNotificationService {
     messageId: string
   ): Promise<boolean> {
     try {
+      // If user is actively viewing this chat in the foreground, skip push
+      try {
+        const io = getIoRef ? getIoRef() : null;
+        if (io) {
+          const sockets = await io.fetchSockets();
+          const recipientSockets = sockets.filter((socket: any) => {
+            const user = (socket.data as any)?.user;
+            return user?.id === recipientId;
+          });
+
+          if (recipientSockets.length > 0) {
+            let isActivelyViewingChat = false;
+            for (const socket of recipientSockets) {
+              const data: any = socket.data || {};
+              const activeChats: any = data.activeChats;
+              if (activeChats && activeChats instanceof Set && activeChats.has(chatId)) {
+                isActivelyViewingChat = true;
+                break;
+              }
+            }
+
+            if (isActivelyViewingChat) {
+              logger.debug({ recipientId, chatId }, 'Skipping push for message because user is actively viewing this chat');
+              return false;
+            }
+          }
+        }
+      } catch (presenceError) {
+        logger.warn({ presenceError, recipientId, chatId }, 'Failed to determine active chat presence; proceeding with push');
+      }
+
       // Truncate message for notification
       const truncatedMessage = messageText.length > 100 
         ? messageText.substring(0, 100) + '...' 

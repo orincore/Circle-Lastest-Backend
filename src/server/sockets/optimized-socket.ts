@@ -596,6 +596,19 @@ export function initOptimizedSocket(server: Server) {
       if (!chatId) return
       const room = `chat:${chatId}`
       bumpActive(io, room, 1)
+
+      // Track active chats per socket so push service can avoid notifying
+      // when the user is already inside a specific conversation
+      try {
+        const data: any = socket.data || {}
+        if (!data.activeChats) {
+          data.activeChats = new Set<string>()
+        }
+        data.activeChats.add(chatId)
+        socket.data = data
+      } catch (err) {
+        logger.error({ err, chatId }, 'Failed to track active chat on socket')
+      }
     })
 
     socket.on('chat:inactive', ({ chatId }: { chatId: string }) => {
@@ -603,6 +616,15 @@ export function initOptimizedSocket(server: Server) {
       if (!chatId) return
       const room = `chat:${chatId}`
       bumpActive(io, room, -1)
+
+      try {
+        const data: any = socket.data || {}
+        if (data.activeChats && data.activeChats instanceof Set) {
+          data.activeChats.delete(chatId)
+        }
+      } catch (err) {
+        logger.error({ err, chatId }, 'Failed to untrack active chat on socket')
+      }
     })
 
     // Friend Status: Get friend status
