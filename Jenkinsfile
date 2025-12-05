@@ -329,24 +329,33 @@ pipeline {
                                 sleep 5
                                 
                                 # ============================================
-                                # Step 6: Reload NGINX (graceful - zero downtime)
+                                # Step 6: Rebuild and Reload NGINX
                                 # ============================================
                                 echo ""
-                                echo "🌐 Step 5: Graceful NGINX reload..."
+                                echo "🌐 Step 5: Rebuilding NGINX with latest config..."
                                 
-                                # If nginx container is already running, reload config only
+                                # Always rebuild NGINX to pick up config changes
+                                docker-compose -f ${COMPOSE_FILE} build nginx
+                                
+                                # Check if nginx container is running
                                 NGINX_ID=\$(docker ps -q -f name=circle-nginx)
                                 if [ -n "\${NGINX_ID}" ]; then
-                                    echo "   Testing nginx config..."
-                                    docker exec -T \${NGINX_ID} nginx -t 2>/dev/null && {
-                                        echo "   Config valid, reloading..."
-                                        docker exec -T \${NGINX_ID} nginx -s reload
-                                        echo "   ✅ NGINX reloaded gracefully"
-                                    } || {
-                                        echo "   ⚠️ Config test failed, keeping current config"
-                                    }
+                                    echo "   Stopping old NGINX container..."
+                                    docker-compose -f ${COMPOSE_FILE} stop nginx
+                                    echo "   Starting new NGINX container..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans nginx
+                                    sleep 3
+                                    
+                                    # Verify NGINX is healthy
+                                    NGINX_HEALTH=\$(docker inspect circle-nginx --format="{{.State.Health.Status}}" 2>/dev/null || echo "none")
+                                    if [ "\$NGINX_HEALTH" = "healthy" ]; then
+                                        echo "   ✅ NGINX rebuilt and healthy!"
+                                    else
+                                        echo "   ⚠️ NGINX health: \$NGINX_HEALTH - checking logs..."
+                                        docker logs --tail 20 circle-nginx 2>&1 || true
+                                    fi
                                 else
-                                    echo "   circle-nginx is not running, starting it..."
+                                    echo "   Starting NGINX container..."
                                     docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans nginx
                                 fi
                                 sleep 2
@@ -362,7 +371,11 @@ pipeline {
                                 API_GREEN_HEALTH=\$(check_container_health "circle-api-green")
                                 SOCKET_BLUE_HEALTH=\$(check_container_health "circle-socket-blue")
                                 SOCKET_GREEN_HEALTH=\$(check_container_health "circle-socket-green")
+                                NGINX_HEALTH=\$(check_container_health "circle-nginx")
+                                REDIS_HEALTH=\$(check_container_health "circle-redis")
                                 
+                                echo "   NGINX:        \$NGINX_HEALTH"
+                                echo "   Redis:        \$REDIS_HEALTH"
                                 echo "   API Blue:     \$API_BLUE_HEALTH"
                                 echo "   API Green:    \$API_GREEN_HEALTH"
                                 echo "   Socket Blue:  \$SOCKET_BLUE_HEALTH"
@@ -408,8 +421,10 @@ pipeline {
                                 docker-compose -f ${COMPOSE_FILE} ps
                                 echo ""
                                 echo "Health Summary:"
-                                echo "   🔵 Blue:  API=\$API_BLUE_HEALTH, Socket=\$SOCKET_BLUE_HEALTH"
-                                echo "   🟢 Green: API=\$API_GREEN_HEALTH, Socket=\$SOCKET_GREEN_HEALTH"
+                                echo "   🌐 NGINX:  \$NGINX_HEALTH"
+                                echo "   �️ Redis:  \$REDIS_HEALTH"
+                                echo "   �🔵 Blue:   API=\$API_BLUE_HEALTH, Socket=\$SOCKET_BLUE_HEALTH"
+                                echo "   🟢 Green:  API=\$API_GREEN_HEALTH, Socket=\$SOCKET_GREEN_HEALTH"
                                 echo ""
                                 echo "Traffic is now load-balanced across both sets!"
                             '

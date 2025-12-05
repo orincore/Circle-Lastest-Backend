@@ -20,10 +20,7 @@ module.exports = {
       max_memory_restart: '500M',
       
       // Node.js optimization flags for WebSocket handling
-      node_args: [
-        '--max-old-space-size=450',
-        '--optimize-for-size'
-      ].join(' '),
+      node_args: '--max-old-space-size=450',
       
       // Environment variables
       env: {

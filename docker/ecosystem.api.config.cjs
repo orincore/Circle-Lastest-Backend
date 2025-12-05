@@ -19,11 +19,7 @@ module.exports = {
       max_memory_restart: '400M',
       
       // Node.js optimization flags
-      node_args: [
-        '--max-old-space-size=384',
-        '--optimize-for-size',
-        '--gc-interval=100'
-      ].join(' '),
+      node_args: '--max-old-space-size=384',
       
       // Environment variables
       env: {

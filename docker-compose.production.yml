@@ -147,13 +147,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - nginx_logs:/var/log/nginx
     depends_on:
-      api-blue:
-        condition: service_healthy
-      api-green:
-        condition: service_healthy
-      socket-blue:
-        condition: service_healthy
-      socket-green:
+      redis:
         condition: service_healthy
     networks:
       - circle-network
