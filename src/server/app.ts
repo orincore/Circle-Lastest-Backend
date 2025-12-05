@@ -77,6 +77,14 @@ const __dirname = path.dirname(__filename)
 app.set('trust proxy', 1)
 app.set('etag', false)
 
+// ============================================
+// HEALTH CHECK - MUST BE FIRST (before any middleware)
+// This allows Docker/Kubernetes health probes to work
+// ============================================
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', ts: Date.now(), service: process.env.SERVICE_TYPE || 'api' })
+})
+
 // Security: Disable X-Powered-By header
 app.disable('x-powered-by')
 
@@ -242,7 +250,7 @@ app.get('/delete-account.html', (req, res) => {
   res.sendFile(path.join(publicPath, 'delete-account.html'))
 })
 
-app.use('/health', healthRouter)
+// Health check is defined at the top of the file (before middleware)
 app.use('/api/public', publicStatsRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/auth', emailVerificationRouter)

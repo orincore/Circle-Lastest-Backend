@@ -21,15 +21,15 @@ pipeline {
         COMPOSE_FILE = 'docker-compose.production.yml'
         BRANCH = 'main'
         
-        // Blue-Green Configuration - Optimized for fast deployments
-        HEALTH_CHECK_RETRIES = '12'
-        HEALTH_CHECK_INTERVAL = '5'
+        // Blue-Green Configuration - Allow time for app startup
+        HEALTH_CHECK_RETRIES = '20'
+        HEALTH_CHECK_INTERVAL = '10'
         DRAIN_WAIT_SECONDS = '5'
         GRACEFUL_SHUTDOWN_WAIT = '3'
     }
 
     options {
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '20'))
         timestamps()
@@ -140,9 +140,12 @@ pipeline {
                                     local retries=${HEALTH_CHECK_RETRIES}
                                     
                                     echo "   Waiting for \$container to be healthy..."
+                                    
+                                    # Wait for container to start (Docker start_period is 60s)
+                                    echo "      Waiting 30s for container startup..."
+                                    sleep 30
+                                    
                                     for i in \$(seq 1 \$retries); do
-                                        sleep ${HEALTH_CHECK_INTERVAL}
-                                        
                                         local health=\$(check_container_health \$container)
                                         echo "      Attempt \$i/\$retries: \$health"
                                         
@@ -150,9 +153,18 @@ pipeline {
                                             echo "   ✅ \$container is healthy!"
                                             return 0
                                         fi
+                                        
+                                        # If starting, wait longer
+                                        if [ "\$health" = "starting" ]; then
+                                            sleep ${HEALTH_CHECK_INTERVAL}
+                                        else
+                                            sleep 5
+                                        fi
                                     done
                                     
-                                    echo "   ❌ \$container failed health check!"
+                                    # Show container logs on failure
+                                    echo "   ❌ \$container failed health check! Last logs:"
+                                    docker logs --tail 50 \$container 2>&1 || true
                                     return 1
                                 }
                                 

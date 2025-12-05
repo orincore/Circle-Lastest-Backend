@@ -5,13 +5,10 @@
 # syntax=docker/dockerfile:1
 
 FROM node:20-alpine AS base
-
-# Install essential tools and PM2
-RUN apk add --no-cache wget curl && \
-    npm install -g pm2 && \
-    npm cache clean --force
-
 WORKDIR /app
+
+# Install PM2 globally for process management
+RUN npm install -g pm2 && npm cache clean --force
 
 # ============================================
 # Dependencies Stage
@@ -45,6 +42,9 @@ ENV NODE_ENV=production
 ENV SERVICE_TYPE=socket
 ENV PORT=8081
 
+# Install curl for health checks
+RUN apk add --no-cache curl
+
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
@@ -66,9 +66,9 @@ USER nodejs
 
 EXPOSE 8081
 
-# Health check for Socket.IO - using wget for faster checks
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8081/health || exit 1
+# Health check - longer start period for socket initialization
+HEALTHCHECK --interval=10s --timeout=10s --start-period=60s --retries=5 \
+  CMD curl -f http://localhost:8081/health || exit 1
 
 # Node.js performance tuning for Socket.IO
 ENV NODE_OPTIONS="--max-old-space-size=512 --optimize-for-size"
