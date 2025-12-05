@@ -23,7 +23,7 @@ pipeline {
         
         // Blue-Green Configuration - Allow time for app startup
         HEALTH_CHECK_RETRIES = '20'
-        HEALTH_CHECK_INTERVAL = '10'
+        HEALTH_CHECK_INTERVAL = '5'
         DRAIN_WAIT_SECONDS = '5'
         GRACEFUL_SHUTDOWN_WAIT = '3'
     }
@@ -142,29 +142,34 @@ pipeline {
                                     echo "   Waiting for \$container to be healthy..."
                                     
                                     # Wait for container to start (Docker start_period is 60s)
-                                    echo "      Waiting 30s for container startup..."
-                                    sleep 30
+                                    echo "      Waiting 5s for container startup..."
+                                    sleep 5
                                     
                                     for i in \$(seq 1 \$retries); do
                                         local health=\$(check_container_health \$container)
-                                        echo "      Attempt \$i/\$retries: \$health"
+                                        local running=\$(docker inspect \$container --format="{{.State.Running}}" 2>/dev/null || echo "false")
+                                        echo "      Attempt \$i/\$retries: health=\$health, running=\$running"
                                         
                                         if [ "\$health" = "healthy" ]; then
                                             echo "   ✅ \$container is healthy!"
                                             return 0
                                         fi
                                         
-                                        # If starting, wait longer
-                                        if [ "\$health" = "starting" ]; then
-                                            sleep ${HEALTH_CHECK_INTERVAL}
-                                        else
-                                            sleep 5
+                                        # Check if container is running
+                                        if [ "\$running" != "true" ]; then
+                                            echo "   ⚠️ Container not running! Checking logs..."
+                                            docker logs --tail 20 \$container 2>&1 || true
                                         fi
+                                        
+                                        sleep ${HEALTH_CHECK_INTERVAL}
                                     done
                                     
-                                    # Show container logs on failure
-                                    echo "   ❌ \$container failed health check! Last logs:"
-                                    docker logs --tail 50 \$container 2>&1 || true
+                                    # Show container logs and health check output on failure
+                                    echo "   ❌ \$container failed health check!"
+                                    echo "   === Container Logs (last 100 lines) ==="
+                                    docker logs --tail 100 \$container 2>&1 || true
+                                    echo "   === Health Check Logs ==="
+                                    docker inspect \$container --format="{{json .State.Health}}" 2>/dev/null || true
                                     return 1
                                 }
                                 
@@ -316,20 +321,20 @@ pipeline {
                                 fi
                                 
                                 # ============================================
-                                # Step 5: Update Cron Worker
-                                # ============================================
+                                // Step 5: Update Cron Worker
+                                // ============================================
                                 echo ""
                                 echo "⏰ Step 4: Updating Cron worker..."
                                 docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build cron
                                 sleep 5
                                 
                                 # ============================================
-                                # Step 6: Reload NGINX (graceful - zero downtime)
-                                # ============================================
+                                // Step 6: Reload NGINX (graceful - zero downtime)
+                                // ============================================
                                 echo ""
                                 echo "🌐 Step 5: Graceful NGINX reload..."
                                 
-                                # If nginx container is already running, reload config only
+                                // If nginx container is already running, reload config only
                                 NGINX_ID=\$(docker ps -q -f name=circle-nginx)
                                 if [ -n "\${NGINX_ID}" ]; then
                                     echo "   Testing nginx config..."
@@ -346,13 +351,13 @@ pipeline {
                                 fi
                                 sleep 2
                                 
-                                # ============================================
-                                # Step 7: Final Health Verification
-                                # ============================================
+                                // ============================================
+                                // Step 7: Final Health Verification
+                                // ============================================
                                 echo ""
                                 echo "🏥 Step 6: Final health verification..."
                                 
-                                # Check all containers
+                                // Check all containers
                                 API_BLUE_HEALTH=\$(check_container_health "circle-api-blue")
                                 API_GREEN_HEALTH=\$(check_container_health "circle-api-green")
                                 SOCKET_BLUE_HEALTH=\$(check_container_health "circle-socket-blue")
@@ -363,7 +368,7 @@ pipeline {
                                 echo "   Socket Blue:  \$SOCKET_BLUE_HEALTH"
                                 echo "   Socket Green: \$SOCKET_GREEN_HEALTH"
                                 
-                                # At least one of each type must be healthy
+                                // At least one of each type must be healthy
                                 if [ "\$API_BLUE_HEALTH" != "healthy" ] && [ "\$API_GREEN_HEALTH" != "healthy" ]; then
                                     echo "❌ CRITICAL: No healthy API containers!"
                                     echo "   Rolling back..."
@@ -382,18 +387,18 @@ pipeline {
                                     exit 1
                                 fi
                                 
-                                # ============================================
-                                # Step 8: Aggressive Cleanup
-                                # ============================================
+                                // ============================================
+                                // Step 8: Aggressive Cleanup
+                                // ============================================
                                 echo ""
                                 echo "🧹 Step 7: Cleanup..."
                                 docker image prune -f > /dev/null 2>&1 || true
                                 docker container prune -f > /dev/null 2>&1 || true
                                 docker volume prune -f > /dev/null 2>&1 || true
                                 
-                                # ============================================
-                                # Final Status
-                                # ============================================
+                                // ============================================
+                                // Final Status
+                                // ============================================
                                 echo ""
                                 echo "============================================"
                                 echo "✅ Blue-Green Deployment Successful!"
