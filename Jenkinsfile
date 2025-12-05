@@ -33,7 +33,6 @@ pipeline {
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '20'))
         timestamps()
-        wrap([$class: 'AnsiColorBuildWrapper', colorMapName: 'xterm'])
     }
     
     parameters {
