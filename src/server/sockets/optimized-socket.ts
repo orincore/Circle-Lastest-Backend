@@ -67,12 +67,12 @@ const redis = new Redis({
   lazyConnect: true,
 })
 
-// Connection limits and rate limiting constants
-const MAX_CONNECTIONS_PER_USER = 3
-const MAX_TOTAL_CONNECTIONS = 10000
-const RATE_LIMIT_WINDOW = 60 // seconds
-const RATE_LIMIT_MAX_EVENTS = 100 // events per window per user
-const CONNECTION_TIMEOUT = 30000 // 30 seconds idle timeout
+// Connection limits and rate limiting constants - optimized for high traffic
+const MAX_CONNECTIONS_PER_USER = 5          // Allow more devices per user
+const MAX_TOTAL_CONNECTIONS = 50000         // Support more concurrent users
+const RATE_LIMIT_WINDOW = 60                // seconds
+const RATE_LIMIT_MAX_EVENTS = 300           // Higher limit for active users
+const CONNECTION_TIMEOUT = 120000           // 2 minutes - more lenient for mobile
 
 // Connection tracking
 const connectionCounts = new Map<string, number>() // userId -> connection count
@@ -91,6 +91,100 @@ async function checkEventRateLimit(userId: string, event: string): Promise<boole
     logger.error({ error, userId, event }, 'Rate limit check failed')
     return true // Allow on error to prevent blocking legitimate users
   }
+}
+
+// Cache TTLs
+const CHAT_MEMBERS_CACHE_TTL = 300 // 5 minutes
+const BLOCK_STATUS_CACHE_TTL = 60 // 1 minute
+const FRIENDSHIP_CACHE_TTL = 300 // 5 minutes
+
+// Cached chat members lookup
+async function getCachedChatMembers(chatId: string): Promise<string[] | null> {
+  try {
+    const cacheKey = `chat_members:${chatId}`
+    const cached = await redis.get(cacheKey)
+    if (cached) {
+      return JSON.parse(cached)
+    }
+    
+    const { data: members } = await supabase
+      .from('chat_members')
+      .select('user_id')
+      .eq('chat_id', chatId)
+    
+    if (members && members.length > 0) {
+      const userIds = members.map(m => m.user_id)
+      await redis.setex(cacheKey, CHAT_MEMBERS_CACHE_TTL, JSON.stringify(userIds))
+      return userIds
+    }
+    return null
+  } catch (error) {
+    logger.error({ error, chatId }, 'Failed to get cached chat members')
+    return null
+  }
+}
+
+// Cached block status check
+async function isBlocked(userId1: string, userId2: string): Promise<boolean> {
+  try {
+    const cacheKey = `block:${[userId1, userId2].sort().join(':')}`
+    const cached = await redis.get(cacheKey)
+    if (cached !== null) {
+      return cached === '1'
+    }
+    
+    const { data: blockCheck } = await supabase
+      .from('blocks')
+      .select('id')
+      .or(`and(blocker_id.eq.${userId1},blocked_id.eq.${userId2}),and(blocker_id.eq.${userId2},blocked_id.eq.${userId1})`)
+      .limit(1)
+      .maybeSingle()
+    
+    const blocked = !!blockCheck
+    await redis.setex(cacheKey, BLOCK_STATUS_CACHE_TTL, blocked ? '1' : '0')
+    return blocked
+  } catch (error) {
+    logger.error({ error, userId1, userId2 }, 'Failed to check block status')
+    return false // Fail open
+  }
+}
+
+// Cached friendship check
+async function areFriends(userId1: string, userId2: string): Promise<boolean> {
+  try {
+    const cacheKey = `friends:${[userId1, userId2].sort().join(':')}`
+    const cached = await redis.get(cacheKey)
+    if (cached !== null) {
+      return cached === '1'
+    }
+    
+    const { data: friendship } = await supabase
+      .from('friendships')
+      .select('id')
+      .or(`and(user1_id.eq.${userId1},user2_id.eq.${userId2}),and(user1_id.eq.${userId2},user2_id.eq.${userId1})`)
+      .in('status', ['active', 'accepted'])
+      .limit(1)
+      .maybeSingle()
+    
+    const friends = !!friendship
+    await redis.setex(cacheKey, FRIENDSHIP_CACHE_TTL, friends ? '1' : '0')
+    return friends
+  } catch (error) {
+    logger.error({ error, userId1, userId2 }, 'Failed to check friendship')
+    return false // Fail closed for security
+  }
+}
+
+// Invalidate friendship cache when status changes
+export function invalidateFriendshipCache(userId1: string, userId2: string) {
+  const cacheKey = `friends:${[userId1, userId2].sort().join(':')}`
+  redis.del(cacheKey).catch(err => logger.error({ error: err }, 'Failed to invalidate friendship cache'))
+}
+
+// Invalidate block cache when status changes
+export function invalidateBlockCache(userId1: string, userId2: string) {
+  const cacheKey = `block:${[userId1, userId2].sort().join(':')}`
+  redis.del(cacheKey).catch(err => logger.error({ error: err }, 'Failed to invalidate block cache'))
 }
 
 // Connection management
@@ -208,7 +302,7 @@ export function emitToAll(event: string, payload: any) {
   }
 }
 
-export function initOptimizedSocket(server: Server) {
+export async function initOptimizedSocket(server: Server) {
   // Allow localhost for development testing even in production
   const allowedOrigins = [
     'https://circle.orincore.com',
@@ -227,35 +321,73 @@ export function initOptimizedSocket(server: Server) {
       credentials: true,
       methods: ['GET', 'POST'],
     },
-    // Optimized for EC2 backend (no serverless limitations)
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    upgradeTimeout: 10000,
-    maxHttpBufferSize: 1e6, // 1MB
-    // Standard transport configuration (WebSocket first for EC2)
+    // Optimized for maximum real-time performance
+    pingTimeout: 30000,        // Faster detection of dead connections
+    pingInterval: 15000,       // More frequent pings for reliability
+    upgradeTimeout: 5000,      // Faster upgrade timeout
+    maxHttpBufferSize: 2e6,    // 2MB for media messages
+    // WebSocket first for lowest latency
     transports: ['websocket', 'polling'],
     allowEIO3: true,
-    // Standard production settings
+    // Performance optimizations
     serveClient: false,
+    httpCompression: true,
+    perMessageDeflate: {
+      threshold: 1024,         // Only compress messages > 1KB
+      zlibDeflateOptions: { level: 1 }, // Fast compression
+      zlibInflateOptions: { chunkSize: 16 * 1024 },
+    },
+    // Connection state recovery for seamless reconnects
+    connectionStateRecovery: {
+      maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+      skipMiddlewares: true,
+    },
   })
   
   ioRef = io
   
   // Setup Redis adapter for horizontal scaling (multiple Socket.IO instances)
-  if (process.env.SOCKET_REDIS_ENABLED === 'true') {
+  // CRITICAL: Always enable in production for blue-green deployment to work correctly
+  const isProduction = process.env.NODE_ENV === 'production'
+  const shouldUseRedisAdapter = isProduction || process.env.SOCKET_REDIS_ENABLED === 'true'
+  
+  if (shouldUseRedisAdapter) {
     try {
       const pubClient = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379'),
         maxRetriesPerRequest: 3,
+        retryStrategy: (times) => Math.min(times * 100, 3000),
+        enableReadyCheck: true,
+        lazyConnect: false, // Connect immediately
       })
       const subClient = pubClient.duplicate()
       
+      // Wait for both clients to be ready
+      await Promise.all([
+        new Promise<void>((resolve, reject) => {
+          pubClient.on('ready', () => resolve())
+          pubClient.on('error', (err) => {
+            logger.error({ error: err }, 'Redis pub client error')
+          })
+          setTimeout(() => reject(new Error('Redis pub client timeout')), 5000)
+        }),
+        new Promise<void>((resolve, reject) => {
+          subClient.on('ready', () => resolve())
+          subClient.on('error', (err) => {
+            logger.error({ error: err }, 'Redis sub client error')
+          })
+          setTimeout(() => reject(new Error('Redis sub client timeout')), 5000)
+        })
+      ])
+      
       io.adapter(createAdapter(pubClient, subClient))
-      logger.info('Socket.IO Redis adapter enabled for horizontal scaling')
+      logger.info('✅ Socket.IO Redis adapter enabled for horizontal scaling (blue-green deployment)')
     } catch (error) {
-      logger.error({ error }, 'Failed to setup Redis adapter for Socket.IO')
+      logger.error({ error }, '❌ Failed to setup Redis adapter for Socket.IO - messages may not sync across instances!')
     }
+  } else {
+    logger.warn('⚠️ Socket.IO Redis adapter NOT enabled - multi-instance messaging will NOT work!')
   }
   
   // Initialize push notification service with IO reference
@@ -1115,29 +1247,22 @@ export function initOptimizedSocket(server: Server) {
       }
       
       try {
-        // Get chat members to check for blocks
-        const { data: members } = await supabase
-          .from('chat_members')
-          .select('user_id')
-          .eq('chat_id', chatId)
+        // Get chat members using cache for faster lookup
+        const memberIds = await getCachedChatMembers(chatId)
         
-        if (!members || members.length !== 2) return // Only handle 1:1 chats for now
+        if (!memberIds || memberIds.length !== 2) return // Only handle 1:1 chats for now
         
-        const otherUserId = members.find(m => m.user_id !== userId)?.user_id
+        const otherUserId = memberIds.find(id => id !== userId)
         if (!otherUserId) return
         
-        // Check if either user has blocked the other
-        const { data: blockCheck } = await supabase
-          .from('blocks')
-          .select('blocker_id, blocked_id')
-          .or(`and(blocker_id.eq.${userId},blocked_id.eq.${otherUserId}),and(blocker_id.eq.${otherUserId},blocked_id.eq.${userId})`)
-          .maybeSingle()
+        // Check if either user has blocked the other (cached)
+        const blocked = await isBlocked(userId, otherUserId)
         
-        if (blockCheck) {
+        if (blocked) {
           // Block detected - don't send the message
           socket.emit('chat:message:blocked', { 
             error: 'Message blocked',
-            reason: blockCheck.blocker_id === userId ? 'user_blocked' : 'blocked_by_user'
+            reason: 'blocked'
           })
           return
         }
@@ -1146,17 +1271,11 @@ export function initOptimizedSocket(server: Server) {
         const { BlindDatingService } = await import('../services/blind-dating.service.js')
         const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
         
-        // Only check friendship if it's NOT a blind date chat
+        // Only check friendship if it's NOT a blind date chat (cached)
         if (!isBlindDate) {
-          const { data: friendshipCheck } = await supabase
-            .from('friendships')
-            .select('id')
-            .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
-            .in('status', ['active', 'accepted'])
-            .limit(1)
-            .maybeSingle()
+          const friends = await areFriends(userId, otherUserId)
           
-          if (!friendshipCheck) {
+          if (!friends) {
             // No friendship found - don't allow messaging
             socket.emit('chat:message:blocked', { 
               error: 'Messaging not allowed',
@@ -1253,14 +1372,14 @@ export function initOptimizedSocket(server: Server) {
             : 'Someone'
           const senderAvatar = senderInfo?.profile_photo_url || null
           
-          if (members) {
+          if (memberIds && memberIds.length > 0) {
             // Process each member (parallel for better performance)
-            const memberPromises = members.map(async (member: { user_id: string }) => {
-              if (member.user_id !== userId) { // Don't send to sender
+            const memberPromises = memberIds.map(async (memberId: string) => {
+              if (memberId !== userId) { // Don't send to sender
                 try {
                   // Always send socket event to user's personal room
                   // This ensures chat list updates in real-time
-                  io.to(member.user_id).emit('chat:message:background', { 
+                  io.to(memberId).emit('chat:message:background', { 
                     message: { 
                       ...msg, 
                       senderName,
@@ -1268,28 +1387,27 @@ export function initOptimizedSocket(server: Server) {
                     } 
                   })
                   
-                  // Always send push notification for messages
-                  // (app may be backgrounded even with socket connected)
-                  try {
-                    const { PushNotificationService } = await import('../services/pushNotificationService.js')
-                    await PushNotificationService.sendMessageNotification(
-                      member.user_id,
+                  // Send push notification asynchronously (don't await to avoid blocking)
+                  import('../services/pushNotificationService.js').then(({ PushNotificationService }) => {
+                    PushNotificationService.sendMessageNotification(
+                      memberId,
                       senderName,
                       msg.text || 'New message',
                       chatId,
                       msg.id
-                    )
-                    logger.debug({ recipientId: member.user_id, chatId }, 'Sent push notification for message')
-                  } catch (pushError) {
-                    logger.error({ error: pushError, recipientId: member.user_id }, 'Failed to send push notification')
-                  }
+                    ).catch(pushError => {
+                      logger.error({ error: pushError, recipientId: memberId }, 'Failed to send push notification')
+                    })
+                  }).catch(err => {
+                    logger.error({ error: err }, 'Failed to import push notification service')
+                  })
                 } catch (error) {
-                  logger.error({ error, recipientId: member.user_id }, 'Error processing message delivery')
+                  logger.error({ error, recipientId: memberId }, 'Error processing message delivery')
                 }
               }
             })
             
-            // Wait for all deliveries (don't block message sending)
+            // Don't await - let deliveries happen in background
             Promise.all(memberPromises).catch(err => {
               logger.error({ error: err, chatId }, 'Error in parallel message delivery')
             })

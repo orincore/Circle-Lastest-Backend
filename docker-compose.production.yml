@@ -28,10 +28,10 @@ x-common-env: &common-env
   TZ: Asia/Kolkata
 
 x-healthcheck-defaults: &healthcheck-defaults
-  interval: 30s
-  timeout: 10s
+  interval: 10s
+  timeout: 5s
   retries: 3
-  start_period: 40s
+  start_period: 30s
 
 x-logging: &logging
   driver: json-file
@@ -42,9 +42,9 @@ x-logging: &logging
 x-deploy-defaults: &deploy-defaults
   restart_policy:
     condition: on-failure
-    delay: 5s
-    max_attempts: 3
-    window: 120s
+    delay: 3s
+    max_attempts: 5
+    window: 60s
 
 # ============================================
 # Shared API configuration for Blue/Green
@@ -71,7 +71,7 @@ x-api-base: &api-base
         cpus: '0.25'
   logging: *logging
   healthcheck:
-    test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
+    test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
     <<: *healthcheck-defaults
   restart: unless-stopped
 
@@ -100,7 +100,7 @@ x-socket-base: &socket-base
         cpus: '0.25'
   logging: *logging
   healthcheck:
-    test: ["CMD", "node", "-e", "require('http').get('http://localhost:8081/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"]
+    test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
     <<: *healthcheck-defaults
   restart: unless-stopped
 
@@ -184,14 +184,21 @@ services:
     command: >
       redis-server
       --appendonly yes
-      --maxmemory 256mb
+      --maxmemory 512mb
       --maxmemory-policy allkeys-lru
       --tcp-keepalive 60
       --timeout 0
-      --tcp-backlog 511
+      --tcp-backlog 1024
       --save 900 1
       --save 300 10
       --save 60 10000
+      --activerehashing yes
+      --hz 100
+      --dynamic-hz yes
+      --lazyfree-lazy-eviction yes
+      --lazyfree-lazy-expire yes
+      --io-threads 2
+      --io-threads-do-reads yes
     volumes:
       - redis_data:/data
     networks:
@@ -207,9 +214,10 @@ services:
     logging: *logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
+      interval: 5s
+      timeout: 2s
       retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # ============================================
@@ -223,11 +231,16 @@ services:
       PORT: 8080
       SERVICE_TYPE: api
       DEPLOYMENT_COLOR: blue
+      UV_THREADPOOL_SIZE: 8
     expose:
       - "8080"
     depends_on:
       redis:
         condition: service_healthy
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
 
   # ============================================
   # API Server - GREEN SET
@@ -240,11 +253,16 @@ services:
       PORT: 8080
       SERVICE_TYPE: api
       DEPLOYMENT_COLOR: green
+      UV_THREADPOOL_SIZE: 8
     expose:
       - "8080"
     depends_on:
       redis:
         condition: service_healthy
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
 
   # ============================================
   # Socket.IO Server - BLUE SET
@@ -258,11 +276,16 @@ services:
       SERVICE_TYPE: socket
       SOCKET_REDIS_ENABLED: "true"
       DEPLOYMENT_COLOR: blue
+      UV_THREADPOOL_SIZE: 8
     expose:
       - "8081"
     depends_on:
       redis:
         condition: service_healthy
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
 
   # ============================================
   # Socket.IO Server - GREEN SET
@@ -276,11 +299,16 @@ services:
       SERVICE_TYPE: socket
       SOCKET_REDIS_ENABLED: "true"
       DEPLOYMENT_COLOR: green
+      UV_THREADPOOL_SIZE: 8
     expose:
       - "8081"
     depends_on:
       redis:
         condition: service_healthy
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
 
   # ============================================
   # Matchmaking Worker - BLUE SET

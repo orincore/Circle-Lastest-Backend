@@ -7,7 +7,9 @@ import { prepareApp } from './server/bootstrap.js'
 async function bootstrap() {
   const app = await prepareApp()
   const server = http.createServer(app)
-  initOptimizedSocket(server)
+  
+  // Initialize Socket.IO with Redis adapter (async for proper Redis connection)
+  await initOptimizedSocket(server)
 
   server.listen(env.PORT, () => {
     console.log('\n')

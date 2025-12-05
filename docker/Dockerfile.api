@@ -5,10 +5,13 @@
 # syntax=docker/dockerfile:1
 
 FROM node:20-alpine AS base
-WORKDIR /app
 
-# Install PM2 globally for process management
-RUN npm install -g pm2
+# Install essential tools and PM2
+RUN apk add --no-cache wget curl && \
+    npm install -g pm2 && \
+    npm cache clean --force
+
+WORKDIR /app
 
 # ============================================
 # Dependencies Stage
@@ -63,9 +66,13 @@ USER nodejs
 
 EXPOSE 8080
 
-# Health check for API
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8080/health', res => { if (res.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1));"
+# Health check for API - using wget for faster checks
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Node.js performance tuning
+ENV NODE_OPTIONS="--max-old-space-size=512 --optimize-for-size"
+ENV UV_THREADPOOL_SIZE=8
 
 # Start with PM2 for clustering (uses all available CPUs)
 CMD ["pm2-runtime", "ecosystem.config.cjs"]

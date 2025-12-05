@@ -21,17 +21,19 @@ pipeline {
         COMPOSE_FILE = 'docker-compose.production.yml'
         BRANCH = 'main'
         
-        // Blue-Green Configuration
-        HEALTH_CHECK_RETRIES = '6'
-        HEALTH_CHECK_INTERVAL = '10'
-        DRAIN_WAIT_SECONDS = '10'
+        // Blue-Green Configuration - Optimized for fast deployments
+        HEALTH_CHECK_RETRIES = '12'
+        HEALTH_CHECK_INTERVAL = '5'
+        DRAIN_WAIT_SECONDS = '5'
+        GRACEFUL_SHUTDOWN_WAIT = '3'
     }
 
     options {
-        timeout(time: 45, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
         disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '15'))
+        buildDiscarder(logRotator(numToKeepStr: '20'))
         timestamps()
+        ansiColor('xterm')
     }
     
     parameters {
@@ -160,20 +162,25 @@ pipeline {
                                     echo ""
                                     echo "🔵 Deploying \$color set..."
                                     
-                                    # Build and start API
-                                    echo "   Building api-\$color..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build api-\$color
+                                    # Build all images in parallel first (faster)
+                                    echo "   Building all \$color images in parallel..."
+                                    docker-compose -f ${COMPOSE_FILE} build --parallel api-\$color socket-\$color matchmaking-\$color 2>/dev/null || \
+                                    docker-compose -f ${COMPOSE_FILE} build api-\$color socket-\$color matchmaking-\$color
+                                    
+                                    # Start API first (critical path)
+                                    echo "   Starting api-\$color..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps api-\$color
                                     wait_for_healthy "circle-api-\$color" "8080" || return 1
                                     
-                                    # Build and start Socket
-                                    echo "   Building socket-\$color..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build socket-\$color
+                                    # Start Socket (critical for real-time)
+                                    echo "   Starting socket-\$color..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps socket-\$color
                                     wait_for_healthy "circle-socket-\$color" "8081" || return 1
                                     
-                                    # Build and start Matchmaking (no health endpoint)
-                                    echo "   Building matchmaking-\$color..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps --build matchmaking-\$color
-                                    sleep 5
+                                    # Start Matchmaking (background service)
+                                    echo "   Starting matchmaking-\$color..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --no-deps matchmaking-\$color
+                                    sleep 3
                                     
                                     echo "   ✅ \$color set deployed successfully!"
                                     return 0
@@ -257,8 +264,10 @@ pipeline {
                                         echo "   ✅ Green set is healthy, will handle traffic during blue update"
                                     fi
                                     
-                                    # Wait for connections to drain from blue
-                                    echo "   ⏳ Waiting ${DRAIN_WAIT_SECONDS}s for connections to drain from blue..."
+                                    # Graceful connection drain from blue
+                                    echo "   ⏳ Graceful drain: waiting ${DRAIN_WAIT_SECONDS}s for blue connections..."
+                                    # Signal nginx to stop sending new requests to blue
+                                    docker exec circle-nginx nginx -s reload 2>/dev/null || true
                                     sleep ${DRAIN_WAIT_SECONDS}
                                     
                                     # Deploy blue set
@@ -276,8 +285,8 @@ pipeline {
                                     echo "🔄 Phase 2: Update GREEN set (BLUE handles traffic)..."
                                     echo "   ✅ Blue set is now healthy, will handle traffic during green update"
                                     
-                                    # Wait for connections to drain from green
-                                    echo "   ⏳ Waiting ${DRAIN_WAIT_SECONDS}s for connections to drain from green..."
+                                    # Graceful connection drain from green
+                                    echo "   ⏳ Graceful drain: waiting ${DRAIN_WAIT_SECONDS}s for green connections..."
                                     sleep ${DRAIN_WAIT_SECONDS}
                                     
                                     # Reset to new commit (in case rollback happened)
@@ -304,24 +313,27 @@ pipeline {
                                 sleep 5
                                 
                                 # ============================================
-                                # Step 6: Reload NGINX (no recreate to avoid downtime)
+                                # Step 6: Reload NGINX (graceful - zero downtime)
                                 # ============================================
                                 echo ""
-                                echo "🌐 Step 5: Reloading NGINX..."
+                                echo "🌐 Step 5: Graceful NGINX reload..."
                                 
                                 # If nginx container is already running, reload config only
                                 NGINX_ID=\$(docker ps -q -f name=circle-nginx)
                                 if [ -n "\${NGINX_ID}" ]; then
-                                    echo "   Reloading existing circle-nginx container..."
-                                    docker exec -T \${NGINX_ID} nginx -s reload 2>/dev/null || {
-                                        echo "   Reload failed, doing a safe restart..."
-                                        docker-compose -f ${COMPOSE_FILE} restart nginx
+                                    echo "   Testing nginx config..."
+                                    docker exec -T \${NGINX_ID} nginx -t 2>/dev/null && {
+                                        echo "   Config valid, reloading..."
+                                        docker exec -T \${NGINX_ID} nginx -s reload
+                                        echo "   ✅ NGINX reloaded gracefully"
+                                    } || {
+                                        echo "   ⚠️ Config test failed, keeping current config"
                                     }
                                 else
                                     echo "   circle-nginx is not running, starting it..."
                                     docker-compose -f ${COMPOSE_FILE} up -d nginx
                                 fi
-                                sleep 3
+                                sleep 2
                                 
                                 # ============================================
                                 # Step 7: Final Health Verification
@@ -360,11 +372,13 @@ pipeline {
                                 fi
                                 
                                 # ============================================
-                                # Step 8: Cleanup
+                                # Step 8: Aggressive Cleanup
                                 # ============================================
                                 echo ""
                                 echo "🧹 Step 7: Cleanup..."
                                 docker image prune -f > /dev/null 2>&1 || true
+                                docker container prune -f > /dev/null 2>&1 || true
+                                docker volume prune -f > /dev/null 2>&1 || true
                                 
                                 # ============================================
                                 # Final Status

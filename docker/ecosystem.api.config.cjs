@@ -38,16 +38,17 @@ module.exports = {
       out_file: '/dev/stdout',
       merge_logs: true,
       
-      // Graceful shutdown
-      kill_timeout: 5000,
+      // Graceful shutdown - fast for zero-downtime deploys
+      kill_timeout: 3000,
       wait_ready: true,
-      listen_timeout: 10000,
+      listen_timeout: 8000,
+      shutdown_with_message: true,
       
-      // Auto-restart settings
+      // Auto-restart settings - aggressive recovery
       autorestart: true,
-      max_restarts: 10,
-      min_uptime: '10s',
-      restart_delay: 1000,
+      max_restarts: 15,
+      min_uptime: '5s',
+      restart_delay: 500,
       
       // Watch disabled in production
       watch: false,
