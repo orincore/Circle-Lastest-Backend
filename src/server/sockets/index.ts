@@ -101,6 +101,7 @@ export function initSocket(server: Server) {
           mediaUrl: r.media_url,
           mediaType: r.media_type,
           thumbnail: r.thumbnail,
+          reply_to_id: r.reply_to_id, // Include reply reference
           createdAt: new Date(r.created_at).getTime(),
           updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined,
           isEdited: r.is_edited || false,
