@@ -66,6 +66,7 @@ import blindDatingRouter from './routes/blind-dating.routes.js'
 import adminBlindDatingRouter from './routes/admin-blind-dating.routes.js'
 import dockerMonitoringRouter from './routes/docker-monitoring.routes.js'
 import appVersionRouter from './routes/app-version.routes.js'
+import promptMatchingRouter from './routes/prompt-matching.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -299,6 +300,7 @@ app.use('/api/admin/blind-dating', adminBlindDatingRouter)
 app.use('/api/admin/docker', dockerMonitoringRouter)
 app.use('/api/app-version', appVersionRouter)
 app.use('/api/upload', uploadRouter)
+app.use('/api/match', promptMatchingRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 

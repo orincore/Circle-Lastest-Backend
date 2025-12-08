@@ -12,6 +12,7 @@ import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, tra
 import { setupVoiceCallHandlers, registerTestHandlers } from '../handlers/voiceCallHandler.js'
 import { setupFriendRequestHandlers } from '../handlers/friendRequestHandler.js'
 import { setupBlindDatingHandlers } from '../handlers/blindDatingHandler.js'
+import { setupPromptMatchingHandlers } from '../handlers/promptMatchingHandler.js'
 import { Redis } from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
@@ -1754,6 +1755,8 @@ export async function initOptimizedSocket(server: Server) {
       setupFriendRequestHandlers(io, socket, userId);
       // Set up blind dating handlers
       setupBlindDatingHandlers(io, socket, userId);
+      // Set up prompt matching handlers
+      setupPromptMatchingHandlers(io, socket, userId);
       // Register test handlers for debugging
       registerTestHandlers(io, socket);
       
