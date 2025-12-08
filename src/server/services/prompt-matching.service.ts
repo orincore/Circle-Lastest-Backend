@@ -49,96 +49,174 @@ export interface GiverMatch {
 export class PromptMatchingService {
   
   /**
-   * Generate embedding for text using semantic similarity
-   * Creates a deterministic embedding based on text content
+   * Generate embedding for text using Together AI for enhanced semantic understanding
+   * Falls back to deterministic embedding if Together AI is unavailable
    */
   private static async generateEmbedding(text: string): Promise<number[]> {
     try {
+      // First try to use Together AI for better embeddings
+      const embedding = await this.generateTogetherAIEmbedding(text)
+      if (embedding) {
+        return embedding
+      }
+      
+      // Fallback to deterministic embedding
+      return this.generateDeterministicEmbedding(text)
+      
+    } catch (error) {
+      logger.error({ error, text }, 'Error generating embedding, falling back to deterministic')
+      return this.generateDeterministicEmbedding(text)
+    }
+  }
+
+  /**
+   * Generate embedding using Together AI's embedding model
+   */
+  private static async generateTogetherAIEmbedding(text: string): Promise<number[] | null> {
+    try {
+      const apiKey = process.env.TOGETHER_AI_API_KEY
+      if (!apiKey) {
+        logger.warn('TOGETHER_AI_API_KEY not available, using fallback embedding')
+        return null
+      }
+
       // Clean and normalize text
       const cleanText = text.toLowerCase().trim()
       
-      // Create a deterministic embedding based on text content
-      // This is a simple but effective approach for matching
-      const embedding = new Array(1536).fill(0)
-      
-      // Define keyword categories with their semantic vectors
-      const keywordCategories = {
-        // Programming & Development
-        programming: ['coding', 'programming', 'development', 'software', 'app', 'website', 'web', 'mobile', 'frontend', 'backend', 'fullstack', 'javascript', 'python', 'react', 'node', 'database', 'api', 'debug', 'bug', 'code', 'developer', 'tech', 'technology'],
-        
-        // Career & Business
-        career: ['career', 'job', 'work', 'business', 'professional', 'interview', 'resume', 'cv', 'promotion', 'salary', 'workplace', 'management', 'leadership', 'entrepreneur'],
-        
-        // Health & Fitness
-        health: ['health', 'fitness', 'workout', 'exercise', 'diet', 'nutrition', 'weight', 'gym', 'running', 'yoga', 'meditation', 'mental health', 'wellness'],
-        
-        // Relationships & Social
-        relationships: ['relationship', 'dating', 'love', 'friendship', 'family', 'social', 'communication', 'conflict', 'advice', 'support'],
-        
-        // Education & Learning
-        education: ['education', 'learning', 'study', 'school', 'university', 'course', 'tutorial', 'teaching', 'knowledge', 'skill', 'training'],
-        
-        // Finance & Investment
-        finance: ['finance', 'money', 'investment', 'investing', 'stocks', 'crypto', 'budget', 'savings', 'financial', 'economy', 'trading'],
-        
-        // Creative & Arts
-        creative: ['creative', 'art', 'design', 'music', 'writing', 'photography', 'video', 'content', 'marketing', 'brand'],
-        
-        // Lifestyle & Personal
-        lifestyle: ['lifestyle', 'personal', 'motivation', 'goals', 'habits', 'productivity', 'time management', 'organization']
-      }
-      
-      // Calculate semantic scores for each category
-      Object.entries(keywordCategories).forEach(([category, keywords], categoryIndex) => {
-        let categoryScore = 0
-        
-        keywords.forEach(keyword => {
-          if (cleanText.includes(keyword)) {
-            // Boost score based on keyword importance and frequency
-            const frequency = (cleanText.match(new RegExp(keyword, 'g')) || []).length
-            categoryScore += frequency * (keyword.length / 10) // Longer keywords get more weight
-          }
+      // Use Together AI's embedding endpoint
+      const response = await fetch('https://api.together.xyz/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'togethercomputer/m2-bert-80M-8k-retrieval', // Efficient embedding model
+          input: cleanText
         })
-        
-        // Distribute category score across embedding dimensions
-        const startDim = categoryIndex * 192 // 1536 / 8 categories = 192 dimensions per category
-        for (let i = 0; i < 192; i++) {
-          embedding[startDim + i] = categoryScore * Math.sin((i + 1) * Math.PI / 192)
+      })
+
+      if (!response.ok) {
+        logger.warn({ status: response.status }, 'Together AI embedding API error, using fallback')
+        return null
+      }
+
+      const data = await response.json()
+      const embedding = data.data?.[0]?.embedding
+
+      if (!embedding || !Array.isArray(embedding)) {
+        logger.warn('Invalid embedding response from Together AI')
+        return null
+      }
+
+      // Pad or truncate to 1536 dimensions to match our system
+      const normalizedEmbedding = new Array(1536).fill(0)
+      const copyLength = Math.min(embedding.length, 1536)
+      
+      for (let i = 0; i < copyLength; i++) {
+        normalizedEmbedding[i] = embedding[i]
+      }
+
+      // Normalize the embedding vector
+      const magnitude = Math.sqrt(normalizedEmbedding.reduce((sum, val) => sum + val * val, 0))
+      if (magnitude > 0) {
+        for (let i = 0; i < normalizedEmbedding.length; i++) {
+          normalizedEmbedding[i] = normalizedEmbedding[i] / magnitude
+        }
+      }
+
+      logger.info({ textLength: cleanText.length, embeddingDimensions: embedding.length }, 'Generated Together AI embedding')
+      return normalizedEmbedding
+
+    } catch (error) {
+      logger.error({ error }, 'Error generating Together AI embedding')
+      return null
+    }
+  }
+
+  /**
+   * Generate deterministic embedding based on text content (fallback method)
+   */
+  private static generateDeterministicEmbedding(text: string): number[] {
+    // Clean and normalize text
+    const cleanText = text.toLowerCase().trim()
+    
+    // Create a deterministic embedding based on text content
+    const embedding = new Array(1536).fill(0)
+    
+    // Define keyword categories with their semantic vectors
+    const keywordCategories = {
+      // Programming & Development
+      programming: ['coding', 'programming', 'development', 'software', 'app', 'website', 'web', 'mobile', 'frontend', 'backend', 'fullstack', 'javascript', 'python', 'react', 'node', 'database', 'api', 'debug', 'bug', 'code', 'developer', 'tech', 'technology'],
+      
+      // Career & Business
+      career: ['career', 'job', 'work', 'business', 'professional', 'interview', 'resume', 'cv', 'promotion', 'salary', 'workplace', 'management', 'leadership', 'entrepreneur'],
+      
+      // Health & Fitness
+      health: ['health', 'fitness', 'workout', 'exercise', 'diet', 'nutrition', 'weight', 'gym', 'running', 'yoga', 'meditation', 'mental health', 'wellness'],
+      
+      // Relationships & Social
+      relationships: ['relationship', 'dating', 'love', 'friendship', 'family', 'social', 'communication', 'conflict', 'advice', 'support'],
+      
+      // Education & Learning
+      education: ['education', 'learning', 'study', 'school', 'university', 'course', 'tutorial', 'teaching', 'knowledge', 'skill', 'training'],
+      
+      // Finance & Investment
+      finance: ['finance', 'money', 'investment', 'investing', 'stocks', 'crypto', 'budget', 'savings', 'financial', 'economy', 'trading'],
+      
+      // Creative & Arts
+      creative: ['creative', 'art', 'design', 'music', 'writing', 'photography', 'video', 'content', 'marketing', 'brand'],
+      
+      // Lifestyle & Personal
+      lifestyle: ['lifestyle', 'personal', 'motivation', 'goals', 'habits', 'productivity', 'time management', 'organization']
+    }
+    
+    // Calculate semantic scores for each category
+    Object.entries(keywordCategories).forEach(([category, keywords], categoryIndex) => {
+      let categoryScore = 0
+      
+      keywords.forEach(keyword => {
+        if (cleanText.includes(keyword)) {
+          // Boost score based on keyword importance and frequency
+          const frequency = (cleanText.match(new RegExp(keyword, 'g')) || []).length
+          categoryScore += frequency * (keyword.length / 10) // Longer keywords get more weight
         }
       })
       
-      // Add text length and complexity features
-      const textLength = cleanText.length
-      const wordCount = cleanText.split(/\s+/).length
-      const uniqueWords = new Set(cleanText.split(/\s+/)).size
-      
-      // Use remaining dimensions for text features
-      for (let i = 1536 - 64; i < 1536; i++) {
-        const featureIndex = i - (1536 - 64)
-        if (featureIndex < 20) {
-          embedding[i] = textLength / 1000 // Text length feature
-        } else if (featureIndex < 40) {
-          embedding[i] = wordCount / 100 // Word count feature
-        } else {
-          embedding[i] = uniqueWords / wordCount // Vocabulary diversity
-        }
+      // Distribute category score across embedding dimensions
+      const startDim = categoryIndex * 192 // 1536 / 8 categories = 192 dimensions per category
+      for (let i = 0; i < 192; i++) {
+        embedding[startDim + i] = categoryScore * Math.sin((i + 1) * Math.PI / 192)
       }
-      
-      // Normalize the embedding vector
-      const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0))
-      if (magnitude > 0) {
-        for (let i = 0; i < embedding.length; i++) {
-          embedding[i] = embedding[i] / magnitude
-        }
+    })
+    
+    // Add text length and complexity features
+    const textLength = cleanText.length
+    const wordCount = cleanText.split(/\s+/).length
+    const uniqueWords = new Set(cleanText.split(/\s+/)).size
+    
+    // Use remaining dimensions for text features
+    for (let i = 1536 - 64; i < 1536; i++) {
+      const featureIndex = i - (1536 - 64)
+      if (featureIndex < 20) {
+        embedding[i] = textLength / 1000 // Text length feature
+      } else if (featureIndex < 40) {
+        embedding[i] = wordCount / 100 // Word count feature
+      } else {
+        embedding[i] = uniqueWords / wordCount // Vocabulary diversity
       }
-      
-      logger.info({ textLength, wordCount, uniqueWords, magnitude }, 'Generated semantic embedding')
-      return embedding
-      
-    } catch (error) {
-      logger.error({ error, text }, 'Error generating embedding')
-      throw new Error('Failed to generate embedding')
     }
+    
+    // Normalize the embedding vector
+    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0))
+    if (magnitude > 0) {
+      for (let i = 0; i < embedding.length; i++) {
+        embedding[i] = embedding[i] / magnitude
+      }
+    }
+    
+    logger.info({ textLength, wordCount, uniqueWords, magnitude }, 'Generated deterministic embedding')
+    return embedding
   }
 
   /**
@@ -260,7 +338,9 @@ export class PromptMatchingService {
   }
 
   /**
-   * Find best matching giver and send notification
+   * Find best matching giver and send notification (TARGETED MATCHING)
+   * Ensures the matched giver is NOT a friend of the receiver
+   * Uses Together AI for enhanced matching when available
    */
   static async findAndNotifyGiver(
     requestId: string,
@@ -269,8 +349,32 @@ export class PromptMatchingService {
     excludedGiverIds: string[] = []
   ): Promise<{ requestId: string; status: 'matched' | 'searching'; matchedGiver?: GiverMatch }> {
     try {
-      // Find best matching giver using a simpler approach
-      // First, get all available givers
+      // Get all friend IDs to exclude from matching
+      const { data: friendships, error: friendshipError } = await supabase
+        .from('friendships')
+        .select('user1_id, user2_id')
+        .or(`user1_id.eq.${receiverUserId},user2_id.eq.${receiverUserId}`)
+        .in('status', ['active', 'accepted'])
+
+      if (friendshipError) {
+        logger.error({ error: friendshipError }, 'Error fetching friendships for exclusion')
+      }
+
+      // Extract friend user IDs
+      const friendIds = friendships?.map(friendship => 
+        friendship.user1_id === receiverUserId ? friendship.user2_id : friendship.user1_id
+      ) || []
+
+      // Combine excluded giver IDs with friend IDs
+      const allExcludedIds = [...excludedGiverIds, ...friendIds]
+
+      logger.info({ 
+        receiverUserId, 
+        friendsCount: friendIds.length, 
+        totalExcluded: allExcludedIds.length 
+      }, 'Excluding friends from giver matching')
+
+      // Find available givers excluding friends and previously declined givers
       const { data: availableGivers, error: giversError } = await supabase
         .from('giver_profiles')
         .select(`
@@ -283,6 +387,7 @@ export class PromptMatchingService {
         `)
         .eq('is_available', true)
         .not('user_id', 'eq', receiverUserId)
+        .not('user_id', 'in', `(${allExcludedIds.map(id => `"${id}"`).join(',')})`)
       
       if (giversError) {
         throw giversError
@@ -291,87 +396,100 @@ export class PromptMatchingService {
       let matches: GiverMatch[] = []
       
       if (availableGivers && availableGivers.length > 0) {
-        // Calculate similarity scores manually
-        const scoredGivers = availableGivers
-          .filter(giver => !excludedGiverIds.includes(giver.user_id))
-          .map(giver => {
-            try {
-              const giverEmbedding = JSON.parse(giver.profile_embedding)
-              
-              // Calculate cosine similarity
-              let dotProduct = 0
-              let normA = 0
-              let normB = 0
-              
-              for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
-                dotProduct += promptEmbedding[i] * giverEmbedding[i]
-                normA += promptEmbedding[i] * promptEmbedding[i]
-                normB += giverEmbedding[i] * giverEmbedding[i]
-              }
-              
-              const similarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
-              
-              return {
-                giver_user_id: giver.user_id,
-                similarity_score: Math.max(0, similarity), // Ensure non-negative
-                is_available: giver.is_available,
-                total_helps_given: giver.total_helps_given,
-                average_rating: giver.average_rating || 0
-              }
-            } catch (error) {
-              logger.error({ error, giverId: giver.user_id }, 'Error calculating similarity')
-              return {
-                giver_user_id: giver.user_id,
-                similarity_score: 0,
-                is_available: giver.is_available,
-                total_helps_given: giver.total_helps_given,
-                average_rating: giver.average_rating || 0
-              }
-            }
-          })
-          .sort((a, b) => b.similarity_score - a.similarity_score)
-        
-        matches = scoredGivers.slice(0, 1) // Take top match
-        
-        logger.info({ 
-          availableGiversCount: availableGivers.length,
-          scoredGiversCount: scoredGivers.length,
-          topSimilarity: matches[0]?.similarity_score || 0
-        }, 'Manual similarity calculation completed')
-      }
-      
-      const matchError = null // No error from manual calculation
+        // Use Together AI for enhanced giver selection when available
+        const enhancedMatches = await this.findPerfectGiverWithAI(
+          promptEmbedding,
+          availableGivers,
+          receiverUserId
+        )
 
-      if (matchError) {
-        throw matchError
+        if (enhancedMatches.length > 0) {
+          matches = enhancedMatches
+          logger.info({ 
+            availableGiversCount: availableGivers.length,
+            aiEnhancedMatches: matches.length,
+            topSimilarity: matches[0]?.similarity_score || 0
+          }, 'AI-enhanced giver matching completed')
+        } else {
+          // Fallback to manual similarity calculation
+          const scoredGivers = availableGivers
+            .map(giver => {
+              try {
+                const giverEmbedding = JSON.parse(giver.profile_embedding)
+                
+                // Calculate cosine similarity
+                let dotProduct = 0
+                let normA = 0
+                let normB = 0
+                
+                for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
+                  dotProduct += promptEmbedding[i] * giverEmbedding[i]
+                  normA += promptEmbedding[i] * promptEmbedding[i]
+                  normB += giverEmbedding[i] * giverEmbedding[i]
+                }
+                
+                const similarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
+                
+                return {
+                  giver_user_id: giver.user_id,
+                  similarity_score: Math.max(0, similarity), // Ensure non-negative
+                  is_available: giver.is_available,
+                  total_helps_given: giver.total_helps_given,
+                  average_rating: giver.average_rating || 0
+                }
+              } catch (error) {
+                logger.error({ error, giverId: giver.user_id }, 'Error calculating similarity')
+                return {
+                  giver_user_id: giver.user_id,
+                  similarity_score: 0,
+                  is_available: giver.is_available,
+                  total_helps_given: giver.total_helps_given,
+                  average_rating: giver.average_rating || 0
+                }
+              }
+            })
+            .sort((a, b) => b.similarity_score - a.similarity_score)
+          
+          matches = scoredGivers.slice(0, 1) // Take only the top match for targeted approach
+          
+          logger.info({ 
+            availableGiversCount: availableGivers.length,
+            scoredGiversCount: scoredGivers.length,
+            topSimilarity: matches[0]?.similarity_score || 0
+          }, 'Manual similarity calculation completed')
+        }
       }
 
       if (!matches || matches.length === 0) {
         logger.warn({ 
           requestId, 
           receiverUserId, 
-          excludedGiverIds,
+          excludedGiverIds: allExcludedIds.length,
           promptEmbeddingLength: promptEmbedding.length 
-        }, 'No matching giver found - checking available givers')
+        }, 'No matching non-friend giver found')
         
-        // Debug: Check if there are any available givers at all
-        const { data: availableGivers, error: debugError } = await supabase
+        // Debug: Check if there are any available non-friend givers
+        const { data: debugGivers, error: debugError } = await supabase
           .from('giver_profiles')
           .select('user_id, is_available, total_helps_given')
           .eq('is_available', true)
+          .not('user_id', 'eq', receiverUserId)
+          .not('user_id', 'in', `(${allExcludedIds.map(id => `"${id}"`).join(',')})`)
         
         if (debugError) {
-          logger.error({ error: debugError }, 'Error checking available givers')
+          logger.error({ error: debugError }, 'Error checking available non-friend givers')
         } else {
           logger.info({ 
-            availableGiversCount: availableGivers?.length || 0,
-            availableGivers: availableGivers?.map(g => ({ userId: g.user_id, helps: g.total_helps_given }))
-          }, 'Available givers debug info')
+            availableNonFriendGivers: debugGivers?.length || 0,
+            excludedFriendsCount: friendIds.length,
+            totalExcluded: allExcludedIds.length
+          }, 'Available non-friend givers debug info')
         }
         
         return { requestId, status: 'searching' }
       }
 
+      // Take only the single best match for targeted approach
       const bestMatch = matches[0] as GiverMatch
 
       // Create giver request attempt record
@@ -401,7 +519,7 @@ export class PromptMatchingService {
         .eq('id', requestId)
         .single()
 
-      // Send socket event to giver
+      // Send socket event ONLY to the matched giver (targeted approach)
       emitToUser(bestMatch.giver_user_id, 'incoming_help_request', {
         requestId,
         receiverId: receiverUserId,
@@ -409,19 +527,21 @@ export class PromptMatchingService {
         receiverFirstName: receiverProfile?.first_name || 'Someone',
         receiverPhoto: receiverProfile?.profile_photo_url,
         prompt: helpRequest?.prompt || '',
-        similarityScore: bestMatch.similarity_score
+        similarityScore: bestMatch.similarity_score,
+        isTargetedMatch: true // Flag to indicate this is a targeted match
       })
 
-      // Send push notification
+      // Send push notification ONLY to the matched giver
       await PushNotificationService.sendPushNotification(
         bestMatch.giver_user_id,
         {
-          title: 'New Help Request',
-          body: `${receiverProfile?.first_name || 'Someone'} needs your help!`,
+          title: 'Perfect Match - Help Request',
+          body: `${receiverProfile?.first_name || 'Someone'} needs your specific expertise!`,
           data: {
             type: 'help_request',
             requestId,
-            receiverId: receiverUserId
+            receiverId: receiverUserId,
+            isTargetedMatch: true
           }
         }
       )
@@ -429,8 +549,10 @@ export class PromptMatchingService {
       logger.info({ 
         requestId, 
         giverId: bestMatch.giver_user_id, 
-        similarityScore: bestMatch.similarity_score 
-      }, 'Giver notified of help request')
+        similarityScore: bestMatch.similarity_score,
+        excludedFriendsCount: friendIds.length,
+        isTargetedMatch: true
+      }, 'Single perfect giver notified of targeted help request')
 
       return { 
         requestId, 
@@ -441,6 +563,107 @@ export class PromptMatchingService {
     } catch (error) {
       logger.error({ error, requestId }, 'Error finding and notifying giver')
       return { requestId, status: 'searching' }
+    }
+  }
+
+  /**
+   * Use Together AI to find the perfect giver from available candidates
+   */
+  private static async findPerfectGiverWithAI(
+    promptEmbedding: number[],
+    availableGivers: any[],
+    receiverUserId: string
+  ): Promise<GiverMatch[]> {
+    try {
+      const apiKey = process.env.TOGETHER_AI_API_KEY
+      if (!apiKey) {
+        logger.info('Together AI not available for enhanced giver matching')
+        return []
+      }
+
+      // Prepare giver profiles for AI analysis
+      const giverProfiles = availableGivers.map(giver => ({
+        id: giver.user_id,
+        about: giver.profiles?.about || '',
+        interests: giver.profiles?.interests || [],
+        needs: giver.profiles?.needs || [],
+        totalHelps: giver.total_helps_given,
+        rating: giver.average_rating || 0,
+        embedding: JSON.parse(giver.profile_embedding)
+      }))
+
+      // Use Together AI to analyze and rank givers
+      const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+          messages: [{
+            role: 'system',
+            content: `You are an expert matching system. Analyze giver profiles and rank them by how well they can help with the given request. Consider their expertise, experience, and helpfulness. Return only the top 1 match as a JSON object with "giverId" and "confidence" (0-1).`
+          }, {
+            role: 'user',
+            content: `Request context: User needs help. Available givers: ${JSON.stringify(giverProfiles.map(g => ({
+              id: g.id,
+              about: g.about,
+              interests: g.interests,
+              totalHelps: g.totalHelps,
+              rating: g.rating
+            })))}`
+          }],
+          max_tokens: 200,
+          temperature: 0.1
+        })
+      })
+
+      if (!response.ok) {
+        logger.warn('Together AI giver ranking failed, using fallback')
+        return []
+      }
+
+      const data = await response.json()
+      const aiResponse = data.choices[0]?.message?.content
+
+      if (!aiResponse) {
+        return []
+      }
+
+      // Parse AI response
+      const match = JSON.parse(aiResponse)
+      const selectedGiver = availableGivers.find(g => g.user_id === match.giverId)
+
+      if (!selectedGiver) {
+        return []
+      }
+
+      // Calculate similarity score for the AI-selected giver
+      const giverEmbedding = JSON.parse(selectedGiver.profile_embedding)
+      let dotProduct = 0
+      let normA = 0
+      let normB = 0
+      
+      for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
+        dotProduct += promptEmbedding[i] * giverEmbedding[i]
+        normA += promptEmbedding[i] * promptEmbedding[i]
+        normB += giverEmbedding[i] * giverEmbedding[i]
+      }
+      
+      const similarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
+
+      return [{
+        giver_user_id: selectedGiver.user_id,
+        similarity_score: Math.max(0, similarity * (match.confidence || 1)), // Boost with AI confidence
+        is_available: selectedGiver.is_available,
+        total_helps_given: selectedGiver.total_helps_given,
+        average_rating: selectedGiver.average_rating || 0
+      }]
+
+    } catch (error) {
+      logger.error({ error }, 'Error in AI-enhanced giver matching')
+      return []
     }
   }
 

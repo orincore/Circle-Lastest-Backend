@@ -249,15 +249,18 @@ router.get('/giver/profile', requireAuth, async (req: AuthRequest, res) => {
 
 /**
  * GET /api/match/requests
- * Get recent help requests (for match page display)
+ * Get help requests visible to the current user (TARGETED MATCHING)
+ * Only shows requests that have been specifically matched to this giver
  */
 router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
   try {
+    const userId = req.user!.id
     const limit = parseInt(req.query.limit as string) || 20
     const offset = parseInt(req.query.offset as string) || 0
     const status = req.query.status as string || 'searching'
 
-    // Get help requests with user profile data
+    // Get help requests that are specifically targeted to this giver
+    // This ensures requests are only visible to the matched giver
     const { data: requests, error } = await supabase
       .from('help_requests')
       .select(`
@@ -274,9 +277,15 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
           profile_photo_url,
           age,
           interests
+        ),
+        giver_request_attempts!inner (
+          giver_user_id,
+          status
         )
       `)
       .eq('status', status)
+      .eq('giver_request_attempts.giver_user_id', userId)
+      .in('giver_request_attempts.status', ['pending', 'accepted'])
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1)
 
@@ -300,8 +309,15 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
         age: request.profiles?.age,
         interests: request.profiles?.interests || []
       },
-      timeAgo: getTimeAgo(new Date(request.created_at))
+      timeAgo: getTimeAgo(new Date(request.created_at)),
+      isTargetedMatch: true // Flag to indicate this is a targeted match
     })) || []
+
+    logger.info({ 
+      userId, 
+      requestsCount: transformedRequests.length,
+      status 
+    }, 'Retrieved targeted help requests for giver')
 
     res.json({
       success: true,
@@ -311,7 +327,7 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
     })
 
   } catch (error) {
-    logger.error({ error }, 'Error getting help requests')
+    logger.error({ error, userId: req.user!.id }, 'Error getting targeted help requests')
     res.status(500).json({ error: 'Failed to get help requests' })
   }
 })
