@@ -6,6 +6,21 @@ import { logger } from '../config/logger.js'
 
 const router = Router()
 
+// Helper function to format time ago
+const getTimeAgo = (date: Date): string => {
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+  
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m`
+  if (diffHours < 24) return `${diffHours}h`
+  if (diffDays < 7) return `${diffDays}d`
+  return `${Math.floor(diffDays / 7)}w`
+}
+
 /**
  * POST /api/match/request
  * Create a help request from a receiver
@@ -229,6 +244,75 @@ router.get('/giver/profile', requireAuth, async (req: AuthRequest, res) => {
   } catch (error) {
     logger.error({ error, userId: req.user!.id }, 'Error getting giver profile')
     res.status(500).json({ error: 'Failed to get giver profile' })
+  }
+})
+
+/**
+ * GET /api/match/requests
+ * Get recent help requests (for match page display)
+ */
+router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 20
+    const offset = parseInt(req.query.offset as string) || 0
+    const status = req.query.status as string || 'searching'
+
+    // Get help requests with user profile data
+    const { data: requests, error } = await supabase
+      .from('help_requests')
+      .select(`
+        id,
+        prompt,
+        status,
+        attempts_count,
+        created_at,
+        expires_at,
+        profiles!help_requests_receiver_user_id_fkey (
+          id,
+          first_name,
+          last_name,
+          profile_photo_url,
+          age,
+          interests
+        )
+      `)
+      .eq('status', status)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
+
+    if (error) {
+      throw error
+    }
+
+    // Transform the data for frontend consumption
+    const transformedRequests = requests?.map((request: any) => ({
+      id: request.id,
+      prompt: request.prompt,
+      status: request.status,
+      attemptsCount: request.attempts_count,
+      createdAt: request.created_at,
+      expiresAt: request.expires_at,
+      user: {
+        id: request.profiles?.id,
+        firstName: request.profiles?.first_name,
+        lastName: request.profiles?.last_name,
+        profilePhotoUrl: request.profiles?.profile_photo_url,
+        age: request.profiles?.age,
+        interests: request.profiles?.interests || []
+      },
+      timeAgo: getTimeAgo(new Date(request.created_at))
+    })) || []
+
+    res.json({
+      success: true,
+      requests: transformedRequests,
+      total: transformedRequests.length,
+      hasMore: transformedRequests.length === limit
+    })
+
+  } catch (error) {
+    logger.error({ error }, 'Error getting help requests')
+    res.status(500).json({ error: 'Failed to get help requests' })
   }
 })
 
