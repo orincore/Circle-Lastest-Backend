@@ -49,20 +49,92 @@ export interface GiverMatch {
 export class PromptMatchingService {
   
   /**
-   * Generate embedding for text using Together AI
-   * Uses a simple approach: create a hash-based pseudo-embedding
-   * In production, you should use a proper embedding model
+   * Generate embedding for text using semantic similarity
+   * Creates a deterministic embedding based on text content
    */
   private static async generateEmbedding(text: string): Promise<number[]> {
     try {
-      // For now, we'll use Together AI to generate embeddings
-      // In production, use a dedicated embedding model like text-embedding-ada-002
+      // Clean and normalize text
+      const cleanText = text.toLowerCase().trim()
       
-      // Placeholder: Generate a simple 1536-dimensional vector
-      // This should be replaced with actual embedding API call
-      const embedding = new Array(1536).fill(0).map(() => Math.random())
+      // Create a deterministic embedding based on text content
+      // This is a simple but effective approach for matching
+      const embedding = new Array(1536).fill(0)
       
+      // Define keyword categories with their semantic vectors
+      const keywordCategories = {
+        // Programming & Development
+        programming: ['coding', 'programming', 'development', 'software', 'app', 'website', 'web', 'mobile', 'frontend', 'backend', 'fullstack', 'javascript', 'python', 'react', 'node', 'database', 'api', 'debug', 'bug', 'code', 'developer', 'tech', 'technology'],
+        
+        // Career & Business
+        career: ['career', 'job', 'work', 'business', 'professional', 'interview', 'resume', 'cv', 'promotion', 'salary', 'workplace', 'management', 'leadership', 'entrepreneur'],
+        
+        // Health & Fitness
+        health: ['health', 'fitness', 'workout', 'exercise', 'diet', 'nutrition', 'weight', 'gym', 'running', 'yoga', 'meditation', 'mental health', 'wellness'],
+        
+        // Relationships & Social
+        relationships: ['relationship', 'dating', 'love', 'friendship', 'family', 'social', 'communication', 'conflict', 'advice', 'support'],
+        
+        // Education & Learning
+        education: ['education', 'learning', 'study', 'school', 'university', 'course', 'tutorial', 'teaching', 'knowledge', 'skill', 'training'],
+        
+        // Finance & Investment
+        finance: ['finance', 'money', 'investment', 'investing', 'stocks', 'crypto', 'budget', 'savings', 'financial', 'economy', 'trading'],
+        
+        // Creative & Arts
+        creative: ['creative', 'art', 'design', 'music', 'writing', 'photography', 'video', 'content', 'marketing', 'brand'],
+        
+        // Lifestyle & Personal
+        lifestyle: ['lifestyle', 'personal', 'motivation', 'goals', 'habits', 'productivity', 'time management', 'organization']
+      }
+      
+      // Calculate semantic scores for each category
+      Object.entries(keywordCategories).forEach(([category, keywords], categoryIndex) => {
+        let categoryScore = 0
+        
+        keywords.forEach(keyword => {
+          if (cleanText.includes(keyword)) {
+            // Boost score based on keyword importance and frequency
+            const frequency = (cleanText.match(new RegExp(keyword, 'g')) || []).length
+            categoryScore += frequency * (keyword.length / 10) // Longer keywords get more weight
+          }
+        })
+        
+        // Distribute category score across embedding dimensions
+        const startDim = categoryIndex * 192 // 1536 / 8 categories = 192 dimensions per category
+        for (let i = 0; i < 192; i++) {
+          embedding[startDim + i] = categoryScore * Math.sin((i + 1) * Math.PI / 192)
+        }
+      })
+      
+      // Add text length and complexity features
+      const textLength = cleanText.length
+      const wordCount = cleanText.split(/\s+/).length
+      const uniqueWords = new Set(cleanText.split(/\s+/)).size
+      
+      // Use remaining dimensions for text features
+      for (let i = 1536 - 64; i < 1536; i++) {
+        const featureIndex = i - (1536 - 64)
+        if (featureIndex < 20) {
+          embedding[i] = textLength / 1000 // Text length feature
+        } else if (featureIndex < 40) {
+          embedding[i] = wordCount / 100 // Word count feature
+        } else {
+          embedding[i] = uniqueWords / wordCount // Vocabulary diversity
+        }
+      }
+      
+      // Normalize the embedding vector
+      const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0))
+      if (magnitude > 0) {
+        for (let i = 0; i < embedding.length; i++) {
+          embedding[i] = embedding[i] / magnitude
+        }
+      }
+      
+      logger.info({ textLength, wordCount, uniqueWords, magnitude }, 'Generated semantic embedding')
       return embedding
+      
     } catch (error) {
       logger.error({ error, text }, 'Error generating embedding')
       throw new Error('Failed to generate embedding')
@@ -113,7 +185,14 @@ export class PromptMatchingService {
         throw error
       }
 
-      logger.info({ userId, skillsCount: skills.length, categoriesCount: categories.length }, 'Giver profile updated')
+      logger.info({ 
+        userId, 
+        skillsCount: skills.length, 
+        categoriesCount: categories.length,
+        profileTextLength: profileText.length,
+        profileText: profileText.substring(0, 100) + '...',
+        embeddingMagnitude: Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0))
+      }, 'Giver profile updated with embedding')
       return data
 
     } catch (error) {
@@ -203,7 +282,28 @@ export class PromptMatchingService {
       }
 
       if (!matches || matches.length === 0) {
-        logger.info({ requestId, receiverUserId }, 'No matching giver found')
+        logger.warn({ 
+          requestId, 
+          receiverUserId, 
+          excludedGiverIds,
+          promptEmbeddingLength: promptEmbedding.length 
+        }, 'No matching giver found - checking available givers')
+        
+        // Debug: Check if there are any available givers at all
+        const { data: availableGivers, error: debugError } = await supabase
+          .from('giver_profiles')
+          .select('user_id, is_available, total_helps_given')
+          .eq('is_available', true)
+        
+        if (debugError) {
+          logger.error({ error: debugError }, 'Error checking available givers')
+        } else {
+          logger.info({ 
+            availableGiversCount: availableGivers?.length || 0,
+            availableGivers: availableGivers?.map(g => ({ userId: g.user_id, helps: g.total_helps_given }))
+          }, 'Available givers debug info')
+        }
+        
         return { requestId, status: 'searching' }
       }
 
