@@ -269,13 +269,78 @@ export class PromptMatchingService {
     excludedGiverIds: string[] = []
   ): Promise<{ requestId: string; status: 'matched' | 'searching'; matchedGiver?: GiverMatch }> {
     try {
-      // Find best matching giver
-      const { data: matches, error: matchError } = await supabase.rpc('find_best_giver_match', {
-        p_prompt_embedding: JSON.stringify(promptEmbedding),
-        p_receiver_user_id: receiverUserId,
-        p_excluded_giver_ids: excludedGiverIds,
-        p_limit: 1
-      })
+      // Find best matching giver using a simpler approach
+      // First, get all available givers
+      const { data: availableGivers, error: giversError } = await supabase
+        .from('giver_profiles')
+        .select(`
+          user_id,
+          is_available,
+          total_helps_given,
+          average_rating,
+          profile_embedding,
+          profiles!inner(about, interests, needs)
+        `)
+        .eq('is_available', true)
+        .not('user_id', 'eq', receiverUserId)
+      
+      if (giversError) {
+        throw giversError
+      }
+      
+      let matches: GiverMatch[] = []
+      
+      if (availableGivers && availableGivers.length > 0) {
+        // Calculate similarity scores manually
+        const scoredGivers = availableGivers
+          .filter(giver => !excludedGiverIds.includes(giver.user_id))
+          .map(giver => {
+            try {
+              const giverEmbedding = JSON.parse(giver.profile_embedding)
+              
+              // Calculate cosine similarity
+              let dotProduct = 0
+              let normA = 0
+              let normB = 0
+              
+              for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
+                dotProduct += promptEmbedding[i] * giverEmbedding[i]
+                normA += promptEmbedding[i] * promptEmbedding[i]
+                normB += giverEmbedding[i] * giverEmbedding[i]
+              }
+              
+              const similarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
+              
+              return {
+                giver_user_id: giver.user_id,
+                similarity_score: Math.max(0, similarity), // Ensure non-negative
+                is_available: giver.is_available,
+                total_helps_given: giver.total_helps_given,
+                average_rating: giver.average_rating || 0
+              }
+            } catch (error) {
+              logger.error({ error, giverId: giver.user_id }, 'Error calculating similarity')
+              return {
+                giver_user_id: giver.user_id,
+                similarity_score: 0,
+                is_available: giver.is_available,
+                total_helps_given: giver.total_helps_given,
+                average_rating: giver.average_rating || 0
+              }
+            }
+          })
+          .sort((a, b) => b.similarity_score - a.similarity_score)
+        
+        matches = scoredGivers.slice(0, 1) // Take top match
+        
+        logger.info({ 
+          availableGiversCount: availableGivers.length,
+          scoredGiversCount: scoredGivers.length,
+          topSimilarity: matches[0]?.similarity_score || 0
+        }, 'Manual similarity calculation completed')
+      }
+      
+      const matchError = null // No error from manual calculation
 
       if (matchError) {
         throw matchError
