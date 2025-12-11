@@ -571,7 +571,72 @@ pipeline {
             )
         }
         always {
-            cleanWs(cleanWhenNotBuilt: false, deleteDirs: true, notFailBuild: true)
+            script {
+                echo "🧹 Starting comprehensive disk cleanup..."
+                
+                // Local Jenkins workspace cleanup
+                cleanWs(cleanWhenNotBuilt: false, deleteDirs: true, notFailBuild: true)
+                
+                // Remote server cleanup via SSH
+                try {
+                    sshagent(['root-ssh-key']) {
+                        sh '''
+                            echo "🧹 Remote server disk cleanup..."
+                            ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 root@69.62.82.102 '
+                                set -e
+                                echo "📊 Disk usage before cleanup:"
+                                df -h
+                                echo ""
+                                
+                                echo "🗑️ Cleaning Docker system..."
+                                # Remove all unused containers, networks, images (both dangling and unreferenced)
+                                docker system prune -af --volumes || true
+                                
+                                echo "🗑️ Cleaning Docker build cache..."
+                                docker builder prune -af || true
+                                
+                                echo "🗑️ Removing old Docker images (keep only latest 2 versions)..."
+                                docker images --format "table {{.Repository}}:{{.Tag}}\t{{.CreatedAt}}\t{{.Size}}" | grep -E "circle-backend|nginx|redis" | tail -n +3 | awk "{print \$1}" | xargs -r docker rmi -f || true
+                                
+                                echo "🗑️ Cleaning package managers..."
+                                # Clean npm cache
+                                npm cache clean --force || true
+                                
+                                # Clean apt cache (if exists)
+                                apt-get clean || true
+                                apt-get autoremove -y || true
+                                
+                                echo "🗑️ Cleaning temporary files..."
+                                # Clean tmp directories
+                                find /tmp -type f -atime +7 -delete || true
+                                find /var/tmp -type f -atime +7 -delete || true
+                                
+                                # Clean log files older than 30 days
+                                find /var/log -name "*.log" -type f -mtime +30 -delete || true
+                                find /var/log -name "*.gz" -type f -mtime +30 -delete || true
+                                
+                                echo "🗑️ Cleaning Git repositories..."
+                                cd /root/Circle-Lastest-Backend && git gc --aggressive --prune=now || true
+                                cd /root/CircleReact && git gc --aggressive --prune=now || true
+                                
+                                echo "🗑️ Cleaning node_modules build artifacts..."
+                                cd /root/Circle-Lastest-Backend && find . -name "node_modules" -type d -exec rm -rf {} + 2>/dev/null || true
+                                cd /root/CircleReact && find . -name "node_modules" -type d -exec rm -rf {} + 2>/dev/null || true
+                                
+                                echo "🗑️ Cleaning Expo build cache..."
+                                cd /root/CircleReact && rm -rf .expo dist dist-updates || true
+                                
+                                echo "📊 Disk usage after cleanup:"
+                                df -h
+                                echo ""
+                                echo "✅ Cleanup completed!"
+                            '
+                        '''
+                    }
+                } catch (Exception e) {
+                    echo "⚠️ Remote cleanup failed: ${e.getMessage()}"
+                }
+            }
         }
     }
 }

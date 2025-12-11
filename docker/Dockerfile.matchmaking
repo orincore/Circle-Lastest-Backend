@@ -46,8 +46,8 @@ ENV NODE_ENV=production
 ENV SERVICE_TYPE=matchmaking-worker
 
 # Create non-root user for security
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+RUN groupadd --gid 1001 nodejs && \
+    useradd --uid 1001 --gid nodejs --shell /bin/bash --create-home nodejs
 
 WORKDIR /app
 

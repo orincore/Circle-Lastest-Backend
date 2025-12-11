@@ -179,8 +179,12 @@ app.use((req, res, next) => {
       req.path.includes('/user-photos')) {
     return next();
   }
+  
+  // Allow larger payloads for OTA updates (up to 10MB for Hermes bundles)
+  const limit = req.path.includes('/api/updates/upload') ? '10mb' : '2mb';
+  
   express.json({ 
-    limit: '2mb',
+    limit,
     strict: true,
   })(req, res, next);
 });
@@ -192,9 +196,13 @@ app.use((req, res, next) => {
       req.path.includes('/user-photos')) {
     return next();
   }
+  
+  // Allow larger payloads for OTA updates
+  const limit = req.path.includes('/api/updates/upload') ? '10mb' : '2mb';
+  
   express.urlencoded({ 
     extended: true,
-    limit: '2mb',
+    limit,
     parameterLimit: 100,
   })(req, res, next);
 });
@@ -209,11 +217,12 @@ app.use((req, res, next) => {
   sanitizeInput(req, res, next);
 });
 
-// Request size validation (skip for file upload routes)
+// Request size validation (skip for file upload routes and OTA updates)
 app.use((req, res, next) => {
   if (req.path.includes('/verification/submit') || 
       req.path.includes('/upload') ||
-      req.path.includes('/user-photos')) {
+      req.path.includes('/user-photos') ||
+      req.path.includes('/api/updates/upload')) {
     return next();
   }
   validateRequestSize(2 * 1024 * 1024)(req, res, next); // 2MB limit
