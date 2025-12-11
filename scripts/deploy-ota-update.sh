@@ -8,11 +8,13 @@ set -e
 echo "🚀 Starting OTA Update Deployment..."
 
 # Configuration
-BACKEND_URL="${BACKEND_URL:-https://your-backend-domain.com}"
+BACKEND_URL="${BACKEND_URL:-https://api.circle.orincore.com}"
 INTERNAL_API_KEY="${INTERNAL_API_KEY:-your-internal-api-key}"
 RUNTIME_VERSION="${RUNTIME_VERSION:-1.0.0}"
-CIRCLE_DIR="/root/Circle-Latest-Frontend"   # path to Circle (Expo app) repo
-BACKEND_DIR="/root/Circle-Lastest-Backend"  # path to backend repo (matches Jenkins DEPLOY_DIR)
+# Expo/React Native app repo on the server
+CIRCLE_DIR="/root/CircleReact"
+# Backend repo on the server (matches Jenkins DEPLOY_DIR)
+BACKEND_DIR="/root/Circle-Lastest-Backend"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -107,11 +109,11 @@ done
 
 # Build OTA updates
 log_info "Building OTA updates..."
-cd "$CIRCLE_DIR"
 
-# Ensure the build script exists
-if [ ! -f "../scripts/build-ota-update.js" ]; then
-    log_error "OTA build script not found"
+# Ensure the build script exists in the backend repo
+cd "$BACKEND_DIR"
+if [ ! -f "scripts/build-ota-update.js" ]; then
+    log_error "OTA build script not found in backend repo ($BACKEND_DIR/scripts/build-ota-update.js)"
     exit 1
 fi
 
@@ -119,9 +121,10 @@ fi
 export BACKEND_URL="$BACKEND_URL"
 export INTERNAL_API_KEY="$INTERNAL_API_KEY"
 export RUNTIME_VERSION="$RUNTIME_VERSION"
+export CIRCLE_APP_DIR="$CIRCLE_DIR"
 
-# Run the OTA build script
-node ../scripts/build-ota-update.js || {
+# Run the OTA build script from the backend repo
+node scripts/build-ota-update.js || {
     log_error "Failed to build OTA updates"
     exit 1
 }
