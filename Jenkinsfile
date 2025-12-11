@@ -343,7 +343,7 @@ pipeline {
                                 NGINX_CONFIG_CHANGED=false
                                 if [ "\$PREVIOUS_COMMIT" != "\$NEW_COMMIT" ]; then
                                     # Check if any nginx-related files changed
-                                    NGINX_CHANGES=\$(git diff --name-only \$PREVIOUS_COMMIT..\$NEW_COMMIT 2>/dev/null | grep -E "(nginx|\.conf|docker/)" || echo "")
+                                    NGINX_CHANGES=\$(git diff --name-only \$PREVIOUS_COMMIT..\$NEW_COMMIT 2>/dev/null | grep -E "(nginx|\\\\.conf|docker/)" || echo "")
                                     if [ -n "\$NGINX_CHANGES" ]; then
                                         echo "   📋 NGINX-related files changed:"
                                         echo "\$NGINX_CHANGES" | sed 's/^/      /'
