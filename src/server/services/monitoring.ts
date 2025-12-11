@@ -287,15 +287,21 @@ class MonitoringService {
       try {
         const metrics = await this.collectMetrics()
         
-        // Log important metrics
-        logger.info({
-          connections: metrics.connections.total,
-          uniqueUsers: metrics.connections.uniqueUsers,
-          searching: metrics.matchmaking.currentSearching,
-          memoryMB: Math.round(metrics.server.memory.rss / 1024 / 1024),
-          responseTime: Math.round(metrics.performance.responseTime),
-          errorRate: Math.round(metrics.performance.errorRate * 100) / 100
-        }, 'System metrics')
+        // Only log metrics if there are issues or significant changes
+        const memoryMB = Math.round(metrics.server.memory.rss / 1024 / 1024)
+        const errorRate = Math.round(metrics.performance.errorRate * 100) / 100
+        
+        // Log only if memory > 500MB, error rate > 1%, or high connections
+        if (memoryMB > 500 || errorRate > 1 || metrics.connections.total > 100) {
+          logger.info({
+            connections: metrics.connections.total,
+            uniqueUsers: metrics.connections.uniqueUsers,
+            searching: metrics.matchmaking.currentSearching,
+            memoryMB,
+            responseTime: Math.round(metrics.performance.responseTime),
+            errorRate
+          }, 'System metrics - attention needed')
+        }
 
         // Alert on high error rates
         if (metrics.performance.errorRate > 10) {
@@ -306,11 +312,10 @@ class MonitoringService {
           }, 'High error rate detected')
         }
 
-        // Alert on high memory usage
-        const memoryMB = metrics.server.memory.rss / 1024 / 1024
+        // Alert on high memory usage (reuse memoryMB from above)
         if (memoryMB > 1500) {
           logger.warn({
-            memoryMB: Math.round(memoryMB),
+            memoryMB,
             heapUsed: Math.round(metrics.server.memory.heapUsed / 1024 / 1024)
           }, 'High memory usage detected')
         }

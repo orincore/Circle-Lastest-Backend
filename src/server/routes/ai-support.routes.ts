@@ -36,13 +36,13 @@ router.post('/conversation/start', chatRateLimit, async (req, res) => {
     if (userId) {
       try {
         conversation = await EnhancedConversationService.startEnhancedConversation(sessionId, userId, initialMessage)
-        console.log('✅ Started enhanced conversation for user:', userId)
+        //console.log('✅ Started enhanced conversation for user:', userId)
       } catch (error: any) {
-        console.log('❌ Enhanced conversation failed, falling back to basic:', error?.message || error)
+        //console.log('❌ Enhanced conversation failed, falling back to basic:', error?.message || error)
         conversation = await ConversationService.startConversation(sessionId, userId, initialMessage)
       }
     } else {
-      console.log('⚠️ No userId provided, using basic conversation service')
+      //console.log('⚠️ No userId provided, using basic conversation service')
       conversation = await ConversationService.startConversation(sessionId, userId, initialMessage)
     }
 
@@ -80,12 +80,12 @@ router.post('/conversation/:conversationId/message', chatRateLimit, async (req, 
     let result
     try {
       result = await EnhancedConversationService.addEnhancedMessage(conversationId, message.trim())
-      console.log('✅ Enhanced message processed successfully')
+      //console.log('✅ Enhanced message processed successfully')
     } catch (enhancedError: any) {
-      console.log('❌ Enhanced message failed:', enhancedError?.message)
+      //console.log('❌ Enhanced message failed:', enhancedError?.message)
       if (enhancedError?.message === 'Conversation not found' || enhancedError?.message?.includes('not found')) {
         // Fallback to basic conversation service
-        console.log('🔄 Falling back to basic conversation service')
+        //console.log('🔄 Falling back to basic conversation service')
         result = await ConversationService.addMessage(conversationId, message.trim())
       } else {
         throw enhancedError

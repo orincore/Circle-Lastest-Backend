@@ -31,7 +31,6 @@ const CONFIG = {
   APP_DIR: process.env.CIRCLE_APP_DIR || path.join(__dirname, '../../Circle'),
 };
 
-console.log('🚀 Building OTA Updates (backend copy)...\n');
 
 async function buildOTAUpdate() {
   try {
@@ -43,7 +42,7 @@ async function buildOTAUpdate() {
 
     // Build for each platform
     for (const platform of CONFIG.PLATFORMS) {
-      console.log(`📱 Building for ${platform}...`);
+      ////console.log(`📱 Building for ${platform}...`);
 
       // Export the update
       const exportCommand = `npx expo export --platform ${platform} --output-dir ${CONFIG.OUTPUT_DIR}/${platform}`;
@@ -62,15 +61,15 @@ async function buildOTAUpdate() {
       const bundleContent = fs.readFileSync(bundlePath);
       const bundleHash = crypto.createHash('sha256').update(bundleContent).digest('hex');
 
-      console.log(`📦 Bundle hash for ${platform}: ${bundleHash.substring(0, 12)}...`);
+      //console.log(`📦 Bundle hash for ${platform}: ${bundleHash.substring(0, 12)}...`);
 
       // Upload to backend
       await uploadUpdate(platform, bundleContent, bundleHash, bundlePath);
 
-      console.log(`✅ ${platform} update uploaded successfully\n`);
+      //console.log(`✅ ${platform} update uploaded successfully\n`);
     }
 
-    console.log('🎉 All OTA updates built and uploaded successfully!');
+    //console.log('🎉 All OTA updates built and uploaded successfully!');
   } catch (error) {
     console.error('❌ Error building OTA updates:', error.message);
     process.exit(1);
@@ -141,7 +140,7 @@ async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath, ret
       contentType: isBinary ? 'application/octet-stream' : 'application/javascript',
     });
 
-    console.log(`📤 Uploading ${platform} bundle (${(bundleContent.length / 1024 / 1024).toFixed(2)} MB)...`);
+    //console.log(`📤 Uploading ${platform} bundle (${(bundleContent.length / 1024 / 1024).toFixed(2)} MB)...`);
 
     const response = await axios.post(
       `${CONFIG.BACKEND_URL}/api/updates/upload`,
@@ -161,7 +160,7 @@ async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath, ret
     );
 
     if (response.data.success) {
-      console.log(`📤 Upload successful for ${platform}:`, response.data.updateId);
+      //console.log(`📤 Upload successful for ${platform}:`, response.data.updateId);
     } else {
       throw new Error(`Upload failed: ${response.data.error}`);
     }
@@ -180,7 +179,7 @@ async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath, ret
     );
     
     if (isRetryable && retryCount < MAX_RETRIES) {
-      console.log(`⚠️ Upload failed (${errorMessage}), retrying in ${RETRY_DELAY/1000}s... (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+      //console.log(`⚠️ Upload failed (${errorMessage}), retrying in ${RETRY_DELAY/1000}s... (attempt ${retryCount + 1}/${MAX_RETRIES})`);
       await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
       return uploadUpdate(platform, bundleContent, bundleHash, bundlePath, retryCount + 1);
     }

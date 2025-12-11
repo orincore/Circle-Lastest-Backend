@@ -26,7 +26,7 @@ const router = Router()
 router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    console.log(`🗑️ Starting account deletion for user: ${userId}`)
+    //console.log(`🗑️ Starting account deletion for user: ${userId}`)
 
     // Start a transaction-like deletion process
     const deletionResults = {
@@ -55,7 +55,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting messages:', messagesError)
     } else {
       deletionResults.messages = messagesCount || 0
-      console.log(`✅ Deleted ${messagesCount} messages`)
+      //console.log(`✅ Deleted ${messagesCount} messages`)
     }
 
     // 2. Delete chat memberships
@@ -67,7 +67,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
     if (chatMembersError) {
       console.error('Error deleting chat memberships:', chatMembersError)
     } else {
-      console.log(`✅ Deleted ${chatMembersCount} chat memberships`)
+      //console.log(`✅ Deleted ${chatMembersCount} chat memberships`)
     }
 
     // 3. Delete chats where user is the only member (or clean up empty chats)
@@ -89,7 +89,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       
       if (!chatsError) {
         deletionResults.chats = chatsCount || 0
-        console.log(`✅ Deleted ${chatsCount} empty chats`)
+        //console.log(`✅ Deleted ${chatsCount} empty chats`)
       }
     }
 
@@ -103,7 +103,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting friendships:', friendshipsError)
     } else {
       deletionResults.friendships = friendshipsCount || 0
-      console.log(`✅ Deleted ${friendshipsCount} friendships`)
+      //console.log(`✅ Deleted ${friendshipsCount} friendships`)
     }
 
     // 5. Delete all friend requests (sent and received)
@@ -116,7 +116,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting friend requests:', friendRequestsError)
     } else {
       deletionResults.friendRequests = friendRequestsCount || 0
-      console.log(`✅ Deleted ${friendRequestsCount} friend requests`)
+      //console.log(`✅ Deleted ${friendRequestsCount} friend requests`)
     }
 
     // 6. Delete all notifications
@@ -129,7 +129,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting notifications:', notificationsError)
     } else {
       deletionResults.notifications = notificationsCount || 0
-      console.log(`✅ Deleted ${notificationsCount} notifications`)
+      //console.log(`✅ Deleted ${notificationsCount} notifications`)
     }
 
     // 7. Delete all user activities
@@ -142,7 +142,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting activities:', activitiesError)
     } else {
       deletionResults.activities = activitiesCount || 0
-      console.log(`✅ Deleted ${activitiesCount} activities`)
+      //console.log(`✅ Deleted ${activitiesCount} activities`)
     }
 
     // 8. Delete all matchmaking proposals
@@ -155,7 +155,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting matchmaking proposals:', matchmakingError)
     } else {
       deletionResults.matchmaking = matchmakingCount || 0
-      console.log(`✅ Deleted ${matchmakingCount} matchmaking proposals`)
+      //console.log(`✅ Deleted ${matchmakingCount} matchmaking proposals`)
     }
 
     // 9. Delete all user photos
@@ -168,7 +168,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting photos:', photosError)
     } else {
       deletionResults.photos = photosCount || 0
-      console.log(`✅ Deleted ${photosCount} photos`)
+      //console.log(`✅ Deleted ${photosCount} photos`)
     }
 
     // 10. Delete all profile visits
@@ -181,7 +181,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting profile visits:', visitsError)
     } else {
       deletionResults.profileVisits = visitsCount || 0
-      console.log(`✅ Deleted ${visitsCount} profile visits`)
+      //console.log(`✅ Deleted ${visitsCount} profile visits`)
     }
 
     // 11. Delete all reports
@@ -194,7 +194,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting reports:', reportsError)
     } else {
       deletionResults.reports = reportsCount || 0
-      console.log(`✅ Deleted ${reportsCount} reports`)
+      //console.log(`✅ Deleted ${reportsCount} reports`)
     }
 
     // 12. Delete subscription data
@@ -207,7 +207,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting subscriptions:', subscriptionsError)
     } else {
       deletionResults.subscriptions = subscriptionsCount || 0
-      console.log(`✅ Deleted ${subscriptionsCount} subscriptions`)
+      //console.log(`✅ Deleted ${subscriptionsCount} subscriptions`)
     }
 
     // 13. Delete location data
@@ -220,7 +220,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting locations:', locationsError)
     } else {
       deletionResults.locations = locationsCount || 0
-      console.log(`✅ Deleted ${locationsCount} location records`)
+      //console.log(`✅ Deleted ${locationsCount} location records`)
     }
 
     // 14. Delete social accounts
@@ -233,7 +233,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       console.error('Error deleting social accounts:', socialError)
     } else {
       deletionResults.socialAccounts = socialCount || 0
-      console.log(`✅ Deleted ${socialCount} social accounts`)
+      //console.log(`✅ Deleted ${socialCount} social accounts`)
     }
 
     // 15. Mark profile as deleted and anonymize data
@@ -280,8 +280,8 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
       })
     }
 
-    console.log('✅ Profile anonymized and marked as deleted')
-    console.log('📊 Deletion summary:', deletionResults)
+    //console.log('✅ Profile anonymized and marked as deleted')
+    //console.log('📊 Deletion summary:', deletionResults)
 
     res.json({
       success: true,

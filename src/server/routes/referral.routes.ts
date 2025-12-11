@@ -20,7 +20,7 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
 
     // If user doesn't have a referral code, create one
     if (!data) {
-      console.log('🔧 Creating referral code for user:', userId);
+      //console.log('🔧 Creating referral code for user:', userId);
       
       // Generate a unique referral code
       let referralCode = '';
@@ -33,11 +33,11 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
           const { data: generatedCode, error: rpcError } = await supabase.rpc('generate_referral_code');
           if (generatedCode && !rpcError) {
             referralCode = generatedCode;
-            console.log('✅ Generated code from DB function:', referralCode);
+            //console.log('✅ Generated code from DB function:', referralCode);
             break;
           }
         } catch (rpcErr) {
-          console.log('⚠️ RPC function not available, using fallback');
+          //console.log('⚠️ RPC function not available, using fallback');
         }
         
         // Fallback: Generate random code
@@ -51,7 +51,7 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
           .maybeSingle();
         
         if (!existing) {
-          console.log('✅ Generated unique code:', referralCode);
+          //console.log('✅ Generated unique code:', referralCode);
           break;
         }
         
@@ -64,7 +64,7 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
       }
       
       // Insert new referral record
-      console.log('💾 Inserting referral record for user:', userId);
+      //console.log('💾 Inserting referral record for user:', userId);
       const { data: newReferral, error: insertError } = await supabase
         .from('user_referrals')
         .insert({
@@ -81,7 +81,7 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
       if (insertError) {
         // If duplicate key error, it means another request already created it
         if (insertError.code === '23505') {
-          console.log('⚠️ Referral code already exists (race condition), fetching existing...');
+          //console.log('⚠️ Referral code already exists (race condition), fetching existing...');
           const { data: existingReferral } = await supabase
             .from('user_referrals')
             .select('*')
@@ -100,7 +100,7 @@ router.get('/my-referral', requireAuth, async (req: AuthRequest, res: Response) 
           return res.status(500).json({ error: 'Failed to create referral code', details: insertError.message });
         }
       } else {
-        console.log('✅ Referral code created successfully:', newReferral);
+        //console.log('✅ Referral code created successfully:', newReferral);
         data = newReferral;
       }
     } else if (error) {
@@ -295,7 +295,7 @@ export async function applyReferralCode(
     }
 
     // Update total_referrals count in user_referrals table
-    console.log('📊 Updating referral count for user:', referrerId);
+    //console.log('📊 Updating referral count for user:', referrerId);
     const { error: updateError } = await supabase.rpc('increment_referral_count', {
       p_user_id: referrerId
     });
@@ -316,9 +316,9 @@ export async function applyReferralCode(
         .update({ total_referrals: newCount })
         .eq('user_id', referrerId);
       
-      console.log('✅ Manually updated referral count to:', newCount);
+      //console.log('✅ Manually updated referral count to:', newCount);
     } else {
-      console.log('✅ Referral count updated via RPC');
+      //console.log('✅ Referral count updated via RPC');
     }
 
     // Get referred user's name for notification

@@ -85,7 +85,7 @@ function generateSemanticEmbedding(text) {
 
 async function migrateEmbeddings() {
   try {
-    console.log('🔄 Starting embedding migration...')
+    //console.log('🔄 Starting embedding migration...')
     
     // Get all giver profiles with their user data
     const { data: givers, error: fetchError } = await supabase
@@ -99,7 +99,7 @@ async function migrateEmbeddings() {
       throw fetchError
     }
     
-    console.log(`📊 Found ${givers.length} giver profiles to migrate`)
+    //console.log(`📊 Found ${givers.length} giver profiles to migrate`)
     
     let updated = 0
     let errors = 0
@@ -116,7 +116,7 @@ async function migrateEmbeddings() {
         ].filter(Boolean).join(' ')
         
         if (!profileText.trim()) {
-          console.log(`⚠️  Skipping ${giver.user_id} - no profile text`)
+          //console.log(`⚠️  Skipping ${giver.user_id} - no profile text`)
           continue
         }
         
@@ -136,7 +136,7 @@ async function migrateEmbeddings() {
           console.error(`❌ Error updating ${giver.user_id}:`, updateError.message)
           errors++
         } else {
-          console.log(`✅ Updated ${giver.user_id} - "${profileText.substring(0, 50)}..."`)
+          //console.log(`✅ Updated ${giver.user_id} - "${profileText.substring(0, 50)}..."`)
           updated++
         }
         
@@ -149,14 +149,14 @@ async function migrateEmbeddings() {
       }
     }
     
-    console.log('\n📈 Migration Results:')
-    console.log(`✅ Successfully updated: ${updated}`)
-    console.log(`❌ Errors: ${errors}`)
-    console.log(`📊 Total processed: ${givers.length}`)
+    //console.log('\n📈 Migration Results:')
+    //console.log(`✅ Successfully updated: ${updated}`)
+    //console.log(`❌ Errors: ${errors}`)
+    //console.log(`📊 Total processed: ${givers.length}`)
     
     if (updated > 0) {
-      console.log('\n🎉 Migration completed! New semantic embeddings are now active.')
-      console.log('💡 Test your matching scenario again.')
+      //console.log('\n🎉 Migration completed! New semantic embeddings are now active.')
+      //console.log('💡 Test your matching scenario again.')
     }
     
   } catch (error) {

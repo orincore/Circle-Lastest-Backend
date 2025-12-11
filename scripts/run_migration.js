@@ -23,7 +23,7 @@ const supabase = createClient(
 
 async function runMigration() {
   try {
-    console.log('🚀 Running matchmaking proposals migration...')
+    //console.log('🚀 Running matchmaking proposals migration...')
     
     // Read the migration file
     const migrationPath = join(__dirname, '../migrations/fix_matchmaking_proposals_for_stats.sql')
@@ -35,12 +35,12 @@ async function runMigration() {
       .map(stmt => stmt.trim())
       .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'))
     
-    console.log(`📄 Found ${statements.length} SQL statements to execute`)
+    //console.log(`📄 Found ${statements.length} SQL statements to execute`)
     
     // Execute each statement
     for (let i = 0; i < statements.length; i++) {
       const statement = statements[i]
-      console.log(`⚡ Executing statement ${i + 1}/${statements.length}...`)
+      //console.log(`⚡ Executing statement ${i + 1}/${statements.length}...`)
       
       try {
         const { error } = await supabase.rpc('exec_sql', { sql: statement })
@@ -53,18 +53,18 @@ async function runMigration() {
             .limit(0) // This will fail but allows us to execute raw SQL
           
           if (directError) {
-            console.log(`✅ Statement ${i + 1} executed (or already exists)`)
+            //console.log(`✅ Statement ${i + 1} executed (or already exists)`)
           }
         } else {
-          console.log(`✅ Statement ${i + 1} executed successfully`)
+          //console.log(`✅ Statement ${i + 1} executed successfully`)
         }
       } catch (error) {
-        console.log(`⚠️  Statement ${i + 1} may have already been executed:`, error.message)
+        //console.log(`⚠️  Statement ${i + 1} may have already been executed:`, error.message)
       }
     }
     
-    console.log('\n🎉 Migration completed successfully!')
-    console.log('\n📊 Testing the updated function...')
+    //console.log('\n🎉 Migration completed successfully!')
+    //console.log('\n📊 Testing the updated function...')
     
     // Test the updated function
     const { data: profiles } = await supabase
@@ -74,7 +74,7 @@ async function runMigration() {
     
     if (profiles && profiles.length > 0) {
       const testUserId = profiles[0].id
-      console.log(`🧪 Testing with user: ${profiles[0].first_name} (${testUserId})`)
+      //console.log(`🧪 Testing with user: ${profiles[0].first_name} (${testUserId})`)
       
       const { error: testError } = await supabase.rpc('update_user_stats', {
         user_uuid: testUserId
@@ -83,7 +83,7 @@ async function runMigration() {
       if (testError) {
         console.error('❌ Test failed:', testError)
       } else {
-        console.log('✅ Function test passed!')
+        //console.log('✅ Function test passed!')
         
         // Check the updated stats
         const { data: updatedProfile } = await supabase
@@ -93,7 +93,7 @@ async function runMigration() {
           .single()
         
         if (updatedProfile) {
-          console.log('📈 Updated stats:', updatedProfile)
+          //console.log('📈 Updated stats:', updatedProfile)
         }
       }
     }
@@ -107,7 +107,7 @@ async function runMigration() {
 // Run the migration
 runMigration()
   .then(() => {
-    console.log('\n🏁 Migration script completed successfully')
+    //console.log('\n🏁 Migration script completed successfully')
     process.exit(0)
   })
   .catch((error) => {

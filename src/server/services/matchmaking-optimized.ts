@@ -1338,11 +1338,7 @@ export async function heartbeat(): Promise<void> {
     // Update heartbeat metrics
     await redis.incr(`${KEYS.METRICS}:heartbeats`)
     
-    logger.info({ 
-      searchingCount: searchingUsers.length,
-      availableCount: availableUsers.length,
-      timestamp: Date.now() 
-    }, 'Matchmaking heartbeat completed')
+    // Heartbeat completed silently - only log if there are issues
   } catch (error) {
     logger.error({ error }, 'Matchmaking heartbeat failed')
   }

@@ -82,13 +82,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
         for (const match of blindMatches) {
           const otherUserId = match.user_a === userId ? match.user_b : match.user_a
           
-          console.log('[BlindDate] Processing match:', { 
-            chatId: match.chat_id, 
-            userId, 
-            otherUserId,
-            user_a: match.user_a,
-            user_b: match.user_b
-          })
+          // Processing blind date match silently
           
           // Get other user's profile for gender, age, and name masking
           const { data: otherProfile, error: profileError } = await supabase
@@ -102,16 +96,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
             continue
           }
           
-          console.log('[BlindDate] Profile result:', { 
-            otherUserId, 
-            hasProfile: !!otherProfile,
-            firstName: otherProfile?.first_name,
-            lastName: otherProfile?.last_name,
-            gender: otherProfile?.gender,
-            age: otherProfile?.age,
-            needs: otherProfile?.needs,
-            error: profileError?.message
-          })
+          // Profile fetched for blind date match
           
           if (profileError) {
             console.error('Error fetching blind date profile:', profileError, 'userId:', otherUserId)
