@@ -57,11 +57,18 @@ git pull origin main || {
     exit 1
 }
 
-# Install/update frontend dependencies only (backend is already deployed by Jenkins)
-log_info "Installing frontend dependencies (backend already deployed)..."
+# Install/update dependencies
+log_info "Installing frontend dependencies..."
 cd "$CIRCLE_DIR"
 npm install || {
     log_error "Failed to install frontend dependencies"
+    exit 1
+}
+
+log_info "Installing backend dependencies (for OTA build script)..."
+cd "$BACKEND_DIR"
+npm install || {
+    log_error "Failed to install backend dependencies"
     exit 1
 }
 
