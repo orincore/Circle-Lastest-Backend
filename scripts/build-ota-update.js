@@ -117,7 +117,10 @@ function findBundleFile(outputDir, platform) {
   return findBundleFiles(platformDir);
 }
 
-async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath) {
+async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath, retryCount = 0) {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 2000; // 2 seconds
+  
   try {
     // Check if this is a binary file (.hbc) or text file (.js)
     const isBinary = bundlePath.endsWith('.hbc');
@@ -138,6 +141,8 @@ async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath) {
       contentType: isBinary ? 'application/octet-stream' : 'application/javascript',
     });
 
+    console.log(`📤 Uploading ${platform} bundle (${(bundleContent.length / 1024 / 1024).toFixed(2)} MB)...`);
+
     const response = await axios.post(
       `${CONFIG.BACKEND_URL}/api/updates/upload`,
       formData,
@@ -146,9 +151,12 @@ async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath) {
           ...formData.getHeaders(),
           'X-API-Key': CONFIG.INTERNAL_API_KEY,
         },
-        timeout: 120000, // 120 second timeout for large uploads
+        timeout: 300000, // 5 minute timeout for large uploads
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
+        // Use HTTP/1.1 keep-alive
+        httpAgent: new (await import('http')).Agent({ keepAlive: true }),
+        httpsAgent: new (await import('https')).Agent({ keepAlive: true }),
       },
     );
 
@@ -158,11 +166,26 @@ async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath) {
       throw new Error(`Upload failed: ${response.data.error}`);
     }
   } catch (error) {
-    if (error.response) {
-      throw new Error(`Upload failed: ${error.response.status} - ${error.response.data?.error || error.response.statusText}`);
-    } else {
-      throw new Error(`Upload failed: ${error.message}`);
+    const errorMessage = error.response 
+      ? `${error.response.status} - ${error.response.data?.error || error.response.statusText}`
+      : error.message;
+    
+    // Retry on connection errors (EPIPE, ECONNRESET, ETIMEDOUT)
+    const isRetryable = !error.response && (
+      error.code === 'EPIPE' || 
+      error.code === 'ECONNRESET' || 
+      error.code === 'ETIMEDOUT' ||
+      error.message.includes('EPIPE') ||
+      error.message.includes('ECONNRESET')
+    );
+    
+    if (isRetryable && retryCount < MAX_RETRIES) {
+      console.log(`⚠️ Upload failed (${errorMessage}), retrying in ${RETRY_DELAY/1000}s... (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+      return uploadUpdate(platform, bundleContent, bundleHash, bundlePath, retryCount + 1);
     }
+    
+    throw new Error(`Upload failed: ${errorMessage}`);
   }
 }
 
