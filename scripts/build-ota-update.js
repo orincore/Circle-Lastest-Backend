@@ -64,7 +64,7 @@ async function buildOTAUpdate() {
       console.log(`📦 Bundle hash for ${platform}: ${bundleHash.substring(0, 12)}...`);
 
       // Upload to backend
-      await uploadUpdate(platform, bundleContent, bundleHash);
+      await uploadUpdate(platform, bundleContent, bundleHash, bundlePath);
 
       console.log(`✅ ${platform} update uploaded successfully\n`);
     }
@@ -79,7 +79,7 @@ async function buildOTAUpdate() {
 function findBundleFile(outputDir, platform) {
   const platformDir = path.join(outputDir, platform);
 
-  // Look for common bundle file names
+  // Look for common bundle file names (including Hermes bytecode)
   const possibleNames = [
     'index.js',
     'bundle.js',
@@ -94,32 +94,38 @@ function findBundleFile(outputDir, platform) {
     }
   }
 
-  // If not found, look recursively for .js files
-  function findJSFiles(dir) {
+  // Look recursively for bundle files (.js, .hbc, etc.)
+  function findBundleFiles(dir) {
     const files = fs.readdirSync(dir);
     for (const file of files) {
       const fullPath = path.join(dir, file);
       const stat = fs.statSync(fullPath);
 
       if (stat.isDirectory()) {
-        const result = findJSFiles(fullPath);
+        const result = findBundleFiles(fullPath);
         if (result) return result;
-      } else if (file.endsWith('.js') && !file.includes('.map')) {
+      } else if ((file.endsWith('.js') || file.endsWith('.hbc')) && 
+                 !file.includes('.map') && 
+                 (file.includes('entry') || file.includes('bundle') || file.includes('index'))) {
         return fullPath;
       }
     }
     return null;
   }
 
-  return findJSFiles(platformDir);
+  return findBundleFiles(platformDir);
 }
 
-async function uploadUpdate(platform, bundleContent, bundleHash) {
+async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath) {
   try {
+    // Check if this is a binary file (.hbc) or text file (.js)
+    const isBinary = bundlePath.endsWith('.hbc');
+    
     const updateData = {
       platform,
       runtimeVersion: CONFIG.RUNTIME_VERSION,
-      bundle: bundleContent.toString('utf8'), // Send as UTF-8 string, not base64
+      bundle: isBinary ? bundleContent.toString('base64') : bundleContent.toString('utf8'),
+      bundleType: isBinary ? 'hermes' : 'javascript',
       manifest: {
         platform,
         runtimeVersion: CONFIG.RUNTIME_VERSION,

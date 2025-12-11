@@ -147,7 +147,7 @@ router.post('/upload', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { manifest, bundle, platform, runtimeVersion } = req.body;
+    const { manifest, bundle, platform, runtimeVersion, bundleType } = req.body;
 
     if (!manifest || !bundle || !platform || !runtimeVersion) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -157,8 +157,16 @@ router.post('/upload', async (req: Request, res: Response) => {
     const updateId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
 
-    // Save bundle file
-    const bundleBuffer = Buffer.isBuffer(bundle) ? bundle : Buffer.from(bundle, 'utf8');
+    // Save bundle file - handle both binary (Hermes) and text (JavaScript) bundles
+    let bundleBuffer: Buffer;
+    if (bundleType === 'hermes') {
+      // Binary Hermes bytecode - decode from base64
+      bundleBuffer = Buffer.from(bundle, 'base64');
+    } else {
+      // JavaScript text - handle as UTF-8
+      bundleBuffer = Buffer.isBuffer(bundle) ? bundle : Buffer.from(bundle, 'utf8');
+    }
+    
     const bundleHash = crypto.createHash('sha256').update(bundleBuffer).digest('hex');
     const bundlePath = path.join(BUNDLES_DIR, bundleHash);
     await fs.writeFile(bundlePath, bundleBuffer);
@@ -169,11 +177,12 @@ router.post('/upload', async (req: Request, res: Response) => {
       createdAt: timestamp,
       runtimeVersion,
       platform,
+      bundleType: bundleType || 'javascript',
       assets: [],
       launchAsset: {
         hash: bundleHash,
-        key: 'bundle.js',
-        contentType: 'application/javascript',
+        key: bundleType === 'hermes' ? 'bundle.hbc' : 'bundle.js',
+        contentType: bundleType === 'hermes' ? 'application/octet-stream' : 'application/javascript',
         url: `/api/updates/assets/${bundleHash}`,
       },
     };
