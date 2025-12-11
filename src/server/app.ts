@@ -69,6 +69,8 @@ import appVersionRouter from './routes/app-version.routes.js'
 import promptMatchingRouter from './routes/prompt-matching.routes.js'
 import debugMatchingRouter from './routes/debug-matching.routes.js'
 import updatesRouter from './routes/updates.routes.js'
+import locationRouter from './routes/location.routes.js'
+import webhookRouter from './routes/webhook.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -263,6 +265,12 @@ app.get('/delete-account.html', (req, res) => {
   res.sendFile(path.join(publicPath, 'delete-account.html'))
 })
 
+// AdMob app-ads.txt file for ad verification
+app.get('/app-ads.txt', (req, res) => {
+  res.type('text/plain')
+  res.sendFile(path.join(publicPath, 'app-ads.txt'))
+})
+
 // Health check is defined at the top of the file (before middleware)
 app.use('/api/public', publicStatsRouter)
 app.use('/api/auth', authRouter)
@@ -314,6 +322,8 @@ app.use('/api/upload', uploadRouter)
 app.use('/api/match', promptMatchingRouter)
 app.use('/api/debug/match', debugMatchingRouter)
 app.use('/api/updates', updatesRouter)
+app.use('/api/location', locationRouter)
+app.use('/api/webhook', webhookRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 

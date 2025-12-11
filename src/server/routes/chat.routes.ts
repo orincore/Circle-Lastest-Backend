@@ -243,11 +243,41 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         .eq('id', userId)
         .single()
       
-      const senderName = senderInfo 
+      // Check if this is a blind date chat (active, not revealed)
+      const { data: blindMatch } = await supabase
+        .from('blind_date_matches')
+        .select('id, status')
+        .eq('chat_id', chatId)
+        .eq('status', 'active')
+        .maybeSingle()
+      
+      const isBlindDateChat = !!blindMatch
+      
+      // Helper function to mask name for blind date
+      const maskName = (firstName: string | null, lastName: string | null): string => {
+        const maskWord = (word: string) => {
+          if (!word || word.length === 0) return ''
+          if (word.length === 1) return word[0] + '*'
+          return word[0] + '*'.repeat(word.length - 1)
+        }
+        
+        if (!firstName) return 'Anonymous'
+        const maskedFirst = maskWord(firstName.trim())
+        const maskedLast = lastName?.trim() ? maskWord(lastName.trim()) : ''
+        return maskedLast ? `${maskedFirst} ${maskedLast}` : maskedFirst
+      }
+      
+      const realName = senderInfo 
         ? (senderInfo.first_name && senderInfo.last_name 
             ? `${senderInfo.first_name} ${senderInfo.last_name}`.trim()
             : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
         : 'Someone'
+      
+      // Use masked name for blind date chats
+      const senderName = isBlindDateChat 
+        ? maskName(senderInfo?.first_name || null, senderInfo?.last_name || null)
+        : realName
+      
       const senderAvatar = senderInfo?.profile_photo_url || null
       
       const messagePayload = {
@@ -261,7 +291,8 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         createdAt: new Date(msg.created_at).getTime(),
         status: 'sent',
         senderName,
-        senderAvatar
+        senderAvatar,
+        isBlindDateChat
       }
       
       // Emit to receiver - both chat:message and chat:message:background for chat list
@@ -274,12 +305,12 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
       // Emit unread count update to the receiver
       await emitUnreadCountUpdate(chatId, otherUserId)
       
-      // Send push notification to the receiver
+      // Send push notification to the receiver with masked name for blind date
       try {
         const { PushNotificationService } = await import('../services/pushNotificationService.js')
         await PushNotificationService.sendMessageNotification(
           otherUserId,
-          senderName,
+          senderName, // Already masked for blind date
           msg.text || 'New message',
           chatId,
           msg.id

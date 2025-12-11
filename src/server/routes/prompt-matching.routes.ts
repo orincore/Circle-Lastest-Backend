@@ -4,6 +4,68 @@ import { PromptMatchingService } from '../services/prompt-matching.service.js'
 import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
 
+// Cache for AI-generated summaries to avoid redundant API calls
+const summaryCache = new Map<string, { summary: string; timestamp: number }>()
+const SUMMARY_CACHE_TTL = 10 * 60 * 1000 // 10 minutes
+
+/**
+ * Generate AI summary for a help request prompt
+ * Uses Together AI for concise, actionable summaries
+ */
+async function generateSummary(prompt: string): Promise<string> {
+  try {
+    // Check cache first
+    const cacheKey = prompt.substring(0, 100)
+    const cached = summaryCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < SUMMARY_CACHE_TTL) {
+      return cached.summary
+    }
+
+    const apiKey = process.env.TOGETHER_AI_API_KEY
+    if (!apiKey || !prompt) {
+      return prompt.length > 60 ? prompt.substring(0, 57) + '...' : prompt
+    }
+
+    const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+        messages: [{
+          role: 'system',
+          content: 'Create a 1-line summary (max 50 chars) of what help the user needs. Be specific. No quotes.'
+        }, {
+          role: 'user',
+          content: prompt.substring(0, 200)
+        }],
+        max_tokens: 25,
+        temperature: 0.2
+      })
+    })
+
+    if (!response.ok) {
+      return prompt.length > 60 ? prompt.substring(0, 57) + '...' : prompt
+    }
+
+    const data = await response.json()
+    const summary = data.choices[0]?.message?.content?.trim()
+      ?.replace(/^["']|["']$/g, '')
+      ?.replace(/^(Summary:|Help:|Request:)\s*/i, '')
+      ?.substring(0, 60) || prompt.substring(0, 57) + '...'
+
+    // Cache the result
+    summaryCache.set(cacheKey, { summary, timestamp: Date.now() })
+    return summary
+
+  } catch (error) {
+    logger.warn({ error }, 'Failed to generate summary')
+    return prompt.length > 60 ? prompt.substring(0, 57) + '...' : prompt
+  }
+}
+
 const router = Router()
 
 // Helper function to format time ago
@@ -250,7 +312,8 @@ router.get('/giver/profile', requireAuth, async (req: AuthRequest, res) => {
 /**
  * GET /api/match/requests
  * Get help requests visible to the current user (TARGETED MATCHING)
- * Only shows requests that have been specifically matched to this giver
+ * Shows requests that have been specifically matched to this giver
+ * Includes AI-generated summaries for quick understanding
  */
 router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -260,7 +323,6 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
     const status = req.query.status as string || 'searching'
 
     // Get help requests that are specifically targeted to this giver
-    // This ensures requests are only visible to the matched giver
     const { data: requests, error } = await supabase
       .from('help_requests')
       .select(`
@@ -270,6 +332,7 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
         attempts_count,
         created_at,
         expires_at,
+        receiver_user_id,
         profiles!help_requests_receiver_user_id_fkey (
           id,
           first_name,
@@ -278,14 +341,12 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
           age,
           interests
         ),
-        giver_request_attempts!inner (
+        giver_request_attempts (
           giver_user_id,
           status
         )
       `)
       .eq('status', status)
-      .eq('giver_request_attempts.giver_user_id', userId)
-      .in('giver_request_attempts.status', ['pending', 'accepted'])
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1)
 
@@ -293,31 +354,49 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
       throw error
     }
 
-    // Transform the data for frontend consumption
-    const transformedRequests = requests?.map((request: any) => ({
-      id: request.id,
-      prompt: request.prompt,
-      status: request.status,
-      attemptsCount: request.attempts_count,
-      createdAt: request.created_at,
-      expiresAt: request.expires_at,
-      user: {
-        id: request.profiles?.id,
-        firstName: request.profiles?.first_name,
-        lastName: request.profiles?.last_name,
-        profilePhotoUrl: request.profiles?.profile_photo_url,
-        age: request.profiles?.age,
-        interests: request.profiles?.interests || []
-      },
-      timeAgo: getTimeAgo(new Date(request.created_at)),
-      isTargetedMatch: true // Flag to indicate this is a targeted match
-    })) || []
+    // Filter to only show requests targeted to this user
+    const filteredRequests = requests?.filter((request: any) => {
+      const attempts = request.giver_request_attempts || []
+      return attempts.some((attempt: any) => 
+        attempt.giver_user_id === userId && 
+        ['pending', 'accepted'].includes(attempt.status)
+      )
+    }) || []
+
+    // Generate AI summaries for each request (in parallel)
+    const transformedRequests = await Promise.all(
+      filteredRequests.map(async (request: any) => {
+        // Generate AI summary
+        const summary = await generateSummary(request.prompt)
+
+        return {
+          id: request.id,
+          prompt: request.prompt,
+          summary, // AI-generated short summary
+          status: request.status,
+          attemptsCount: request.attempts_count,
+          createdAt: request.created_at,
+          expiresAt: request.expires_at,
+          user: {
+            id: request.profiles?.id,
+            firstName: request.profiles?.first_name,
+            lastName: request.profiles?.last_name,
+            profilePhotoUrl: request.profiles?.profile_photo_url,
+            age: request.profiles?.age,
+            interests: request.profiles?.interests || []
+          },
+          timeAgo: getTimeAgo(new Date(request.created_at)),
+          isTargetedMatch: true
+        }
+      })
+    )
 
     logger.info({ 
       userId, 
-      requestsCount: transformedRequests.length,
+      totalRequests: requests?.length || 0,
+      filteredCount: transformedRequests.length,
       status 
-    }, 'Retrieved targeted help requests for giver')
+    }, 'Retrieved targeted help requests for giver with AI summaries')
 
     res.json({
       success: true,

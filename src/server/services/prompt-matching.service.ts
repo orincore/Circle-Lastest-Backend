@@ -8,8 +8,13 @@ import { PushNotificationService } from './pushNotificationService.js'
 
 /**
  * Prompt-Based Giver/Receiver Matching Service
- * Handles vector-based matching between help seekers (receivers) and helpers (givers)
+ * AI-Powered semantic matching between help seekers (receivers) and helpers (givers)
+ * Uses Together AI for intelligent matching with ChatGPT-like understanding
  */
+
+// Cache for embeddings to avoid redundant API calls
+const embeddingCache = new Map<string, { embedding: number[], timestamp: number }>()
+const EMBEDDING_CACHE_TTL = 15 * 60 * 1000 // 15 minutes - increased for better performance
 
 export interface GiverProfile {
   id: string
@@ -50,18 +55,31 @@ export class PromptMatchingService {
   
   /**
    * Generate embedding for text using Together AI for enhanced semantic understanding
+   * Uses caching to avoid redundant API calls
    * Falls back to deterministic embedding if Together AI is unavailable
    */
   private static async generateEmbedding(text: string): Promise<number[]> {
     try {
+      // Check cache first
+      const cacheKey = text.toLowerCase().trim().substring(0, 500)
+      const cached = embeddingCache.get(cacheKey)
+      if (cached && Date.now() - cached.timestamp < EMBEDDING_CACHE_TTL) {
+        logger.debug({ cacheHit: true }, 'Using cached embedding')
+        return cached.embedding
+      }
+
       // First try to use Together AI for better embeddings
       const embedding = await this.generateTogetherAIEmbedding(text)
       if (embedding) {
+        // Cache the result
+        embeddingCache.set(cacheKey, { embedding, timestamp: Date.now() })
         return embedding
       }
       
       // Fallback to deterministic embedding
-      return this.generateDeterministicEmbedding(text)
+      const fallbackEmbedding = this.generateDeterministicEmbedding(text)
+      embeddingCache.set(cacheKey, { embedding: fallbackEmbedding, timestamp: Date.now() })
+      return fallbackEmbedding
       
     } catch (error) {
       logger.error({ error, text }, 'Error generating embedding, falling back to deterministic')
@@ -71,6 +89,7 @@ export class PromptMatchingService {
 
   /**
    * Generate embedding using Together AI's embedding model
+   * Uses BAAI/bge-large-en-v1.5 for high-quality semantic embeddings
    */
   private static async generateTogetherAIEmbedding(text: string): Promise<number[] | null> {
     try {
@@ -80,10 +99,10 @@ export class PromptMatchingService {
         return null
       }
 
-      // Clean and normalize text
-      const cleanText = text.toLowerCase().trim()
+      // Clean and normalize text - keep more context for better matching
+      const cleanText = text.trim().substring(0, 2000)
       
-      // Use Together AI's embedding endpoint
+      // Use Together AI's embedding endpoint with better model
       const response = await fetch('https://api.together.xyz/v1/embeddings', {
         method: 'POST',
         headers: {
@@ -91,13 +110,14 @@ export class PromptMatchingService {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'togethercomputer/m2-bert-80M-8k-retrieval', // Efficient embedding model
+          model: 'BAAI/bge-large-en-v1.5', // High-quality 1024-dim embeddings
           input: cleanText
         })
       })
 
       if (!response.ok) {
-        logger.warn({ status: response.status }, 'Together AI embedding API error, using fallback')
+        const errorText = await response.text()
+        logger.warn({ status: response.status, error: errorText }, 'Together AI embedding API error, using fallback')
         return null
       }
 
@@ -109,7 +129,7 @@ export class PromptMatchingService {
         return null
       }
 
-      // Pad or truncate to 1536 dimensions to match our system
+      // Pad to 1536 dimensions to match our database schema
       const normalizedEmbedding = new Array(1536).fill(0)
       const copyLength = Math.min(embedding.length, 1536)
       
@@ -303,15 +323,104 @@ export class PromptMatchingService {
   }
 
   /**
+   * Extract age and gender preferences from prompt text
+   * Returns demographic filters for better matching
+   */
+  private static extractDemographicPreferences(prompt: string): {
+    preferredGender?: 'male' | 'female' | 'other'
+    preferredAgeMin?: number
+    preferredAgeMax?: number
+  } {
+    const lowerPrompt = prompt.toLowerCase()
+    const preferences: {
+      preferredGender?: 'male' | 'female' | 'other'
+      preferredAgeMin?: number
+      preferredAgeMax?: number
+    } = {}
+
+    // Extract gender preference
+    if (lowerPrompt.includes('male') && !lowerPrompt.includes('female')) {
+      preferences.preferredGender = 'male'
+    } else if (lowerPrompt.includes('female') && !lowerPrompt.includes('male')) {
+      preferences.preferredGender = 'female'
+    } else if (lowerPrompt.includes('woman') || lowerPrompt.includes('girl') || lowerPrompt.includes('lady')) {
+      preferences.preferredGender = 'female'
+    } else if (lowerPrompt.includes('man') || lowerPrompt.includes('guy') || lowerPrompt.includes('boy')) {
+      preferences.preferredGender = 'male'
+    }
+
+    // Extract age preferences using regex patterns
+    // Patterns like: "20-30", "25 to 35", "around 25", "age 30", "30 years old"
+    const ageRangeMatch = lowerPrompt.match(/(\d{2})\s*[-to]+\s*(\d{2})/)
+    const singleAgeMatch = lowerPrompt.match(/(?:age|around|about)\s*(\d{2})/)
+    const yearsOldMatch = lowerPrompt.match(/(\d{2})\s*(?:years?\s*old|yr)/)
+    
+    if (ageRangeMatch) {
+      // Range specified: "20-30" or "25 to 35"
+      preferences.preferredAgeMin = parseInt(ageRangeMatch[1])
+      preferences.preferredAgeMax = parseInt(ageRangeMatch[2])
+    } else if (singleAgeMatch || yearsOldMatch) {
+      // Single age mentioned: use ±5 years range
+      const age = parseInt((singleAgeMatch || yearsOldMatch)![1])
+      preferences.preferredAgeMin = Math.max(18, age - 5)
+      preferences.preferredAgeMax = Math.min(100, age + 5)
+    }
+
+    // Age group keywords
+    if (lowerPrompt.includes('teen') || lowerPrompt.includes('young')) {
+      preferences.preferredAgeMin = 18
+      preferences.preferredAgeMax = 25
+    } else if (lowerPrompt.includes('college') || lowerPrompt.includes('university')) {
+      preferences.preferredAgeMin = 18
+      preferences.preferredAgeMax = 28
+    } else if (lowerPrompt.includes('mid 20') || lowerPrompt.includes('mid-20')) {
+      preferences.preferredAgeMin = 23
+      preferences.preferredAgeMax = 28
+    } else if (lowerPrompt.includes('late 20') || lowerPrompt.includes('late-20')) {
+      preferences.preferredAgeMin = 27
+      preferences.preferredAgeMax = 32
+    } else if (lowerPrompt.includes('30s') || lowerPrompt.includes('thirties')) {
+      preferences.preferredAgeMin = 30
+      preferences.preferredAgeMax = 39
+    } else if (lowerPrompt.includes('40s') || lowerPrompt.includes('forties')) {
+      preferences.preferredAgeMin = 40
+      preferences.preferredAgeMax = 49
+    } else if (lowerPrompt.includes('middle age') || lowerPrompt.includes('middle-age')) {
+      preferences.preferredAgeMin = 35
+      preferences.preferredAgeMax = 55
+    } else if (lowerPrompt.includes('senior') || lowerPrompt.includes('elderly') || lowerPrompt.includes('older')) {
+      preferences.preferredAgeMin = 55
+      preferences.preferredAgeMax = 100
+    }
+
+    return preferences
+  }
+
+  /**
    * Create help request and find matching giver
+   * Emits real-time status updates to the receiver
+   * Now considers age and gender preferences from the prompt
    */
   static async createHelpRequest(
     receiverUserId: string,
     prompt: string
   ): Promise<{ requestId: string; status: 'matched' | 'searching'; matchedGiver?: GiverMatch }> {
     try {
+      // Emit searching status immediately
+      emitToUser(receiverUserId, 'help_search_status', {
+        status: 'analyzing',
+        message: 'Analyzing your request with AI...',
+        progress: 10
+      })
+
       // Generate embedding for prompt
       const promptEmbedding = await this.generateEmbedding(prompt)
+
+      emitToUser(receiverUserId, 'help_search_status', {
+        status: 'searching',
+        message: 'Searching for the perfect helper...',
+        progress: 30
+      })
 
       // Create help request
       const { data: requestId, error: requestError } = await supabase.rpc('create_help_request', {
@@ -326,27 +435,80 @@ export class PromptMatchingService {
 
       logger.info({ receiverUserId, requestId }, 'Help request created')
 
-      // Try to find matching giver
-      const matchResult = await this.findAndNotifyGiver(requestId, receiverUserId, promptEmbedding)
+      emitToUser(receiverUserId, 'help_search_status', {
+        status: 'matching',
+        message: 'Finding the best match for you...',
+        progress: 50,
+        requestId
+      })
+
+      // Extract demographic preferences from prompt
+      const demographics = this.extractDemographicPreferences(prompt)
+      
+      logger.info({ 
+        receiverUserId, 
+        requestId,
+        demographics 
+      }, 'Extracted demographic preferences from prompt')
+
+      // Try to find matching giver with AI-powered search and demographic filters
+      const matchResult = await this.findAndNotifyGiver(
+        requestId, 
+        receiverUserId, 
+        promptEmbedding, 
+        [], 
+        prompt,
+        demographics
+      )
+
+      // Emit final status
+      if (matchResult.status === 'matched') {
+        emitToUser(receiverUserId, 'help_search_status', {
+          status: 'found',
+          message: 'Found a perfect helper! Waiting for their response...',
+          progress: 80,
+          requestId,
+          matchedGiver: matchResult.matchedGiver
+        })
+      } else {
+        emitToUser(receiverUserId, 'help_search_status', {
+          status: 'searching',
+          message: 'Still searching for available helpers...',
+          progress: 60,
+          requestId
+        })
+      }
 
       return matchResult
 
     } catch (error) {
       logger.error({ error, receiverUserId }, 'Error creating help request')
+      emitToUser(receiverUserId, 'help_search_status', {
+        status: 'error',
+        message: 'Failed to create help request. Please try again.',
+        progress: 0
+      })
       throw new Error('Failed to create help request')
     }
   }
 
   /**
-   * Find best matching giver and send notification (TARGETED MATCHING)
+   * Find best matching giver and send notification (AI-POWERED TARGETED MATCHING)
+   * Uses Together AI for intelligent semantic matching
    * Ensures the matched giver is NOT a friend of the receiver
-   * Uses Together AI for enhanced matching when available
+   * Sends real-time status updates throughout the process
    */
   static async findAndNotifyGiver(
     requestId: string,
     receiverUserId: string,
     promptEmbedding: number[],
-    excludedGiverIds: string[] = []
+    excludedGiverIds: string[] = [],
+    originalPrompt: string = '',
+    demographics?: {
+      preferredGender?: 'male' | 'female' | 'other'
+      preferredAgeMin?: number
+      preferredAgeMax?: number
+    }
   ): Promise<{ requestId: string; status: 'matched' | 'searching'; matchedGiver?: GiverMatch }> {
     try {
       // Get all friend IDs to exclude from matching
@@ -374,8 +536,8 @@ export class PromptMatchingService {
         totalExcluded: allExcludedIds.length 
       }, 'Excluding friends from giver matching')
 
-      // Find available givers excluding friends and previously declined givers
-      const { data: availableGivers, error: giversError } = await supabase
+      // Build query with demographic filters
+      let query = supabase
         .from('giver_profiles')
         .select(`
           user_id,
@@ -383,11 +545,19 @@ export class PromptMatchingService {
           total_helps_given,
           average_rating,
           profile_embedding,
-          profiles!inner(about, interests, needs)
+          profiles!inner(about, interests, needs, gender, date_of_birth)
         `)
         .eq('is_available', true)
         .not('user_id', 'eq', receiverUserId)
         .not('user_id', 'in', `(${allExcludedIds.map(id => `"${id}"`).join(',')})`)
+
+      // Apply gender filter if specified
+      if (demographics?.preferredGender) {
+        query = query.eq('profiles.gender', demographics.preferredGender)
+        logger.info({ preferredGender: demographics.preferredGender }, 'Applying gender filter')
+      }
+
+      const { data: availableGivers, error: giversError } = await query
       
       if (giversError) {
         throw giversError
@@ -395,68 +565,158 @@ export class PromptMatchingService {
       
       let matches: GiverMatch[] = []
       
-      if (availableGivers && availableGivers.length > 0) {
-        // Use Together AI for enhanced giver selection when available
+      // Filter by age if specified
+      let ageFilteredGivers = availableGivers || []
+      if (demographics?.preferredAgeMin || demographics?.preferredAgeMax) {
+        const now = new Date()
+        ageFilteredGivers = availableGivers?.filter(giver => {
+          const profileData = giver.profiles as { date_of_birth?: string } | null
+          if (!profileData?.date_of_birth) return true // Include if age unknown
+          
+          const birthDate = new Date(profileData.date_of_birth)
+          const age = now.getFullYear() - birthDate.getFullYear()
+          const monthDiff = now.getMonth() - birthDate.getMonth()
+          const adjustedAge = monthDiff < 0 || (monthDiff === 0 && now.getDate() < birthDate.getDate()) 
+            ? age - 1 
+            : age
+          
+          const meetsMinAge = !demographics.preferredAgeMin || adjustedAge >= demographics.preferredAgeMin
+          const meetsMaxAge = !demographics.preferredAgeMax || adjustedAge <= demographics.preferredAgeMax
+          
+          return meetsMinAge && meetsMaxAge
+        }) || []
+        
+        logger.info({ 
+          totalGivers: availableGivers?.length || 0,
+          ageFilteredCount: ageFilteredGivers.length,
+          ageRange: `${demographics.preferredAgeMin || 'any'}-${demographics.preferredAgeMax || 'any'}`
+        }, 'Applied age filter')
+      }
+      
+      if (ageFilteredGivers && ageFilteredGivers.length > 0) {
+        // Get the original prompt if not provided
+        let helpPrompt = originalPrompt
+        if (!helpPrompt) {
+          const { data: helpRequest } = await supabase
+            .from('help_requests')
+            .select('prompt')
+            .eq('id', requestId)
+            .single()
+          helpPrompt = helpRequest?.prompt || ''
+        }
+
+        // Use Together AI for intelligent giver selection with age-filtered givers
         const enhancedMatches = await this.findPerfectGiverWithAI(
           promptEmbedding,
-          availableGivers,
-          receiverUserId
+          ageFilteredGivers,
+          receiverUserId,
+          helpPrompt
         )
 
         if (enhancedMatches.length > 0) {
           matches = enhancedMatches
           logger.info({ 
-            availableGiversCount: availableGivers.length,
+            totalAvailable: availableGivers?.length || 0,
+            afterDemographicFilter: ageFilteredGivers.length,
             aiEnhancedMatches: matches.length,
-            topSimilarity: matches[0]?.similarity_score || 0
-          }, 'AI-enhanced giver matching completed')
+            topSimilarity: matches[0]?.similarity_score || 0,
+            appliedFilters: demographics
+          }, 'AI-enhanced giver matching completed with demographic filters')
         } else {
-          // Fallback to manual similarity calculation
-          const scoredGivers = availableGivers
-            .map(giver => {
+          // Fallback to hybrid similarity calculation
+          const scoredGivers = await Promise.all(ageFilteredGivers.map(async giver => {
+            try {
+              let giverEmbedding: number[]
               try {
-                const giverEmbedding = JSON.parse(giver.profile_embedding)
-                
-                // Calculate cosine similarity
-                let dotProduct = 0
-                let normA = 0
-                let normB = 0
-                
-                for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
-                  dotProduct += promptEmbedding[i] * giverEmbedding[i]
-                  normA += promptEmbedding[i] * promptEmbedding[i]
-                  normB += giverEmbedding[i] * giverEmbedding[i]
-                }
-                
-                const similarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
-                
-                return {
-                  giver_user_id: giver.user_id,
-                  similarity_score: Math.max(0, similarity), // Ensure non-negative
-                  is_available: giver.is_available,
-                  total_helps_given: giver.total_helps_given,
-                  average_rating: giver.average_rating || 0
-                }
-              } catch (error) {
-                logger.error({ error, giverId: giver.user_id }, 'Error calculating similarity')
-                return {
-                  giver_user_id: giver.user_id,
-                  similarity_score: 0,
-                  is_available: giver.is_available,
-                  total_helps_given: giver.total_helps_given,
-                  average_rating: giver.average_rating || 0
-                }
+                giverEmbedding = JSON.parse(giver.profile_embedding)
+              } catch {
+                giverEmbedding = []
               }
-            })
-            .sort((a, b) => b.similarity_score - a.similarity_score)
+              
+              // Calculate cosine similarity
+              let dotProduct = 0
+              let normA = 0
+              let normB = 0
+              
+              for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
+                dotProduct += promptEmbedding[i] * giverEmbedding[i]
+                normA += promptEmbedding[i] * promptEmbedding[i]
+                normB += giverEmbedding[i] * giverEmbedding[i]
+              }
+              
+              const embeddingSimilarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
+              
+              // Calculate keyword overlap score with better weighting
+              const promptWords = helpPrompt.toLowerCase().split(/\s+/).filter(w => w.length > 3)
+              const profileData = giver.profiles as { about?: string; interests?: string[]; needs?: string[] } | null
+              const giverAbout = (profileData?.about || '').toLowerCase()
+              const giverInterests = (profileData?.interests || []).join(' ').toLowerCase()
+              const giverNeeds = (profileData?.needs || []).join(' ').toLowerCase()
+              const giverText = `${giverAbout} ${giverInterests} ${giverNeeds}`
+              
+              let keywordScore = 0
+              let matchedKeywords = 0
+              promptWords.forEach(word => {
+                if (giverText.includes(word)) {
+                  // Weight by word length and frequency
+                  const wordWeight = Math.min(word.length / 10, 0.5)
+                  const frequency = (giverText.match(new RegExp(word, 'g')) || []).length
+                  keywordScore += wordWeight * Math.min(frequency, 3) * 0.15
+                  matchedKeywords++
+                }
+              })
+              
+              // Bonus for matching multiple keywords
+              const coverageBonus = promptWords.length > 0 ? (matchedKeywords / promptWords.length) * 0.2 : 0
+              keywordScore = Math.min(keywordScore + coverageBonus, 0.4) // Cap at 0.4
+              
+              // Experience bonus (up to 0.15)
+              const experienceBonus = Math.min(giver.total_helps_given * 0.015, 0.15)
+              
+              // Rating bonus (up to 0.1)
+              const ratingBonus = (giver.average_rating || 0) * 0.02
+              
+              // Combined score - prioritize semantic similarity
+              const finalScore = embeddingSimilarity * 0.55 + keywordScore + experienceBonus + ratingBonus
+              
+              return {
+                giver_user_id: giver.user_id,
+                similarity_score: Math.max(0, finalScore),
+                is_available: giver.is_available,
+                total_helps_given: giver.total_helps_given,
+                average_rating: giver.average_rating || 0
+              }
+            } catch (error) {
+              logger.error({ error, giverId: giver.user_id }, 'Error calculating similarity')
+              return {
+                giver_user_id: giver.user_id,
+                similarity_score: 0,
+                is_available: giver.is_available,
+                total_helps_given: giver.total_helps_given,
+                average_rating: giver.average_rating || 0
+              }
+            }
+          }))
           
-          matches = scoredGivers.slice(0, 1) // Take only the top match for targeted approach
-          
+        }
+      }
+
+      if (!matches || matches.length === 0) {
+        // No giver profiles available - search ALL users with AI
+        logger.info({ requestId }, 'No giver profiles found, searching all users with AI')
+        
+        const allUserMatches = await this.searchAllUsersWithAI(
+          receiverUserId,
+          originalPrompt || '',
+          allExcludedIds
+        )
+        
+        if (allUserMatches.length > 0) {
+          matches = allUserMatches
           logger.info({ 
-            availableGiversCount: availableGivers.length,
-            scoredGiversCount: scoredGivers.length,
-            topSimilarity: matches[0]?.similarity_score || 0
-          }, 'Manual similarity calculation completed')
+            matchedUserId: matches[0]?.giver_user_id,
+            similarity: matches[0]?.similarity_score
+          }, 'Found match from all users search')
         }
       }
 
@@ -519,6 +779,11 @@ export class PromptMatchingService {
         .eq('id', requestId)
         .single()
 
+      const promptText = helpRequest?.prompt || originalPrompt || ''
+      
+      // Generate AI summary for the help request
+      const summary = await this.generateHelpRequestSummary(promptText)
+
       // Send socket event ONLY to the matched giver (targeted approach)
       emitToUser(bestMatch.giver_user_id, 'incoming_help_request', {
         requestId,
@@ -526,22 +791,24 @@ export class PromptMatchingService {
         receiverUsername: receiverProfile?.username || 'Someone',
         receiverFirstName: receiverProfile?.first_name || 'Someone',
         receiverPhoto: receiverProfile?.profile_photo_url,
-        prompt: helpRequest?.prompt || '',
+        prompt: promptText,
+        summary, // AI-generated short summary
         similarityScore: bestMatch.similarity_score,
         isTargetedMatch: true // Flag to indicate this is a targeted match
       })
 
-      // Send push notification ONLY to the matched giver
+      // Send push notification with AI-summarized content
       await PushNotificationService.sendPushNotification(
         bestMatch.giver_user_id,
         {
-          title: 'Perfect Match - Help Request',
-          body: `${receiverProfile?.first_name || 'Someone'} needs your specific expertise!`,
+          title: '🎯 Help Request Match',
+          body: summary || `${receiverProfile?.first_name || 'Someone'} needs your help!`,
           data: {
             type: 'help_request',
             requestId,
             receiverId: receiverUserId,
-            isTargetedMatch: true
+            isTargetedMatch: true,
+            summary
           }
         }
       )
@@ -567,32 +834,17 @@ export class PromptMatchingService {
   }
 
   /**
-   * Use Together AI to find the perfect giver from available candidates
+   * Generate a short AI summary of a help request for notifications and list display
+   * Uses Together AI to create a concise, actionable summary
    */
-  private static async findPerfectGiverWithAI(
-    promptEmbedding: number[],
-    availableGivers: any[],
-    receiverUserId: string
-  ): Promise<GiverMatch[]> {
+  private static async generateHelpRequestSummary(prompt: string): Promise<string> {
     try {
       const apiKey = process.env.TOGETHER_AI_API_KEY
-      if (!apiKey) {
-        logger.info('Together AI not available for enhanced giver matching')
-        return []
+      if (!apiKey || !prompt) {
+        // Fallback: truncate and clean the prompt
+        return prompt.length > 60 ? prompt.substring(0, 57) + '...' : prompt
       }
 
-      // Prepare giver profiles for AI analysis
-      const giverProfiles = availableGivers.map(giver => ({
-        id: giver.user_id,
-        about: giver.profiles?.about || '',
-        interests: giver.profiles?.interests || [],
-        needs: giver.profiles?.needs || [],
-        totalHelps: giver.total_helps_given,
-        rating: giver.average_rating || 0,
-        embedding: JSON.parse(giver.profile_embedding)
-      }))
-
-      // Use Together AI to analyze and rank givers
       const response = await fetch('https://api.together.xyz/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -600,27 +852,146 @@ export class PromptMatchingService {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+          model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo', // Fast, cheap model for summaries
           messages: [{
             role: 'system',
-            content: `You are an expert matching system. Analyze giver profiles and rank them by how well they can help with the given request. Consider their expertise, experience, and helpfulness. Return only the top 1 match as a JSON object with "giverId" and "confidence" (0-1).`
+            content: 'You are a helpful assistant that creates very short summaries. Create a 1-line summary (max 60 chars) of what help the user needs. Be specific and actionable. No quotes or prefixes.'
           }, {
             role: 'user',
-            content: `Request context: User needs help. Available givers: ${JSON.stringify(giverProfiles.map(g => ({
-              id: g.id,
-              about: g.about,
-              interests: g.interests,
-              totalHelps: g.totalHelps,
-              rating: g.rating
-            })))}`
+            content: prompt.substring(0, 300)
           }],
-          max_tokens: 200,
-          temperature: 0.1
+          max_tokens: 30,
+          temperature: 0.3
         })
       })
 
       if (!response.ok) {
-        logger.warn('Together AI giver ranking failed, using fallback')
+        logger.warn({ status: response.status }, 'AI summary generation failed')
+        return prompt.length > 60 ? prompt.substring(0, 57) + '...' : prompt
+      }
+
+      const data = await response.json()
+      const summary = data.choices[0]?.message?.content?.trim()
+
+      if (!summary) {
+        return prompt.length > 60 ? prompt.substring(0, 57) + '...' : prompt
+      }
+
+      // Clean up the summary
+      const cleanSummary = summary
+        .replace(/^["']|["']$/g, '') // Remove quotes
+        .replace(/^(Summary:|Help needed:|Request:)\s*/i, '') // Remove prefixes
+        .substring(0, 80) // Limit length
+
+      logger.debug({ originalLength: prompt.length, summaryLength: cleanSummary.length }, 'Generated help request summary')
+      return cleanSummary
+
+    } catch (error) {
+      logger.error({ error }, 'Error generating help request summary')
+      return prompt.length > 60 ? prompt.substring(0, 57) + '...' : prompt
+    }
+  }
+
+  /**
+   * Use Together AI to find the perfect giver from available candidates
+   * Analyzes the actual help request prompt against giver profiles
+   */
+  private static async findPerfectGiverWithAI(
+    promptEmbedding: number[],
+    availableGivers: any[],
+    receiverUserId: string,
+    helpPrompt: string
+  ): Promise<GiverMatch[]> {
+    try {
+      const apiKey = process.env.TOGETHER_AI_API_KEY
+      if (!apiKey || !helpPrompt) {
+        logger.info('Together AI not available or no prompt for enhanced giver matching')
+        return []
+      }
+
+      // Limit to top 10 candidates based on embedding similarity first
+      const candidatesWithScores = availableGivers.map(giver => {
+        let giverEmbedding: number[]
+        try {
+          giverEmbedding = JSON.parse(giver.profile_embedding)
+        } catch {
+          giverEmbedding = []
+        }
+        
+        let dotProduct = 0
+        let normA = 0
+        let normB = 0
+        
+        for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
+          dotProduct += promptEmbedding[i] * giverEmbedding[i]
+          normA += promptEmbedding[i] * promptEmbedding[i]
+          normB += giverEmbedding[i] * giverEmbedding[i]
+        }
+        
+        const similarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
+        
+        return { giver, similarity }
+      })
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 15) // Top 15 for better AI analysis and selection
+
+      if (candidatesWithScores.length === 0) {
+        return []
+      }
+
+      // Prepare giver profiles for AI analysis
+      const giverProfiles = candidatesWithScores.map(({ giver, similarity }) => ({
+        id: giver.user_id,
+        about: (giver.profiles?.about || '').substring(0, 200),
+        interests: (giver.profiles?.interests || []).slice(0, 10),
+        needs: (giver.profiles?.needs || []).slice(0, 5),
+        totalHelps: giver.total_helps_given,
+        rating: giver.average_rating || 0,
+        embeddingScore: Math.round(similarity * 100)
+      }))
+
+      // Use Together AI to analyze and rank givers based on the actual help request
+      const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+          messages: [{
+            role: 'system',
+            content: `You are an expert matching system for a help-connect app. Find the PERFECT person to help with a specific request.
+
+Analyze the help request and available helpers. Prioritize:
+1. RELEVANCE: How well their interests/expertise match the request topic (MOST IMPORTANT)
+2. CAPABILITY: Whether they have knowledge/skills to actually help
+3. EXPERIENCE: Their track record (total helps given)
+4. QUALITY: Their rating from previous helps
+5. SEMANTIC MATCH: The embeddingScore indicates AI-computed similarity
+
+Return ONLY a JSON object with:
+- "giverId": the user_id of the BEST match (choose the most relevant, not just highest score)
+- "confidence": 0.0 to 1.0 (how confident you are they can ACTUALLY help)
+- "reason": brief explanation (max 50 chars)
+
+No other text, just the JSON.`
+          }, {
+            role: 'user',
+            content: `HELP REQUEST: "${helpPrompt.substring(0, 300)}"
+
+AVAILABLE HELPERS:
+${JSON.stringify(giverProfiles, null, 2)}`
+          }],
+          max_tokens: 150,
+          temperature: 0.1,
+          response_format: { type: 'json_object' }
+        })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        logger.warn({ status: response.status, error: errorText }, 'Together AI giver ranking failed, using fallback')
         return []
       }
 
@@ -628,41 +999,221 @@ export class PromptMatchingService {
       const aiResponse = data.choices[0]?.message?.content
 
       if (!aiResponse) {
+        logger.warn('Empty AI response for giver matching')
         return []
       }
 
       // Parse AI response
-      const match = JSON.parse(aiResponse)
-      const selectedGiver = availableGivers.find(g => g.user_id === match.giverId)
-
-      if (!selectedGiver) {
-        return []
+      let match: { giverId: string; confidence: number; reason?: string }
+      try {
+        match = JSON.parse(aiResponse)
+      } catch (parseError) {
+        // Try to extract JSON from response
+        const jsonMatch = aiResponse.match(/\{[^}]+\}/)
+        if (jsonMatch) {
+          match = JSON.parse(jsonMatch[0])
+        } else {
+          logger.warn({ aiResponse }, 'Failed to parse AI response')
+          return []
+        }
       }
 
-      // Calculate similarity score for the AI-selected giver
-      const giverEmbedding = JSON.parse(selectedGiver.profile_embedding)
-      let dotProduct = 0
-      let normA = 0
-      let normB = 0
-      
-      for (let i = 0; i < Math.min(promptEmbedding.length, giverEmbedding.length); i++) {
-        dotProduct += promptEmbedding[i] * giverEmbedding[i]
-        normA += promptEmbedding[i] * promptEmbedding[i]
-        normB += giverEmbedding[i] * giverEmbedding[i]
+      const selectedCandidate = candidatesWithScores.find(c => c.giver.user_id === match.giverId)
+
+      if (!selectedCandidate) {
+        // Fallback to top embedding match
+        const topCandidate = candidatesWithScores[0]
+        return [{
+          giver_user_id: topCandidate.giver.user_id,
+          similarity_score: topCandidate.similarity,
+          is_available: topCandidate.giver.is_available,
+          total_helps_given: topCandidate.giver.total_helps_given,
+          average_rating: topCandidate.giver.average_rating || 0
+        }]
       }
-      
-      const similarity = normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : 0
+
+      logger.info({ 
+        selectedGiverId: match.giverId, 
+        confidence: match.confidence,
+        reason: match.reason,
+        embeddingScore: selectedCandidate.similarity
+      }, 'AI selected best giver')
+
+      // Combine AI confidence with embedding similarity - prioritize AI judgment
+      const finalScore = (selectedCandidate.similarity * 0.5) + (match.confidence * 0.5)
 
       return [{
-        giver_user_id: selectedGiver.user_id,
-        similarity_score: Math.max(0, similarity * (match.confidence || 1)), // Boost with AI confidence
-        is_available: selectedGiver.is_available,
-        total_helps_given: selectedGiver.total_helps_given,
-        average_rating: selectedGiver.average_rating || 0
+        giver_user_id: selectedCandidate.giver.user_id,
+        similarity_score: Math.max(0, finalScore),
+        is_available: selectedCandidate.giver.is_available,
+        total_helps_given: selectedCandidate.giver.total_helps_given,
+        average_rating: selectedCandidate.giver.average_rating || 0
       }]
 
     } catch (error) {
       logger.error({ error }, 'Error in AI-enhanced giver matching')
+      return []
+    }
+  }
+
+  /**
+   * Search ALL users in the database using AI to find the best match
+   * This is a fallback when no giver profiles are available
+   * Uses Together AI to analyze user profiles against the help request
+   */
+  private static async searchAllUsersWithAI(
+    receiverUserId: string,
+    helpPrompt: string,
+    excludedUserIds: string[]
+  ): Promise<GiverMatch[]> {
+    try {
+      if (!helpPrompt) {
+        logger.info('No help prompt provided for all-users search')
+        return []
+      }
+
+      // Get all users with their profiles (excluding receiver and excluded users)
+      const { data: allUsers, error: usersError } = await supabase
+        .from('profiles')
+        .select('id, about, interests, needs, first_name, last_name')
+        .not('id', 'eq', receiverUserId)
+        .not('invisible_mode', 'eq', true)
+        .limit(100) // Limit to prevent overwhelming the AI
+
+      if (usersError) {
+        logger.error({ error: usersError }, 'Error fetching all users')
+        return []
+      }
+
+      if (!allUsers || allUsers.length === 0) {
+        logger.info('No users found for matching')
+        return []
+      }
+
+      // Filter out excluded users
+      const eligibleUsers = allUsers.filter(user => !excludedUserIds.includes(user.id))
+
+      if (eligibleUsers.length === 0) {
+        logger.info('All users are excluded from matching')
+        return []
+      }
+
+      const apiKey = process.env.TOGETHER_AI_API_KEY
+      if (!apiKey) {
+        logger.warn('Together AI not available for all-users search')
+        return []
+      }
+
+      // Prepare user profiles for AI analysis
+      const userProfiles = eligibleUsers.slice(0, 20).map(user => ({
+        id: user.id,
+        about: (user.about || '').substring(0, 150),
+        interests: (user.interests || []).slice(0, 8),
+        needs: (user.needs || []).slice(0, 5)
+      }))
+
+      // Use Together AI to find the best match from all users
+      const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+          messages: [{
+            role: 'system',
+            content: `You are an expert matching system for a help-connect app. Find the PERFECT person to help with a specific request.
+
+Analyze the help request and available users. Prioritize:
+1. TOPIC RELEVANCE: How closely their interests/about match the request topic (CRITICAL)
+2. EXPERTISE MATCH: Whether they have the knowledge/skills needed
+3. HELPFULNESS: Likelihood they can provide valuable advice/support
+
+Be selective - only match if confidence is HIGH (>0.6). Better to return no match than a poor match.
+
+Return ONLY a JSON object with:
+- "userId": the id of the best match (or null if no good match)
+- "confidence": 0.0 to 1.0 (how confident you are this person can ACTUALLY help)
+- "reason": brief explanation (max 50 chars)
+
+If no one seems like a good match, return {"userId": null, "confidence": 0, "reason": "No suitable match"}`
+          }, {
+            role: 'user',
+            content: `HELP REQUEST: "${helpPrompt.substring(0, 300)}"
+
+AVAILABLE USERS:
+${JSON.stringify(userProfiles, null, 2)}`
+          }],
+          max_tokens: 150,
+          temperature: 0.1,
+          response_format: { type: 'json_object' }
+        })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        logger.warn({ status: response.status, error: errorText }, 'Together AI all-users search failed')
+        return []
+      }
+
+      const data = await response.json()
+      const aiResponse = data.choices[0]?.message?.content
+
+      if (!aiResponse) {
+        logger.warn('Empty AI response for all-users search')
+        return []
+      }
+
+      // Parse AI response
+      let match: { userId: string | null; confidence: number; reason?: string }
+      try {
+        match = JSON.parse(aiResponse)
+      } catch (parseError) {
+        const jsonMatch = aiResponse.match(/\{[^}]+\}/)
+        if (jsonMatch) {
+          match = JSON.parse(jsonMatch[0])
+        } else {
+          logger.warn({ aiResponse }, 'Failed to parse AI response for all-users search')
+          return []
+        }
+      }
+
+      if (!match.userId || match.confidence < 0.5) {
+        logger.info({ confidence: match.confidence, reason: match.reason }, 'No suitable match found from all users (confidence threshold not met)')
+        return []
+      }
+
+      const selectedUser = eligibleUsers.find(u => u.id === match.userId)
+      if (!selectedUser) {
+        logger.warn({ userId: match.userId }, 'AI selected user not found in eligible users')
+        return []
+      }
+
+      logger.info({ 
+        selectedUserId: match.userId, 
+        confidence: match.confidence,
+        reason: match.reason
+      }, 'AI selected best user from all-users search')
+
+      // Create a giver profile for this user on-the-fly if they don't have one
+      try {
+        await this.createOrUpdateGiverProfile(match.userId, [], [])
+        logger.info({ userId: match.userId }, 'Created giver profile for matched user')
+      } catch (profileError) {
+        logger.warn({ error: profileError, userId: match.userId }, 'Failed to create giver profile, continuing anyway')
+      }
+
+      return [{
+        giver_user_id: match.userId,
+        similarity_score: match.confidence,
+        is_available: true,
+        total_helps_given: 0,
+        average_rating: 0
+      }]
+
+    } catch (error) {
+      logger.error({ error }, 'Error in all-users AI search')
       return []
     }
   }
@@ -749,7 +1300,7 @@ export class PromptMatchingService {
         // Giver declined - find next giver
         const { data: helpRequest } = await supabase
           .from('help_requests')
-          .select('receiver_user_id, prompt_embedding, declined_giver_ids')
+          .select('receiver_user_id, prompt, prompt_embedding, declined_giver_ids')
           .eq('id', requestId)
           .single()
 
@@ -757,10 +1308,17 @@ export class PromptMatchingService {
           throw new Error('Help request not found')
         }
 
-        // Notify receiver that search continues
+        // Notify receiver that search continues with status update
         emitToUser(helpRequest.receiver_user_id, 'help_request_declined', {
           requestId,
           searching: true
+        })
+
+        emitToUser(helpRequest.receiver_user_id, 'help_search_status', {
+          status: 'searching',
+          message: 'Previous helper unavailable. Finding another match...',
+          progress: 50,
+          requestId
         })
 
         // Try to find next giver
@@ -769,8 +1327,20 @@ export class PromptMatchingService {
           requestId,
           helpRequest.receiver_user_id,
           promptEmbedding,
-          helpRequest.declined_giver_ids || []
+          helpRequest.declined_giver_ids || [],
+          helpRequest.prompt
         )
+
+        // Update receiver with new status
+        if (nextMatch.status === 'matched') {
+          emitToUser(helpRequest.receiver_user_id, 'help_search_status', {
+            status: 'found',
+            message: 'Found another helper! Waiting for their response...',
+            progress: 80,
+            requestId,
+            matchedGiver: nextMatch.matchedGiver
+          })
+        }
 
         logger.info({ requestId, giverUserId, nextGiver: nextMatch.status === 'matched' }, 'Help request declined, searching for next giver')
 
@@ -812,10 +1382,18 @@ export class PromptMatchingService {
 
   /**
    * Get active help requests for retry logic (called by background job)
+   * Now includes the original prompt for AI-powered matching
    */
   static async processActiveHelpRequests(): Promise<void> {
     try {
-      const { data: activeRequests, error } = await supabase.rpc('get_active_help_requests')
+      // Get active requests with their prompts
+      const { data: activeRequests, error } = await supabase
+        .from('help_requests')
+        .select('id, receiver_user_id, prompt, prompt_embedding, declined_giver_ids')
+        .eq('status', 'searching')
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: true })
+        .limit(20)
 
       if (error) {
         throw error
@@ -825,21 +1403,44 @@ export class PromptMatchingService {
         return
       }
 
-      logger.info({ count: activeRequests.length }, 'Processing active help requests')
+      logger.info({ count: activeRequests.length }, 'Processing active help requests with AI')
 
-      // Process each active request
+      // Process each active request with the original prompt
       for (const request of activeRequests) {
-        const promptEmbedding = JSON.parse(request.prompt_embedding)
-        
-        await this.findAndNotifyGiver(
-          request.request_id,
-          request.receiver_user_id,
-          promptEmbedding,
-          request.declined_giver_ids || []
-        )
+        try {
+          const promptEmbedding = JSON.parse(request.prompt_embedding as any)
+          
+          // Emit status update to receiver
+          emitToUser(request.receiver_user_id, 'help_search_status', {
+            status: 'searching',
+            message: 'Still searching for the perfect helper...',
+            progress: 40,
+            requestId: request.id
+          })
+          
+          const result = await this.findAndNotifyGiver(
+            request.id,
+            request.receiver_user_id,
+            promptEmbedding,
+            request.declined_giver_ids || [],
+            request.prompt // Include the original prompt for AI matching
+          )
 
-        // Wait a bit between requests to avoid overwhelming the system
-        await new Promise(resolve => setTimeout(resolve, 2000))
+          if (result.status === 'matched') {
+            emitToUser(request.receiver_user_id, 'help_search_status', {
+              status: 'found',
+              message: 'Found a helper! Waiting for their response...',
+              progress: 80,
+              requestId: request.id,
+              matchedGiver: result.matchedGiver
+            })
+          }
+
+          // Wait a bit between requests to avoid overwhelming the system
+          await new Promise(resolve => setTimeout(resolve, 1500))
+        } catch (requestError) {
+          logger.error({ error: requestError, requestId: request.id }, 'Error processing individual help request')
+        }
       }
 
     } catch (error) {

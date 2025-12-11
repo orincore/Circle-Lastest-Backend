@@ -144,19 +144,40 @@ async function sendActivityNotifications(activity: ActivityEvent): Promise<void>
         break
 
       case ACTIVITY_TYPES.LOCATION_UPDATED:
-        // Notify nearby users about location update
-        await NotificationService.createNotification({
-          recipient_id: 'broadcast',
-          sender_id: data.user_id,
-          type: 'profile_suggestion',
-          title: '📍 Someone Nearby',
-          message: `${data.user_name} is now in ${data.location}`,
-          data: { 
-            action: 'location_updated',
-            userId: data.user_id,
-            location: data.location
+        // Only notify friends about location update (not everyone)
+        try {
+          // Get user's friends
+          const { data: friendships, error: friendsError } = await supabase
+            .from('friendships')
+            .select('user1_id, user2_id')
+            .or(`user1_id.eq.${data.user_id},user2_id.eq.${data.user_id}`)
+            .eq('status', 'accepted')
+          
+          if (!friendsError && friendships && friendships.length > 0) {
+            // Send notification to each friend individually
+            for (const friendship of friendships) {
+              const friendId = friendship.user1_id === data.user_id 
+                ? friendship.user2_id 
+                : friendship.user1_id
+              
+              await NotificationService.createNotification({
+                recipient_id: friendId,
+                sender_id: data.user_id,
+                type: 'profile_suggestion', // Using existing type for friend location updates
+                title: '📍 Friend Nearby',
+                message: `${data.user_name} is now in ${data.location}`,
+                data: { 
+                  action: 'friend_location_updated',
+                  userId: data.user_id,
+                  location: data.location
+                }
+              })
+            }
+            logger.info({ userId: data.user_id, friendsCount: friendships.length }, 'Location update sent to friends only')
           }
-        })
+        } catch (friendsLookupError) {
+          logger.error({ error: friendsLookupError, userId: data.user_id }, 'Failed to get friends for location notification')
+        }
         break
 
       case ACTIVITY_TYPES.INTEREST_UPDATED:

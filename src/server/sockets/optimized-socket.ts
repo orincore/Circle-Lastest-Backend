@@ -1388,11 +1388,41 @@ export async function initOptimizedSocket(server: Server) {
             logger.error({ error: senderError, userId }, 'Error fetching sender info')
           }
           
-          const senderName = senderInfo 
+          // Check if this is a blind date chat (active, not revealed)
+          const { data: blindMatch } = await supabase
+            .from('blind_date_matches')
+            .select('id, status')
+            .eq('chat_id', chatId)
+            .eq('status', 'active')
+            .maybeSingle()
+          
+          const isBlindDateChat = !!blindMatch
+          
+          // Helper function to mask name for blind date
+          const maskName = (firstName: string | null, lastName: string | null): string => {
+            const maskWord = (word: string) => {
+              if (!word || word.length === 0) return ''
+              if (word.length === 1) return word[0] + '*'
+              return word[0] + '*'.repeat(word.length - 1)
+            }
+            
+            if (!firstName) return 'Anonymous'
+            const maskedFirst = maskWord(firstName.trim())
+            const maskedLast = lastName?.trim() ? maskWord(lastName.trim()) : ''
+            return maskedLast ? `${maskedFirst} ${maskedLast}` : maskedFirst
+          }
+          
+          // Use masked name for blind date chats, real name otherwise
+          const realName = senderInfo 
             ? (senderInfo.first_name && senderInfo.last_name 
                 ? `${senderInfo.first_name} ${senderInfo.last_name}`.trim()
                 : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
             : 'Someone'
+          
+          const senderName = isBlindDateChat 
+            ? maskName(senderInfo?.first_name || null, senderInfo?.last_name || null)
+            : realName
+          
           const senderAvatar = senderInfo?.profile_photo_url || null
           
           if (memberIds && memberIds.length > 0) {
@@ -1406,7 +1436,8 @@ export async function initOptimizedSocket(server: Server) {
                     message: { 
                       ...msg, 
                       senderName,
-                      senderAvatar
+                      senderAvatar,
+                      isBlindDateChat
                     } 
                   })
                   
@@ -1414,7 +1445,7 @@ export async function initOptimizedSocket(server: Server) {
                   import('../services/pushNotificationService.js').then(({ PushNotificationService }) => {
                     PushNotificationService.sendMessageNotification(
                       memberId,
-                      senderName,
+                      senderName, // Already masked for blind date
                       msg.text || 'New message',
                       chatId,
                       msg.id
