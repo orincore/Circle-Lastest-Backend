@@ -30,7 +30,10 @@ COPY src ./src
 # Cache bust arg - changes with each git commit to force rebuild
 ARG CACHEBUST=1
 # Build TypeScript with adequate memory for 8GB server
-RUN echo "Build: $CACHEBUST" && rm -rf dist && node --max-old-space-size=2048 ./node_modules/.bin/tsc -p . && test -d dist
+RUN echo "Build: $CACHEBUST" && \
+    rm -rf dist && \
+    node --max-old-space-size=2048 ./node_modules/.bin/tsc -p . && \
+    test -d dist
 
 # ============================================
 # Runtime Stage - API Server

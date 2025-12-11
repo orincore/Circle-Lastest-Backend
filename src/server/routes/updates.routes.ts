@@ -158,9 +158,10 @@ router.post('/upload', async (req: Request, res: Response) => {
     const timestamp = new Date().toISOString();
 
     // Save bundle file
-    const bundleHash = crypto.createHash('sha256').update(bundle).digest('hex');
+    const bundleBuffer = Buffer.isBuffer(bundle) ? bundle : Buffer.from(bundle, 'utf8');
+    const bundleHash = crypto.createHash('sha256').update(bundleBuffer).digest('hex');
     const bundlePath = path.join(BUNDLES_DIR, bundleHash);
-    await fs.writeFile(bundlePath, bundle);
+    await fs.writeFile(bundlePath, bundleBuffer);
 
     // Create manifest
     const updateManifest = {

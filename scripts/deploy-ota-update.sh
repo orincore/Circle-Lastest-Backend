@@ -11,10 +11,8 @@ echo "🚀 Starting OTA Update Deployment..."
 BACKEND_URL="${BACKEND_URL:-https://your-backend-domain.com}"
 INTERNAL_API_KEY="${INTERNAL_API_KEY:-your-internal-api-key}"
 RUNTIME_VERSION="${RUNTIME_VERSION:-1.0.0}"
-CIRCLE_DIR="/root/Circle-Latest-Frontend"
-BACKEND_DIR="/root/Circle-Lastest-Backend"
-
-# Colors for output
+CIRCLE_DIR="/root/Circle-Latest-Frontend"   # path to Circle (Expo app) repo
+BACKEND_DIR="/root/Circle-Lastest-Backend"  # path to backend repo (matches Jenkins DEPLOY_DIR)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

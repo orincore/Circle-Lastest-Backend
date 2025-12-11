@@ -493,10 +493,10 @@ pipeline {
                 script {
                     echo "🚀 Starting OTA Update Deployment..."
                     
-                    sshagent(['circle-ssh-key']) {
+                    withCredentials([sshUserPrivateKey(credentialsId: 'circle-ssh-key', keyFileVariable: 'SSH_KEY')]) {
                         sh """
-                            ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_IP} '
-                                export BACKEND_URL="https://${SERVER_IP}"
+                            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
+                                export BACKEND_URL="https://api.circle.orincore.com"
                                 export INTERNAL_API_KEY="${INTERNAL_API_KEY}"
                                 export RUNTIME_VERSION="${RUNTIME_VERSION}"
                                 
