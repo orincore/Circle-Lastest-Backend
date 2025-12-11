@@ -57,55 +57,13 @@ git pull origin main || {
     exit 1
 }
 
-# Install/update dependencies
-log_info "Installing frontend dependencies..."
+# Install/update frontend dependencies only (backend is already deployed by Jenkins)
+log_info "Installing frontend dependencies (backend already deployed)..."
 cd "$CIRCLE_DIR"
 npm install || {
     log_error "Failed to install frontend dependencies"
     exit 1
 }
-
-log_info "Installing backend dependencies..."
-cd "$BACKEND_DIR"
-npm install || {
-    log_error "Failed to install backend dependencies"
-    exit 1
-}
-
-# Build and restart backend (to ensure OTA endpoints are available)
-log_info "Building and restarting backend..."
-cd "$BACKEND_DIR"
-npm run build || {
-    log_error "Failed to build backend"
-    exit 1
-}
-
-# Restart backend services
-docker-compose -f docker-compose.production.yml restart api socket || {
-    log_warn "Failed to restart backend services via Docker, trying PM2..."
-    pm2 restart circle-backend || {
-        log_error "Failed to restart backend"
-        exit 1
-    }
-}
-
-# Wait for backend to be ready
-log_info "Waiting for backend to be ready..."
-sleep 10
-
-# Health check
-for i in {1..12}; do
-    if curl -f -s "http://localhost:3000/health" > /dev/null; then
-        log_info "Backend is ready"
-        break
-    fi
-    if [ $i -eq 12 ]; then
-        log_error "Backend health check failed"
-        exit 1
-    fi
-    log_info "Waiting for backend... ($i/12)"
-    sleep 5
-done
 
 # Build OTA updates
 log_info "Building OTA updates..."
