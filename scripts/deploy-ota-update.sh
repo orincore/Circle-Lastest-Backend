@@ -83,12 +83,15 @@ if [ ! -f "scripts/build-ota-update.js" ]; then
 fi
 
 # Set environment variables for the build
-export BACKEND_URL="$BACKEND_URL"
+# Use localhost to connect directly to NGINX on host (bypasses CloudFlare/external proxies)
+# NGINX listens on host ports 80/443 and forwards to Docker containers
+export BACKEND_URL="http://localhost"
 export INTERNAL_API_KEY="$INTERNAL_API_KEY"
 export RUNTIME_VERSION="$RUNTIME_VERSION"
 export CIRCLE_APP_DIR="$CIRCLE_DIR"
 
 # Run the OTA build script from the backend repo
+# Using localhost bypasses external domain routing and CloudFlare body size limits
 node scripts/build-ota-update.js || {
     log_error "Failed to build OTA updates"
     exit 1
@@ -96,7 +99,7 @@ node scripts/build-ota-update.js || {
 
 # Verify updates were uploaded
 log_info "Verifying OTA updates..."
-RESPONSE=$(curl -s -f "$BACKEND_URL/api/updates/status" || echo "")
+RESPONSE=$(curl -s -f "http://localhost/api/updates/status" || echo "")
 if [ -z "$RESPONSE" ]; then
     log_error "Failed to verify OTA updates"
     exit 1
