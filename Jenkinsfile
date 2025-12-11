@@ -334,36 +334,63 @@ pipeline {
                                 sleep 5
                                 
                                 # ============================================
-                                # Step 6: Rebuild and Reload NGINX
+                                # Step 6: Smart NGINX Update (Only if config changed)
                                 # ============================================
                                 echo ""
-                                echo "🌐 Step 5: Rebuilding NGINX with latest config..."
+                                echo "🌐 Step 5: Checking NGINX configuration..."
                                 
-                                # Always rebuild NGINX to pick up config changes
-                                docker-compose -f ${COMPOSE_FILE} build nginx
-                                
-                                # Check if nginx container is running
-                                NGINX_ID=\$(docker ps -q -f name=circle-nginx)
-                                if [ -n "\${NGINX_ID}" ]; then
-                                    echo "   Stopping old NGINX container..."
-                                    docker-compose -f ${COMPOSE_FILE} stop nginx
-                                    echo "   Starting new NGINX container..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans nginx
-                                    sleep 3
-                                    
-                                    # Verify NGINX is healthy
-                                    NGINX_HEALTH=\$(docker inspect circle-nginx --format="{{.State.Health.Status}}" 2>/dev/null || echo "none")
-                                    if [ "\$NGINX_HEALTH" = "healthy" ]; then
-                                        echo "   ✅ NGINX rebuilt and healthy!"
+                                # Check if NGINX config files have changed
+                                NGINX_CONFIG_CHANGED=false
+                                if [ "\$PREVIOUS_COMMIT" != "\$NEW_COMMIT" ]; then
+                                    # Check if any nginx-related files changed
+                                    NGINX_CHANGES=\$(git diff --name-only \$PREVIOUS_COMMIT..\$NEW_COMMIT 2>/dev/null | grep -E "(nginx|\.conf|docker/)" || echo "")
+                                    if [ -n "\$NGINX_CHANGES" ]; then
+                                        echo "   📋 NGINX-related files changed:"
+                                        echo "\$NGINX_CHANGES" | sed 's/^/      /'
+                                        NGINX_CONFIG_CHANGED=true
                                     else
-                                        echo "   ⚠️ NGINX health: \$NGINX_HEALTH - checking logs..."
-                                        docker logs --tail 20 circle-nginx 2>&1 || true
+                                        echo "   ✅ No NGINX configuration changes detected"
                                     fi
                                 else
-                                    echo "   Starting NGINX container..."
-                                    docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans nginx
+                                    echo "   ✅ No code changes - NGINX config unchanged"
                                 fi
-                                sleep 2
+                                
+                                # Only rebuild/restart NGINX if config changed or container is unhealthy
+                                NGINX_HEALTH=\$(docker inspect circle-nginx --format="{{.State.Health.Status}}" 2>/dev/null || echo "none")
+                                NGINX_RUNNING=\$(docker ps -q -f name=circle-nginx)
+                                
+                                if [ "\$NGINX_CONFIG_CHANGED" = "true" ]; then
+                                    echo "   🔄 NGINX config changed - rebuilding container..."
+                                    docker-compose -f ${COMPOSE_FILE} build nginx
+                                    
+                                    if [ -n "\$NGINX_RUNNING" ]; then
+                                        echo "   🔄 Gracefully reloading NGINX with zero downtime..."
+                                        # First try graceful reload
+                                        docker exec circle-nginx nginx -t && docker exec circle-nginx nginx -s reload || {
+                                            echo "   ⚠️ Graceful reload failed - recreating container..."
+                                            docker-compose -f ${COMPOSE_FILE} up -d --no-deps --remove-orphans nginx
+                                        }
+                                    else
+                                        echo "   🚀 Starting new NGINX container..."
+                                        docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans nginx
+                                    fi
+                                    sleep 3
+                                elif [ "\$NGINX_HEALTH" != "healthy" ] || [ -z "\$NGINX_RUNNING" ]; then
+                                    echo "   ⚠️ NGINX unhealthy or not running - starting container..."
+                                    docker-compose -f ${COMPOSE_FILE} up -d --remove-orphans nginx
+                                    sleep 3
+                                else
+                                    echo "   ✅ NGINX healthy and config unchanged - no action needed"
+                                fi
+                                
+                                # Verify final NGINX health
+                                NGINX_HEALTH=\$(docker inspect circle-nginx --format="{{.State.Health.Status}}" 2>/dev/null || echo "none")
+                                if [ "\$NGINX_HEALTH" = "healthy" ]; then
+                                    echo "   ✅ NGINX is healthy!"
+                                else
+                                    echo "   ⚠️ NGINX health: \$NGINX_HEALTH - checking logs..."
+                                    docker logs --tail 20 circle-nginx 2>&1 || true
+                                fi
                                 
                                 # ============================================
                                 # Step 7: Final Health Verification

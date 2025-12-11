@@ -148,7 +148,7 @@ $$ LANGUAGE plpgsql;
 -- Function to update giver profile embedding
 CREATE OR REPLACE FUNCTION update_giver_profile_embedding(
     p_user_id UUID,
-    p_embedding VECTOR(1536),
+    p_embedding TEXT, -- Accept as TEXT and convert to vector
     p_skills TEXT[] DEFAULT NULL,
     p_categories TEXT[] DEFAULT NULL
 )
@@ -164,14 +164,14 @@ BEGIN
         is_available
     ) VALUES (
         p_user_id,
-        p_embedding,
+        p_embedding::VECTOR(1536),
         COALESCE(p_skills, ARRAY[]::TEXT[]),
         COALESCE(p_categories, ARRAY[]::TEXT[]),
         TRUE
     )
     ON CONFLICT (user_id) 
     DO UPDATE SET
-        profile_embedding = p_embedding,
+        profile_embedding = p_embedding::VECTOR(1536),
         skills = COALESCE(p_skills, giver_profiles.skills),
         categories = COALESCE(p_categories, giver_profiles.categories),
         updated_at = NOW()
@@ -206,7 +206,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION create_help_request(
     p_receiver_user_id UUID,
     p_prompt TEXT,
-    p_prompt_embedding VECTOR(1536)
+    p_prompt_embedding TEXT -- Accept as TEXT and convert to vector
 )
 RETURNS UUID AS $$
 DECLARE
@@ -221,7 +221,7 @@ BEGIN
     ) VALUES (
         p_receiver_user_id,
         p_prompt,
-        p_prompt_embedding,
+        p_prompt_embedding::VECTOR(1536),
         'searching',
         NOW() + INTERVAL '1 hour'
     )

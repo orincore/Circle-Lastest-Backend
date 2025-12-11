@@ -274,7 +274,7 @@ export class PromptMatchingService {
       // Call Supabase RPC to update giver profile
       const { data, error } = await supabase.rpc('update_giver_profile_embedding', {
         p_user_id: userId,
-        p_embedding: JSON.stringify(embedding),
+        p_embedding: JSON.stringify(embedding), // Pass as JSON string for TEXT parameter
         p_skills: skills.length > 0 ? skills : null,
         p_categories: categories.length > 0 ? categories : null
       })
@@ -426,7 +426,7 @@ export class PromptMatchingService {
       const { data: requestId, error: requestError } = await supabase.rpc('create_help_request', {
         p_receiver_user_id: receiverUserId,
         p_prompt: prompt,
-        p_prompt_embedding: JSON.stringify(promptEmbedding)
+        p_prompt_embedding: JSON.stringify(promptEmbedding) // Pass as JSON string for TEXT parameter
       })
 
       if (requestError) {
@@ -628,7 +628,9 @@ export class PromptMatchingService {
             try {
               let giverEmbedding: number[]
               try {
-                giverEmbedding = JSON.parse(giver.profile_embedding)
+                giverEmbedding = Array.isArray(giver.profile_embedding) 
+                  ? giver.profile_embedding 
+                  : JSON.parse(giver.profile_embedding)
               } catch {
                 giverEmbedding = []
               }
@@ -913,7 +915,9 @@ export class PromptMatchingService {
       const candidatesWithScores = availableGivers.map(giver => {
         let giverEmbedding: number[]
         try {
-          giverEmbedding = JSON.parse(giver.profile_embedding)
+          giverEmbedding = Array.isArray(giver.profile_embedding) 
+            ? giver.profile_embedding 
+            : JSON.parse(giver.profile_embedding)
         } catch {
           giverEmbedding = []
         }
@@ -1322,7 +1326,9 @@ ${JSON.stringify(userProfiles, null, 2)}`
         })
 
         // Try to find next giver
-        const promptEmbedding = JSON.parse(helpRequest.prompt_embedding as any)
+        const promptEmbedding = Array.isArray(helpRequest.prompt_embedding) 
+          ? helpRequest.prompt_embedding 
+          : JSON.parse(helpRequest.prompt_embedding as any)
         const nextMatch = await this.findAndNotifyGiver(
           requestId,
           helpRequest.receiver_user_id,
@@ -1408,7 +1414,14 @@ ${JSON.stringify(userProfiles, null, 2)}`
       // Process each active request with the original prompt
       for (const request of activeRequests) {
         try {
-          const promptEmbedding = JSON.parse(request.prompt_embedding as any)
+          let promptEmbedding;
+          if (Array.isArray(request.prompt_embedding)) {
+            promptEmbedding = request.prompt_embedding;
+          } else if (typeof request.prompt_embedding === 'string') {
+            promptEmbedding = JSON.parse(request.prompt_embedding as any);
+          } else {
+            throw new Error('Invalid prompt embedding format');
+          }
           
           // Emit status update to receiver
           emitToUser(request.receiver_user_id, 'help_search_status', {
