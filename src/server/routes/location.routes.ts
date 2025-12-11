@@ -6,9 +6,9 @@ import { PushNotificationService } from '../services/pushNotificationService.js'
 
 const router = Router()
 
-// Cache to prevent spamming notifications to the same user
-const notificationCache = new Map<string, number>()
-const NOTIFICATION_COOLDOWN = 60 * 60 * 1000 // 1 hour cooldown between notifications for same pair
+// 5-day cooldown between nearby notifications for same user pair (persisted in database)
+const NOTIFICATION_COOLDOWN_DAYS = 5
+const NOTIFICATION_COOLDOWN_MS = NOTIFICATION_COOLDOWN_DAYS * 24 * 60 * 60 * 1000 // 5 days in milliseconds
 
 /**
  * Calculate distance between two coordinates using Haversine formula
@@ -119,21 +119,27 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
       return res.json({ success: true, nearbyUsersNotified: 0, message: 'No non-friend users within radius' })
     }
 
-    // Send notifications to nearby users (with cooldown check)
+    // Send notifications to nearby users (with 5-day cooldown check from database)
     let notifiedCount = 0
-    const now = Date.now()
+    const now = new Date()
+    const cooldownThreshold = new Date(now.getTime() - NOTIFICATION_COOLDOWN_MS)
     const currentUserName = currentUser.first_name 
       ? `${currentUser.first_name}${currentUser.last_name ? ' ' + currentUser.last_name.charAt(0) + '.' : ''}`
       : currentUser.username || 'Someone'
 
     for (const nearbyUser of usersWithinRadius) {
-      // Check notification cooldown (prevent spamming)
-      const cacheKey = `${userId}-${nearbyUser.id}`
-      const reverseCacheKey = `${nearbyUser.id}-${userId}`
-      const lastNotified = notificationCache.get(cacheKey) || notificationCache.get(reverseCacheKey)
+      // Check notification cooldown from database (5-day cooldown)
+      const { data: recentNotification } = await supabase
+        .from('nearby_notifications')
+        .select('id, sent_at')
+        .or(`and(from_user_id.eq.${userId},to_user_id.eq.${nearbyUser.id}),and(from_user_id.eq.${nearbyUser.id},to_user_id.eq.${userId})`)
+        .gte('sent_at', cooldownThreshold.toISOString())
+        .limit(1)
+        .single()
       
-      if (lastNotified && (now - lastNotified) < NOTIFICATION_COOLDOWN) {
-        continue // Skip - already notified recently
+      if (recentNotification) {
+        // Skip - already notified within cooldown period
+        continue
       }
 
       try {
@@ -153,14 +159,22 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
           priority: 'normal'
         })
 
-        // Update cache
-        notificationCache.set(cacheKey, now)
+        // Record notification in database for cooldown tracking
+        await supabase
+          .from('nearby_notifications')
+          .insert({
+            from_user_id: userId,
+            to_user_id: nearbyUser.id,
+            sent_at: now.toISOString()
+          })
+
         notifiedCount++
 
         logger.info({ 
           fromUserId: userId, 
           toUserId: nearbyUser.id,
-          distance: calculateDistance(latitude, longitude, nearbyUser.latitude!, nearbyUser.longitude!)
+          distance: calculateDistance(latitude, longitude, nearbyUser.latitude!, nearbyUser.longitude!),
+          cooldownDays: NOTIFICATION_COOLDOWN_DAYS
         }, 'Nearby user notification sent')
 
       } catch (notifyError) {
@@ -168,12 +182,13 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
       }
     }
 
-    // Clean up old cache entries (older than 2 hours)
-    const twoHoursAgo = now - 2 * 60 * 60 * 1000
-    for (const [key, timestamp] of notificationCache.entries()) {
-      if (timestamp < twoHoursAgo) {
-        notificationCache.delete(key)
-      }
+    // Clean up old notification records (older than 30 days) - run occasionally
+    if (Math.random() < 0.1) { // 10% chance to run cleanup
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+      await supabase
+        .from('nearby_notifications')
+        .delete()
+        .lt('sent_at', thirtyDaysAgo.toISOString())
     }
 
     logger.info({ 

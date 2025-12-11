@@ -176,7 +176,9 @@ export async function findNearbyUsers({
       .not('first_name', 'is', null)
       .not('last_name', 'is', null)
       .neq('id', excludeUserId || '')
-      .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users, allow others regardless of verification flags
+      .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
+      .eq('is_suspended', false) // Exclude suspended users
+      .is('deleted_at', null) // Exclude deleted users
       .limit(limit)
     
     if (fallbackError) throw fallbackError
@@ -188,12 +190,13 @@ export async function findNearbyUsers({
     })).filter(user => user.distance <= radiusKm)
   }
   
-  // Filter out users without complete profiles and invisible users
-  // Do NOT hard-filter by verification_required/email_verified here to avoid empty map results
+  // Filter out users without complete profiles, invisible users, suspended users, and deleted users
   return (data || []).filter((user: any) => 
     user.first_name && 
     user.last_name && 
-    (!user.invisible_mode || user.invisible_mode === false)
+    (!user.invisible_mode || user.invisible_mode === false) &&
+    !user.is_suspended &&
+    !user.deleted_at
   )
 }
 
@@ -219,11 +222,17 @@ export async function findUsersInArea({
     .not('latitude', 'is', null)
     .not('longitude', 'is', null)
     .neq('id', excludeUserId || '')
-    .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users, allow others regardless of verification flags
+    .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
+    .eq('is_suspended', false) // Exclude suspended users
+    .is('deleted_at', null) // Exclude deleted users
     .limit(limit)
   
   if (error) throw error
-  return data || []
+  
+  // Additional filter for safety
+  return (data || []).filter((user: any) => 
+    !user.is_suspended && !user.deleted_at
+  )
 }
 
 // Helper function to calculate distance between two points

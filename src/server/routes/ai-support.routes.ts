@@ -341,4 +341,76 @@ router.get('/health', (req, res) => {
   })
 })
 
+// Generate About Me using AI based on user profile data
+router.post('/generate-about-me', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { firstName, age, gender, interests, needs } = req.body
+
+    if (!firstName) {
+      return res.status(400).json({ error: 'First name is required' })
+    }
+
+    const interestsList = Array.isArray(interests) ? interests.slice(0, 10).join(', ') : ''
+    const needsList = Array.isArray(needs) ? needs.slice(0, 5).join(', ') : ''
+
+    const prompt = `Generate a short, engaging, and authentic "About Me" bio for a dating/social app profile. 
+
+User details:
+- Name: ${firstName}
+- Age: ${age || 'not specified'}
+- Gender: ${gender || 'not specified'}
+- Interests: ${interestsList || 'not specified'}
+- Looking for: ${needsList || 'not specified'}
+
+Requirements:
+- Write in first person as if the user is writing about themselves
+- Keep it between 80-150 characters
+- Be warm, friendly, and genuine
+- Mention 1-2 interests naturally
+- Include what they're looking for if provided
+- Don't be cheesy or use clichés
+- Don't mention the name directly
+- Make it sound natural and human
+
+Generate ONLY the bio text, nothing else.`
+
+    const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.TOGETHER_AI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant that writes authentic, engaging dating app bios. Be concise and genuine.' },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 200,
+        temperature: 0.7
+      })
+    })
+
+    if (!response.ok) {
+      const errorData = await response.text()
+      logger.error({ error: errorData }, 'Together AI API error')
+      return res.status(500).json({ error: 'Failed to generate bio' })
+    }
+
+    const data = await response.json()
+    const generatedBio = data.choices[0]?.message?.content?.trim() || ''
+
+    // Clean up the bio - remove quotes if present
+    const cleanBio = generatedBio.replace(/^["']|["']$/g, '').trim()
+
+    res.json({
+      success: true,
+      bio: cleanBio
+    })
+  } catch (error: any) {
+    logger.error({ error }, 'Error generating About Me')
+    res.status(500).json({ error: 'Failed to generate bio' })
+  }
+})
+
 export default router

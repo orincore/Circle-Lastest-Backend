@@ -413,12 +413,13 @@ export class BlindDatingService {
           return null
         }
 
-        // Get profiles of enabled users
+        // Get profiles of enabled users (exclude suspended and deleted)
         const { data: profiles, error: profilesError } = await supabase
           .from('profiles')
           .select('id, age, gender, interests, needs, location_city, location_country')
           .in('id', enabledUserIds)
           .is('deleted_at', null)
+          .eq('is_suspended', false)
           .limit(100)
         
         if (profilesError) {

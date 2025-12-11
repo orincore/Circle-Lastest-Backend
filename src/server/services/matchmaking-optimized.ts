@@ -616,6 +616,12 @@ async function findBestMatch(userId: string): Promise<string | null> {
         continue
       }
       
+      // Skip suspended or deleted users
+      if (candidateProfile.is_suspended || candidateProfile.deleted_at) {
+        logger.debug({ userId, candidateId: candidate.userId }, 'Skipping candidate - suspended or deleted')
+        continue
+      }
+      
       // Log candidate profile for debugging
       logger.debug({ 
         userId,
