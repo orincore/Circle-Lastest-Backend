@@ -492,28 +492,31 @@ pipeline {
             steps {
                 script {
                     echo "🚀 Starting OTA Update Deployment..."
-                    
-                    withCredentials([sshUserPrivateKey(credentialsId: 'circle-ssh-key', keyFileVariable: 'SSH_KEY')]) {
-                        sh """
-                            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
-                                export BACKEND_URL="https://api.circle.orincore.com"
-                                export INTERNAL_API_KEY="${INTERNAL_API_KEY}"
-                                export RUNTIME_VERSION="${RUNTIME_VERSION}"
-                                
-                                cd ${DEPLOY_DIR}
-                                chmod +x scripts/deploy-ota-update.sh
-                                ./scripts/deploy-ota-update.sh
-                            '
-                        """
+
+                    // Do not fail the whole pipeline if OTA fails; just mark this stage as failed
+                    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                        withCredentials([sshUserPrivateKey(
+                            credentialsId: 'root-ssh-key',
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
+                        )]) {
+                            sh """
+                                echo "[OTA] Connecting to ${SERVER_USER}@${SERVER_IP}..."
+                                ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
+                                    set -e
+                                    echo "[OTA] Running deploy-ota-update.sh in ${DEPLOY_DIR}"
+                                    export BACKEND_URL="https://api.circle.orincore.com"
+                                    export INTERNAL_API_KEY="${INTERNAL_API_KEY}"
+                                    export RUNTIME_VERSION="${RUNTIME_VERSION}"
+                                    cd ${DEPLOY_DIR}
+                                    chmod +x scripts/deploy-ota-update.sh
+                                    ./scripts/deploy-ota-update.sh
+                                '
+                            """
+                        }
+
+                        echo "✅ OTA Updates deployed successfully!"
                     }
-                    
-                    echo "✅ OTA Updates deployed successfully!"
-                }
-            }
-            post {
-                failure {
-                    echo "❌ OTA Update deployment failed, but backend deployment was successful"
-                    // Don't fail the entire pipeline if OTA deployment fails
                 }
             }
         }
