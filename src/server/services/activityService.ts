@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
 import { emitToAll, emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
+import { PushNotificationService } from './pushNotificationService.js'
 
 export interface ActivityData {
   type: string
@@ -29,6 +30,10 @@ const ACTIVITY_TYPES = {
   CHAT_STARTED: 'chat_started',
   INTEREST_UPDATED: 'interest_updated',
 } as const
+
+// Friend location notification cooldown (24 hours between notifications per friend pair)
+const FRIEND_LOCATION_COOLDOWN_HOURS = 24
+const FRIEND_LOCATION_COOLDOWN_MS = FRIEND_LOCATION_COOLDOWN_HOURS * 60 * 60 * 1000
 
 // Store activities in memory for quick access (last 100 activities)
 let recentActivities: ActivityEvent[] = []
@@ -144,9 +149,9 @@ async function sendActivityNotifications(activity: ActivityEvent): Promise<void>
         break
 
       case ACTIVITY_TYPES.LOCATION_UPDATED:
-        // Only notify friends about location update (not everyone)
+        // Only notify MUTUAL FRIENDS about location update with 24-hour cooldown per friend pair
         try {
-          // Get user's friends
+          // Get user's mutual friends (accepted friendships only)
           const { data: friendships, error: friendsError } = await supabase
             .from('friendships')
             .select('user1_id, user2_id')
@@ -154,26 +159,83 @@ async function sendActivityNotifications(activity: ActivityEvent): Promise<void>
             .eq('status', 'accepted')
           
           if (!friendsError && friendships && friendships.length > 0) {
-            // Send notification to each friend individually
+            const now = new Date()
+            const cooldownThreshold = new Date(now.getTime() - FRIEND_LOCATION_COOLDOWN_MS)
+            let notifiedCount = 0
+            
+            // Send notification to each friend with cooldown check
             for (const friendship of friendships) {
               const friendId = friendship.user1_id === data.user_id 
                 ? friendship.user2_id 
                 : friendship.user1_id
               
+              // Check cooldown from friend_location_notifications table
+              const { data: recentNotification } = await supabase
+                .from('friend_location_notifications')
+                .select('id, sent_at')
+                .or(`and(from_user_id.eq.${data.user_id},to_user_id.eq.${friendId}),and(from_user_id.eq.${friendId},to_user_id.eq.${data.user_id})`)
+                .gte('sent_at', cooldownThreshold.toISOString())
+                .limit(1)
+                .maybeSingle()
+              
+              if (recentNotification) {
+                // Skip - already notified this friend within cooldown period
+                continue
+              }
+              
+              // Send in-app notification to friend
               await NotificationService.createNotification({
                 recipient_id: friendId,
                 sender_id: data.user_id,
-                type: 'profile_suggestion', // Using existing type for friend location updates
+                type: 'profile_suggestion',
                 title: '📍 Friend Nearby',
-                message: `${data.user_name} is now in ${data.location}`,
+                message: `${data.user_name} is nearby! Tap to check out their profile.`,
                 data: { 
                   action: 'friend_location_updated',
                   userId: data.user_id,
                   location: data.location
                 }
               })
+              
+              // Also send push notification for when app is closed
+              await PushNotificationService.sendPushNotification(friendId, {
+                title: '📍 Friend Nearby!',
+                body: `${data.user_name} is nearby! Tap to check out their profile.`,
+                data: {
+                  type: 'friend_nearby',
+                  userId: data.user_id,
+                  action: 'view_profile',
+                  screen: 'profile-view',
+                  params: { userId: data.user_id }
+                },
+                sound: 'default',
+                priority: 'normal'
+              })
+              
+              // Record notification for cooldown tracking
+              await supabase
+                .from('friend_location_notifications')
+                .insert({
+                  from_user_id: data.user_id,
+                  to_user_id: friendId,
+                  sent_at: now.toISOString()
+                })
+              
+              notifiedCount++
             }
-            logger.info({ userId: data.user_id, friendsCount: friendships.length }, 'Location update sent to friends only')
+            
+            if (notifiedCount > 0) {
+              logger.info({ userId: data.user_id, notifiedCount, totalFriends: friendships.length }, 'Friend location notifications sent with cooldown')
+            }
+            
+            // Cleanup old friend location notifications (older than 7 days) - 5% chance
+            if (Math.random() < 0.05) {
+              const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+              await supabase
+                .from('friend_location_notifications')
+                .delete()
+                .lt('sent_at', sevenDaysAgo.toISOString())
+            }
           }
         } catch (friendsLookupError) {
           logger.error({ error: friendsLookupError, userId: data.user_id }, 'Failed to get friends for location notification')

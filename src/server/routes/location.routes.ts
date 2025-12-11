@@ -135,7 +135,7 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
         .or(`and(from_user_id.eq.${userId},to_user_id.eq.${nearbyUser.id}),and(from_user_id.eq.${nearbyUser.id},to_user_id.eq.${userId})`)
         .gte('sent_at', cooldownThreshold.toISOString())
         .limit(1)
-        .single()
+        .maybeSingle()
       
       if (recentNotification) {
         // Skip - already notified within cooldown period
@@ -143,23 +143,44 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
       }
 
       try {
-        // Send push notification to the nearby user
+        // Get nearby user's name for notification
+        const nearbyUserName = nearbyUser.first_name 
+          ? `${nearbyUser.first_name}${nearbyUser.last_name ? ' ' + nearbyUser.last_name.charAt(0) + '.' : ''}`
+          : nearbyUser.username || 'Someone'
+        
+        const distance = calculateDistance(latitude, longitude, nearbyUser.latitude!, nearbyUser.longitude!)
+        
+        // Send push notification to the nearby user (about current user)
         await PushNotificationService.sendPushNotification(nearbyUser.id, {
           title: '📍 Circle User Nearby!',
-          body: `${currentUserName} is around you. Wanna check out their profile?`,
+          body: `${currentUserName} is nearby! Tap to check out their profile.`,
           data: {
             type: 'nearby_user',
             userId: userId,
             action: 'view_profile',
-            // Deep link data for navigation
             screen: 'profile-view',
             params: { userId: userId }
           },
           sound: 'default',
-          priority: 'normal'
+          priority: 'high'
+        })
+        
+        // ALSO send push notification to current user (about nearby user) - BOTH get notified!
+        await PushNotificationService.sendPushNotification(userId, {
+          title: '📍 Circle User Nearby!',
+          body: `${nearbyUserName} is nearby! Tap to check out their profile.`,
+          data: {
+            type: 'nearby_user',
+            userId: nearbyUser.id,
+            action: 'view_profile',
+            screen: 'profile-view',
+            params: { userId: nearbyUser.id }
+          },
+          sound: 'default',
+          priority: 'high'
         })
 
-        // Record notification in database for cooldown tracking
+        // Record notification in database for cooldown tracking (bidirectional)
         await supabase
           .from('nearby_notifications')
           .insert({
@@ -173,9 +194,9 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
         logger.info({ 
           fromUserId: userId, 
           toUserId: nearbyUser.id,
-          distance: calculateDistance(latitude, longitude, nearbyUser.latitude!, nearbyUser.longitude!),
+          distance,
           cooldownDays: NOTIFICATION_COOLDOWN_DAYS
-        }, 'Nearby user notification sent')
+        }, 'Nearby user notifications sent to BOTH users')
 
       } catch (notifyError) {
         logger.error({ error: notifyError, nearbyUserId: nearbyUser.id }, 'Failed to send nearby notification')
