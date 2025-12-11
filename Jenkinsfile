@@ -579,7 +579,7 @@ pipeline {
                 
                 // Remote server cleanup via SSH
                 try {
-                    sshagent(['root-ssh-key']) {
+                    withCredentials([sshUserPrivateKey(credentialsId: 'root-ssh-key', keyFileVariable: 'SSH_KEY')]) {
                         sh '''
                             echo "🧹 Remote server disk cleanup..."
                             ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 root@69.62.82.102 '
