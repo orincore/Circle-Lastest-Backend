@@ -55,6 +55,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
+    "form-data": "^4.0.0",
     "google-auth-library": "^9.14.1",
     "googleapis": "^131.0.0",
     "graphql": "^16.9.0",

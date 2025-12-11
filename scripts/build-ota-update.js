@@ -15,6 +15,7 @@ import path from 'path';
 import crypto from 'crypto';
 import axios from 'axios';
 import { fileURLToPath } from 'url';
+import FormData from 'form-data';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -121,26 +122,33 @@ async function uploadUpdate(platform, bundleContent, bundleHash, bundlePath) {
     // Check if this is a binary file (.hbc) or text file (.js)
     const isBinary = bundlePath.endsWith('.hbc');
     
-    const updateData = {
+    // Use multipart/form-data to send binary files directly without base64 encoding
+    const formData = new FormData();
+    formData.append('platform', platform);
+    formData.append('runtimeVersion', CONFIG.RUNTIME_VERSION);
+    formData.append('bundleType', isBinary ? 'hermes' : 'javascript');
+    formData.append('manifest', JSON.stringify({
       platform,
       runtimeVersion: CONFIG.RUNTIME_VERSION,
-      bundle: isBinary ? bundleContent.toString('base64') : bundleContent.toString('utf8'),
-      bundleType: isBinary ? 'hermes' : 'javascript',
-      manifest: {
-        platform,
-        runtimeVersion: CONFIG.RUNTIME_VERSION,
-      },
-    };
+    }));
+    
+    // Append the bundle file directly (no base64 encoding)
+    formData.append('bundle', bundleContent, {
+      filename: isBinary ? 'bundle.hbc' : 'bundle.js',
+      contentType: isBinary ? 'application/octet-stream' : 'application/javascript',
+    });
 
     const response = await axios.post(
       `${CONFIG.BACKEND_URL}/api/updates/upload`,
-      updateData,
+      formData,
       {
         headers: {
-          'Content-Type': 'application/json',
+          ...formData.getHeaders(),
           'X-API-Key': CONFIG.INTERNAL_API_KEY,
         },
-        timeout: 60000, // 60 second timeout
+        timeout: 120000, // 120 second timeout for large uploads
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
       },
     );
 

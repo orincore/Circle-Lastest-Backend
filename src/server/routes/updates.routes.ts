@@ -4,6 +4,7 @@ import { z } from 'zod';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
+import multer from 'multer';
 import { logger } from '../config/logger.js';
 
 const router = Router();
@@ -50,6 +51,14 @@ async function ensureDirectories() {
     logger.error({ error }, 'Failed to create update directories');
   }
 }
+
+// Configure multer for memory storage (we'll process the file in memory)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20MB limit
+  },
+});
 
 // Initialize directories on startup
 ensureDirectories();
@@ -138,8 +147,9 @@ router.get('/assets/:hash', async (req: Request, res: Response) => {
 /**
  * POST /api/updates/upload
  * Upload new update bundle (internal endpoint for CI/CD)
+ * Now accepts multipart/form-data instead of JSON to avoid base64 encoding overhead
  */
-router.post('/upload', async (req: Request, res: Response) => {
+router.post('/upload', upload.single('bundle'), async (req: Request, res: Response) => {
   try {
     // This should be protected with API key or internal network only
     const apiKey = req.headers['x-api-key'];
@@ -147,9 +157,11 @@ router.post('/upload', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { manifest, bundle, platform, runtimeVersion, bundleType } = req.body;
+    // Extract form fields
+    const { platform, runtimeVersion, bundleType, manifest: manifestStr } = req.body;
+    const bundleFile = req.file;
 
-    if (!manifest || !bundle || !platform || !runtimeVersion) {
+    if (!bundleFile || !platform || !runtimeVersion) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
@@ -157,15 +169,8 @@ router.post('/upload', async (req: Request, res: Response) => {
     const updateId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
 
-    // Save bundle file - handle both binary (Hermes) and text (JavaScript) bundles
-    let bundleBuffer: Buffer;
-    if (bundleType === 'hermes') {
-      // Binary Hermes bytecode - decode from base64
-      bundleBuffer = Buffer.from(bundle, 'base64');
-    } else {
-      // JavaScript text - handle as UTF-8
-      bundleBuffer = Buffer.isBuffer(bundle) ? bundle : Buffer.from(bundle, 'utf8');
-    }
+    // Get bundle buffer directly from multer (no base64 decoding needed)
+    const bundleBuffer = bundleFile.buffer;
     
     const bundleHash = crypto.createHash('sha256').update(bundleBuffer).digest('hex');
     const bundlePath = path.join(BUNDLES_DIR, bundleHash);
@@ -191,7 +196,7 @@ router.post('/upload', async (req: Request, res: Response) => {
     const manifestPath = path.join(MANIFESTS_DIR, `${platform}-${runtimeVersion}.json`);
     await fs.writeFile(manifestPath, JSON.stringify(updateManifest, null, 2));
 
-    logger.info({ updateId, platform, runtimeVersion }, 'Update uploaded successfully');
+    logger.info({ updateId, platform, runtimeVersion, bundleSize: bundleBuffer.length }, 'Update uploaded successfully');
 
     return res.json({ 
       success: true, 
