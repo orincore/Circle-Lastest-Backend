@@ -505,7 +505,6 @@ pipeline {
                                 ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
                                     set -e
                                     echo "[OTA] Running deploy-ota-update.sh in ${DEPLOY_DIR}"
-                                    export BACKEND_URL="https://api.circle.orincore.com"
                                     export INTERNAL_API_KEY="${INTERNAL_API_KEY}"
                                     export RUNTIME_VERSION="${RUNTIME_VERSION}"
                                     cd ${DEPLOY_DIR}
