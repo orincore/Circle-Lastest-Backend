@@ -18,40 +18,54 @@ import { Redis } from 'ioredis'
 // Helper function to calculate and emit unread count for a specific chat
 async function emitUnreadCountUpdate(chatId: string, userId: string) {
   try {
-    // Get unread count for this specific chat and user
-    const { data: msgs, error: msgsErr } = await supabase
-      .from('messages')
-      .select('id,sender_id')
-      .eq('chat_id', chatId)
-      .eq('is_deleted', false)
-      .not('sender_id', 'eq', userId)
+    // Use a more efficient query with LEFT JOIN to get unread count directly
+    const { data, error } = await supabase.rpc('get_unread_count', {
+      p_chat_id: chatId,
+      p_user_id: userId
+    })
     
-    if (msgsErr) {
-      console.error('Error fetching messages for unread count:', msgsErr)
-      return
-    }
-    
-    const msgIds = (msgs || []).map(m => m.id)
-    let readIds: string[] = []
-    
-    if (msgIds.length) {
-      const { data: reads, error: rErr } = await supabase
-        .from('message_receipts')
-        .select('message_id')
-        .eq('status', 'read')
-        .eq('user_id', userId)
-        .in('message_id', msgIds)
+    if (error) {
+      // Fallback to the original method if RPC fails
+      console.warn('RPC failed, using fallback method:', error)
       
-      if (rErr) {
-        console.error('Error fetching read receipts:', rErr)
+      // Get unread count for this specific chat and user
+      const { data: msgs, error: msgsErr } = await supabase
+        .from('messages')
+        .select('id,sender_id')
+        .eq('chat_id', chatId)
+        .eq('is_deleted', false)
+        .not('sender_id', 'eq', userId)
+      
+      if (msgsErr) {
+        console.error('Error fetching messages for unread count:', msgsErr)
         return
       }
       
-      readIds = (reads || []).map(r => r.message_id)
+      const msgIds = (msgs || []).map(m => m.id)
+      let readIds: string[] = []
+      
+      if (msgIds.length) {
+        const { data: reads, error: rErr } = await supabase
+          .from('message_receipts')
+          .select('message_id')
+          .eq('status', 'read')
+          .eq('user_id', userId)
+          .in('message_id', msgIds)
+        
+        if (rErr) {
+          console.error('Error fetching read receipts:', rErr)
+          return
+        }
+        
+        readIds = (reads || []).map(r => r.message_id)
+      }
+      
+      const unreadCount = msgIds.filter(id => !readIds.includes(id)).length
+      emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
+      return
     }
     
-    const unreadCount = msgIds.filter(id => !readIds.includes(id)).length
-    
+    const unreadCount = data || 0
     //console.log(`📊 Emitting unread count update: chat ${chatId}, user ${userId}, count ${unreadCount}`)
     emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
     

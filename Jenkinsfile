@@ -26,6 +26,10 @@ pipeline {
         HEALTH_CHECK_INTERVAL = '5'
         DRAIN_WAIT_SECONDS = '5'
         GRACEFUL_SHUTDOWN_WAIT = '3'
+        
+        // OTA Update Configuration
+        RUNTIME_VERSION = '1.0.0'
+        INTERNAL_API_KEY = credentials('circle-internal-api-key')
     }
 
     options {
@@ -38,6 +42,7 @@ pipeline {
     parameters {
         booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild Docker images without cache')
         booleanParam(name: 'SKIP_DEPLOY', defaultValue: false, description: 'Skip deployment (only validate)')
+        booleanParam(name: 'DEPLOY_OTA', defaultValue: true, description: 'Deploy OTA updates after backend deployment')
         choice(name: 'DEPLOY_TARGET', choices: ['rolling', 'blue-only', 'green-only'], description: 'Deployment target (rolling = both sets)')
     }
 
@@ -471,6 +476,46 @@ pipeline {
                         exit 1
                     fi
                 """
+            }
+        }
+        }
+
+        // ============================================
+        // Stage 4: Deploy OTA Updates
+        // ============================================
+        stage('Deploy OTA Updates') {
+            when {
+                allOf {
+                    expression { return !params.SKIP_DEPLOY }
+                    expression { return params.DEPLOY_OTA }
+                }
+            }
+            steps {
+                script {
+                    echo "🚀 Starting OTA Update Deployment..."
+                    
+                    sshagent(['circle-ssh-key']) {
+                        sh """
+                            ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_IP} '
+                                export BACKEND_URL="https://${SERVER_IP}"
+                                export INTERNAL_API_KEY="${INTERNAL_API_KEY}"
+                                export RUNTIME_VERSION="${RUNTIME_VERSION}"
+                                
+                                cd ${DEPLOY_DIR}
+                                chmod +x scripts/deploy-ota-update.sh
+                                ./scripts/deploy-ota-update.sh
+                            '
+                        """
+                    }
+                    
+                    echo "✅ OTA Updates deployed successfully!"
+                }
+            }
+            post {
+                failure {
+                    echo "❌ OTA Update deployment failed, but backend deployment was successful"
+                    // Don't fail the entire pipeline if OTA deployment fails
+                }
             }
         }
     }

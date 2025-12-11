@@ -68,6 +68,7 @@ import dockerMonitoringRouter from './routes/docker-monitoring.routes.js'
 import appVersionRouter from './routes/app-version.routes.js'
 import promptMatchingRouter from './routes/prompt-matching.routes.js'
 import debugMatchingRouter from './routes/debug-matching.routes.js'
+import updatesRouter from './routes/updates.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -303,6 +304,7 @@ app.use('/api/app-version', appVersionRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/match', promptMatchingRouter)
 app.use('/api/debug/match', debugMatchingRouter)
+app.use('/api/updates', updatesRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 
