@@ -545,7 +545,7 @@ export class PromptMatchingService {
           total_helps_given,
           average_rating,
           profile_embedding,
-          profiles!inner(about, interests, needs, gender, date_of_birth)
+          profiles!inner(about, interests, needs, gender, age)
         `)
         .eq('is_available', true)
         .not('user_id', 'eq', receiverUserId)
@@ -568,20 +568,14 @@ export class PromptMatchingService {
       // Filter by age if specified
       let ageFilteredGivers = availableGivers || []
       if (demographics?.preferredAgeMin || demographics?.preferredAgeMax) {
-        const now = new Date()
         ageFilteredGivers = availableGivers?.filter(giver => {
-          const profileData = giver.profiles as { date_of_birth?: string } | null
-          if (!profileData?.date_of_birth) return true // Include if age unknown
+          const profileData = giver.profiles as { age?: number } | null
+          if (!profileData?.age) return true // Include if age unknown
           
-          const birthDate = new Date(profileData.date_of_birth)
-          const age = now.getFullYear() - birthDate.getFullYear()
-          const monthDiff = now.getMonth() - birthDate.getMonth()
-          const adjustedAge = monthDiff < 0 || (monthDiff === 0 && now.getDate() < birthDate.getDate()) 
-            ? age - 1 
-            : age
+          const userAge = profileData.age
           
-          const meetsMinAge = !demographics.preferredAgeMin || adjustedAge >= demographics.preferredAgeMin
-          const meetsMaxAge = !demographics.preferredAgeMax || adjustedAge <= demographics.preferredAgeMax
+          const meetsMinAge = !demographics.preferredAgeMin || userAge >= demographics.preferredAgeMin
+          const meetsMaxAge = !demographics.preferredAgeMax || userAge <= demographics.preferredAgeMax
           
           return meetsMinAge && meetsMaxAge
         }) || []
@@ -747,6 +741,14 @@ export class PromptMatchingService {
             totalExcluded: allExcludedIds.length
           }, 'Available non-friend givers debug info')
         }
+        
+        // Emit status update to receiver that we're still searching
+        emitToUser(receiverUserId, 'help_search_status', {
+          status: 'searching',
+          message: 'No helpers available right now. We\'ll keep looking...',
+          progress: 40,
+          requestId
+        })
         
         return { requestId, status: 'searching' }
       }

@@ -188,6 +188,9 @@ app.use((req, res, next) => {
   express.json({ 
     limit,
     strict: true,
+    verify: (req: any, _res: any, buf: Buffer) => {
+      (req as any).rawBody = buf;
+    },
   })(req, res, next);
 });
 
