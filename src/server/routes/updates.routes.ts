@@ -153,9 +153,42 @@ router.post('/upload', upload.single('bundle'), async (req: Request, res: Respon
   try {
     // This should be protected with API key or internal network only
     const apiKey = req.headers['x-api-key'];
-    if (apiKey !== process.env.INTERNAL_API_KEY) {
+    const internalApiKey = process.env.INTERNAL_API_KEY;
+    
+    // Check if request is from internal network (localhost, Docker network, or NGINX proxy)
+    const clientIp = req.ip || req.socket.remoteAddress || '';
+    const forwardedFor = req.headers['x-forwarded-for'] as string || '';
+    const realIp = req.headers['x-real-ip'] as string || '';
+    
+    // Helper to check if IP is internal/private
+    const isPrivateIp = (ip: string): boolean => {
+      if (!ip) return false;
+      return ip === '127.0.0.1' || 
+             ip === '::1' || 
+             ip === '::ffff:127.0.0.1' ||
+             ip.startsWith('172.') ||  // Docker network (172.16.0.0 - 172.31.255.255)
+             ip.startsWith('10.') ||   // Private network (10.0.0.0/8)
+             ip.startsWith('192.168.') || // Private network (192.168.0.0/16)
+             ip.startsWith('::ffff:172.') ||
+             ip.startsWith('::ffff:10.') ||
+             ip.startsWith('::ffff:192.168.');
+    };
+    
+    const isInternalNetwork = 
+      isPrivateIp(clientIp) ||
+      isPrivateIp(realIp) ||
+      forwardedFor.split(',').some(ip => isPrivateIp(ip.trim()));
+    
+    // Allow if: valid API key OR internal network request
+    // If INTERNAL_API_KEY is not set, only allow internal network requests
+    const hasValidApiKey = internalApiKey && apiKey === internalApiKey;
+    
+    if (!hasValidApiKey && !isInternalNetwork) {
+      logger.warn({ clientIp, forwardedFor, hasApiKey: !!apiKey, isInternalNetwork }, 'OTA upload unauthorized');
       return res.status(401).json({ error: 'Unauthorized' });
     }
+    
+    logger.info({ clientIp, isInternalNetwork, hasValidApiKey }, 'OTA upload authorized');
 
     // Extract form fields
     const { platform, runtimeVersion, bundleType, manifest: manifestStr } = req.body;
