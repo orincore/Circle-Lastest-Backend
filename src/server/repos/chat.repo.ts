@@ -63,8 +63,8 @@ export async function ensureChatForUsers(a: string, b: string): Promise<Chat> {
     }
   }
 
-  // Create a new chat and add members
-  const { data: chat, error: chatErr } = await supabase.from('chats').insert({}).select('*').single()
+  // Create a new chat and add members - set last_message_at to now so it appears at top of list
+  const { data: chat, error: chatErr } = await supabase.from('chats').insert({ last_message_at: new Date().toISOString() }).select('*').single()
   if (chatErr) throw chatErr
   const { error: mErr } = await supabase.from('chat_members').insert([
     { chat_id: chat.id, user_id: a },

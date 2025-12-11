@@ -342,7 +342,8 @@ router.get('/health', (req, res) => {
 })
 
 // Generate About Me using AI based on user profile data
-router.post('/generate-about-me', requireAuth, async (req: AuthRequest, res) => {
+// This endpoint is public so signup flow can use it before a user is authenticated.
+router.post('/generate-about-me', async (req, res) => {
   try {
     const { firstName, age, gender, interests, needs } = req.body
 
@@ -353,7 +354,7 @@ router.post('/generate-about-me', requireAuth, async (req: AuthRequest, res) => 
     const interestsList = Array.isArray(interests) ? interests.slice(0, 10).join(', ') : ''
     const needsList = Array.isArray(needs) ? needs.slice(0, 5).join(', ') : ''
 
-    const prompt = `Generate a short, engaging, and authentic "About Me" bio for a dating/social app profile. 
+    const prompt = `Generate a short, engaging, FOMO-inducing "About Me" bio for a connection app profile (like Circle). 
 
 User details:
 - Name: ${firstName}
@@ -364,13 +365,13 @@ User details:
 
 Requirements:
 - Write in first person as if the user is writing about themselves
-- Keep it between 80-150 characters
-- Be warm, friendly, and genuine
-- Mention 1-2 interests naturally
-- Include what they're looking for if provided
-- Don't be cheesy or use clichés
+- Keep it between 120-220 characters
+- Make it feel like a fun FOMO invite to connect (this is a connection app, not a resume)
+- Be warm, friendly, and genuine (no clichés, no cringe)
+- Naturally weave in 1-3 key interests
+- If "Looking for" info is provided, briefly hint what kind of connection they want (friends, dating, situationship, LGBTQ+, etc.)
 - Don't mention the name directly
-- Make it sound natural and human
+- Make it sound natural, human, and easy to read
 
 Generate ONLY the bio text, nothing else.`
 
