@@ -36,7 +36,7 @@ async function generateSummary(prompt: string): Promise<string> {
         model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
         messages: [{
           role: 'system',
-          content: 'Create a 1-line summary (max 50 chars) of what help the user needs. Be specific. No quotes.'
+          content: 'Create a notification in format: "Somebody needs help [doing X]" where X is what they need. Max 50 chars. Be specific. No quotes.'
         }, {
           role: 'user',
           content: prompt.substring(0, 200)

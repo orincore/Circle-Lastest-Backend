@@ -801,12 +801,26 @@ export class PromptMatchingService {
         isTargetedMatch: true // Flag to indicate this is a targeted match
       })
 
+      // Emit status update to receiver that a giver was found and is being notified
+      emitToUser(receiverUserId, 'help_search_status', {
+        status: 'found',
+        message: 'Found a perfect helper! Waiting for their response...',
+        progress: 80,
+        requestId,
+        matchedGiver: {
+          id: bestMatch.giver_user_id,
+          // Masked info - don't reveal identity until accepted
+          displayName: 'Helper #' + bestMatch.giver_user_id.substring(0, 4).toUpperCase(),
+          similarityScore: bestMatch.similarity_score
+        }
+      })
+
       // Send push notification with AI-summarized content
       await PushNotificationService.sendPushNotification(
         bestMatch.giver_user_id,
         {
-          title: '🎯 Help Request Match',
-          body: summary || `${receiverProfile?.first_name || 'Someone'} needs your help!`,
+          title: '� Someone Needs Your Help!',
+          body: summary || `Somebody needs help with something you're good at!`,
           data: {
             type: 'help_request',
             requestId,
@@ -859,7 +873,7 @@ export class PromptMatchingService {
           model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo', // Fast, cheap model for summaries
           messages: [{
             role: 'system',
-            content: 'You are a helpful assistant that creates very short summaries. Create a 1-line summary (max 60 chars) of what help the user needs. Be specific and actionable. No quotes or prefixes.'
+            content: 'You are a helpful assistant. Create a notification message in format: "Somebody needs help [doing X]" where X is what they need. Max 50 chars. Be specific. No quotes.'
           }, {
             role: 'user',
             content: prompt.substring(0, 300)
@@ -1288,15 +1302,33 @@ ${JSON.stringify(userProfiles, null, 2)}`
         emitToUser(helpRequest.receiver_user_id, 'help_request_accepted', {
           requestId,
           giverId: giverUserId,
-          chatId
+          chatId,
+          isBlindConnect: true
         })
 
         // Notify giver to navigate to chat
         emitToUser(giverUserId, 'help_request_chat_ready', {
           requestId,
           receiverId: helpRequest.receiver_user_id,
-          chatId
+          chatId,
+          isBlindConnect: true
         })
+
+        // Send push notification to receiver in case app is closed
+        await PushNotificationService.sendPushNotification(
+          helpRequest.receiver_user_id,
+          {
+            title: '🎉 Helper Found!',
+            body: 'We found someone to help you! Tap to chat anonymously.',
+            data: {
+              type: 'help_request_accepted',
+              chatId,
+              requestId,
+              isBlindConnect: true,
+              navigateTo: 'chat-conversation'
+            }
+          }
+        )
 
         logger.info({ requestId, giverUserId, chatId }, 'Help request accepted, chat created')
 
