@@ -115,7 +115,7 @@ function createNoUpdateDirectiveResponse(): { boundary: string; body: Buffer } {
 }
 
 // OTA Routes Version - for debugging deployment issues
-const OTA_ROUTES_VERSION = '2.0.4';
+const OTA_ROUTES_VERSION = '2.0.5';
 
 // Directory structure for updates
 const UPDATES_DIR = path.join(process.cwd(), 'public', 'updates');
@@ -465,9 +465,13 @@ router.get('/assets/:hash', async (req: Request, res: Response) => {
  * Now accepts multipart/form-data instead of JSON to avoid base64 encoding overhead
  */
 router.post('/upload', upload.single('bundle'), async (req: Request, res: Response) => {
+  const requestId = crypto.randomUUID().substring(0, 8);
+  logger.info({ requestId, hasFile: !!req.file, bodyKeys: Object.keys(req.body || {}) }, '📤 [OTA] Upload request received');
+  
   try {
     // Ensure directories exist before upload
     await ensureDirectories();
+    logger.info({ requestId, BUNDLES_DIR, MANIFESTS_DIR }, '📂 [OTA] Directories ensured');
     
     // This should be protected with API key or internal network only
     const apiKey = req.headers['x-api-key'];
@@ -560,9 +564,19 @@ router.post('/upload', upload.single('bundle'), async (req: Request, res: Respon
       updateId,
       manifest: updateManifest 
     });
-  } catch (error) {
-    logger.error({ error }, 'Error uploading update');
-    return res.status(500).json({ error: 'Failed to upload update' });
+  } catch (error: any) {
+    logger.error({ 
+      error: error?.message || error, 
+      stack: error?.stack,
+      code: error?.code,
+      BUNDLES_DIR,
+      MANIFESTS_DIR
+    }, '❌ [OTA] Error uploading update');
+    return res.status(500).json({ 
+      error: 'Failed to upload update',
+      details: error?.message || 'Unknown error',
+      code: error?.code
+    });
   }
 });
 
