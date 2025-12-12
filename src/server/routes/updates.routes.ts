@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import multer from 'multer';
+import FormData from 'form-data';
 import { logger } from '../config/logger.js';
 
 const router = Router();
@@ -36,10 +37,17 @@ const UpdateRequestSchema = z.object({
   currentBundleId: z.string().optional(),
 });
 
-// Helper to convert hex hash to base64url
+// Helper to convert hex hash to base64url (expo-updates requires base64url encoded hashes)
 function hexToBase64Url(hex: string): string {
   const bytes = Buffer.from(hex, 'hex');
   return bytes.toString('base64url');
+}
+
+// Helper to convert SHA256 hash to UUID format (required by expo-updates)
+function convertSHA256HashToUUID(hash: string): string {
+  // Take first 32 chars of hex hash and format as UUID
+  const hex = hash.substring(0, 32);
+  return `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20, 32)}`;
 }
 
 // Helper to get base URL for assets
@@ -47,6 +55,63 @@ function getBaseUrl(req: Request): string {
   const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
   const host = req.headers['x-forwarded-host'] || req.headers.host || 'api.circle.orincore.com';
   return `${protocol}://${host}`;
+}
+
+// Create multipart/mixed response for expo-updates protocol v1
+function createMultipartResponse(manifest: object, extensions: object): { boundary: string; body: Buffer } {
+  const boundary = `----ExpoUpdatesBoundary${crypto.randomBytes(16).toString('hex')}`;
+  
+  const manifestJson = JSON.stringify(manifest);
+  const extensionsJson = JSON.stringify(extensions);
+  
+  const parts: string[] = [];
+  
+  // Manifest part
+  parts.push(`--${boundary}`);
+  parts.push('Content-Type: application/json; charset=utf-8');
+  parts.push('');
+  parts.push(manifestJson);
+  
+  // Extensions part
+  parts.push(`--${boundary}`);
+  parts.push('Content-Type: application/json; charset=utf-8');
+  parts.push('');
+  parts.push(extensionsJson);
+  
+  // End boundary
+  parts.push(`--${boundary}--`);
+  parts.push('');
+  
+  const body = Buffer.from(parts.join('\r\n'), 'utf-8');
+  
+  return { boundary, body };
+}
+
+// Create no-update-available directive response
+function createNoUpdateDirectiveResponse(): { boundary: string; body: Buffer } {
+  const boundary = `----ExpoUpdatesBoundary${crypto.randomBytes(16).toString('hex')}`;
+  
+  const directive = {
+    type: 'noUpdateAvailable'
+  };
+  
+  const directiveJson = JSON.stringify(directive);
+  
+  const parts: string[] = [];
+  
+  // Directive part
+  parts.push(`--${boundary}`);
+  parts.push('Content-Type: application/json; charset=utf-8');
+  parts.push('');
+  parts.push(directiveJson);
+  
+  // End boundary
+  parts.push(`--${boundary}--`);
+  parts.push('');
+  
+  const body = Buffer.from(parts.join('\r\n'), 'utf-8');
+  
+  return { boundary, body };
 }
 
 // Directory structure for updates
@@ -78,27 +143,32 @@ ensureDirectories();
 
 /**
  * GET /api/updates/manifest
- * Returns the update manifest for expo-updates protocol v1
+ * Returns the update manifest for expo-updates protocol v0 and v1
  * 
  * expo-updates sends these headers:
  * - expo-platform: ios | android
  * - expo-runtime-version: string
- * - expo-protocol-version: 1
+ * - expo-protocol-version: 0 or 1
+ * - expo-current-update-id: UUID of current update (optional)
+ * 
+ * Protocol v0: Returns JSON directly
+ * Protocol v1: Returns multipart/mixed response with manifest and extensions
  */
 router.get('/manifest', async (req: Request, res: Response) => {
   try {
-    // Parse from headers (expo-updates protocol v1) or fallback to query params
+    // Parse from headers (expo-updates protocol) or fallback to query params
     const platform = (req.headers['expo-platform'] as string) || (req.query.platform as string);
     const runtimeVersion = (req.headers['expo-runtime-version'] as string) || (req.query.runtimeVersion as string);
     const currentUpdateId = req.headers['expo-current-update-id'] as string;
-    const protocolVersion = req.headers['expo-protocol-version'] as string;
+    const protocolVersionHeader = req.headers['expo-protocol-version'] as string;
+    const protocolVersion = parseInt(protocolVersionHeader || '0', 10);
 
     logger.info({ 
       platform, 
       runtimeVersion, 
       currentUpdateId,
       protocolVersion,
-      headers: req.headers 
+      allHeaders: JSON.stringify(req.headers)
     }, 'Update manifest requested');
 
     // Validate required fields
@@ -118,20 +188,34 @@ router.get('/manifest', async (req: Request, res: Response) => {
       const manifestData = await fs.readFile(manifestPath, 'utf-8');
       const storedManifest = JSON.parse(manifestData);
 
-      // Check if client already has the latest update
-      if (currentUpdateId && storedManifest.id === currentUpdateId) {
-        logger.info({ currentUpdateId }, 'Client already has latest update');
-        return res.status(204).send(); // No update available
-      }
-
       const baseUrl = getBaseUrl(req);
-
-      // Convert stored manifest to expo-updates protocol v1 format
+      
+      // Get the hash and convert to proper format
       const launchAssetHash = storedManifest.launchAsset?.hash || '';
       const base64UrlHash = launchAssetHash.length === 64 ? hexToBase64Url(launchAssetHash) : launchAssetHash;
+      
+      // Generate a proper UUID from the hash for the update ID
+      const updateId = storedManifest.id.includes('-') 
+        ? storedManifest.id 
+        : convertSHA256HashToUUID(launchAssetHash || storedManifest.id);
 
+      // Check if client already has the latest update (protocol v1)
+      if (protocolVersion === 1 && currentUpdateId && currentUpdateId === updateId) {
+        logger.info({ currentUpdateId, updateId }, 'Client already has latest update, sending noUpdateAvailable directive');
+        
+        const { boundary, body } = createNoUpdateDirectiveResponse();
+        
+        res.setHeader('expo-protocol-version', '1');
+        res.setHeader('expo-sfv-version', '0');
+        res.setHeader('cache-control', 'private, max-age=0');
+        res.setHeader('content-type', `multipart/mixed; boundary=${boundary}`);
+        
+        return res.send(body);
+      }
+
+      // Build the manifest in expo-updates format
       const expoManifest = {
-        id: storedManifest.id,
+        id: updateId,
         createdAt: storedManifest.createdAt,
         runtimeVersion: storedManifest.runtimeVersion,
         launchAsset: {
@@ -149,24 +233,67 @@ router.get('/manifest', async (req: Request, res: Response) => {
         })),
         metadata: storedManifest.metadata || {},
         extra: storedManifest.extra || {
+          expoClient: {
+            name: 'Circle',
+            slug: 'circle',
+            version: '1.0.0',
+            runtimeVersion: storedManifest.runtimeVersion,
+          },
           eas: {
             projectId: 'c9234d97-8ff5-45bc-8f8f-8772ef0926a5'
           }
         },
       };
 
-      // Set required headers for expo-updates protocol v1
-      res.setHeader('expo-protocol-version', '1');
+      logger.info({ 
+        manifestId: expoManifest.id, 
+        platform, 
+        runtimeVersion,
+        protocolVersion,
+        launchAssetUrl: expoManifest.launchAsset.url
+      }, 'Serving update manifest');
+
+      // Protocol v1: Return multipart/mixed response
+      if (protocolVersion === 1) {
+        // Extensions contain asset request headers (can be empty)
+        const extensions = {
+          assetRequestHeaders: {}
+        };
+        
+        const { boundary, body } = createMultipartResponse(expoManifest, extensions);
+        
+        res.setHeader('expo-protocol-version', '1');
+        res.setHeader('expo-sfv-version', '0');
+        res.setHeader('cache-control', 'private, max-age=0');
+        res.setHeader('content-type', `multipart/mixed; boundary=${boundary}`);
+        
+        return res.send(body);
+      }
+      
+      // Protocol v0: Return JSON directly
+      res.setHeader('expo-protocol-version', '0');
       res.setHeader('expo-sfv-version', '0');
       res.setHeader('cache-control', 'private, max-age=0');
       res.setHeader('content-type', 'application/json');
 
-      logger.info({ manifestId: expoManifest.id, platform, runtimeVersion }, 'Serving update manifest');
-
       return res.json(expoManifest);
-    } catch (error) {
-      // No manifest found - return 204 (no update available)
-      logger.warn({ platform, runtimeVersion, error }, 'No manifest found for platform/runtime');
+    } catch (error: any) {
+      // No manifest found
+      logger.warn({ platform, runtimeVersion, error: error.message }, 'No manifest found for platform/runtime');
+      
+      // Protocol v1: Return noUpdateAvailable directive
+      if (protocolVersion === 1) {
+        const { boundary, body } = createNoUpdateDirectiveResponse();
+        
+        res.setHeader('expo-protocol-version', '1');
+        res.setHeader('expo-sfv-version', '0');
+        res.setHeader('cache-control', 'private, max-age=0');
+        res.setHeader('content-type', `multipart/mixed; boundary=${boundary}`);
+        
+        return res.send(body);
+      }
+      
+      // Protocol v0: Return 204
       return res.status(204).send();
     }
   } catch (error) {
