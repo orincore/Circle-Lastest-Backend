@@ -155,6 +155,9 @@ ensureDirectories();
  * Protocol v1: Returns multipart/mixed response with manifest and extensions
  */
 router.get('/manifest', async (req: Request, res: Response) => {
+  const requestId = crypto.randomUUID().substring(0, 8);
+  const startTime = Date.now();
+  
   try {
     // Parse from headers (expo-updates protocol) or fallback to query params
     const platform = (req.headers['expo-platform'] as string) || (req.query.platform as string);
@@ -162,33 +165,55 @@ router.get('/manifest', async (req: Request, res: Response) => {
     const currentUpdateId = req.headers['expo-current-update-id'] as string;
     const protocolVersionHeader = req.headers['expo-protocol-version'] as string;
     const protocolVersion = parseInt(protocolVersionHeader || '0', 10);
+    const acceptHeader = req.headers['accept'] as string;
+    const userAgent = req.headers['user-agent'] as string;
 
+    // Log ALL incoming request details for debugging
     logger.info({ 
+      requestId,
+      method: req.method,
+      url: req.url,
       platform, 
       runtimeVersion, 
       currentUpdateId,
       protocolVersion,
-      allHeaders: JSON.stringify(req.headers)
-    }, 'Update manifest requested');
+      acceptHeader,
+      userAgent,
+      ip: req.ip,
+      allHeaders: req.headers
+    }, '🔍 [OTA] Manifest request received');
 
     // Validate required fields
     if (!platform || !runtimeVersion) {
-      logger.warn({ platform, runtimeVersion }, 'Missing platform or runtimeVersion');
+      logger.warn({ requestId, platform, runtimeVersion }, '❌ [OTA] Missing platform or runtimeVersion');
       return res.status(400).json({ error: 'Missing platform or runtimeVersion' });
     }
 
     if (platform !== 'ios' && platform !== 'android') {
+      logger.warn({ requestId, platform }, '❌ [OTA] Invalid platform');
       return res.status(400).json({ error: 'Invalid platform' });
     }
 
     // Get the latest manifest for the platform and runtime version
     const manifestPath = path.join(MANIFESTS_DIR, `${platform}-${runtimeVersion}.json`);
     
+    logger.info({ requestId, manifestPath, MANIFESTS_DIR }, '📂 [OTA] Looking for manifest file');
+    
     try {
       const manifestData = await fs.readFile(manifestPath, 'utf-8');
       const storedManifest = JSON.parse(manifestData);
+      
+      logger.info({ 
+        requestId, 
+        storedManifestId: storedManifest.id,
+        storedCreatedAt: storedManifest.createdAt,
+        storedPlatform: storedManifest.platform,
+        storedRuntimeVersion: storedManifest.runtimeVersion,
+        launchAssetHash: storedManifest.launchAsset?.hash?.substring(0, 16) + '...',
+      }, '✅ [OTA] Manifest file found and parsed');
 
       const baseUrl = getBaseUrl(req);
+      logger.info({ requestId, baseUrl }, '🌐 [OTA] Base URL for assets');
       
       // Get the hash and convert to proper format
       const launchAssetHash = storedManifest.launchAsset?.hash || '';
@@ -199,9 +224,17 @@ router.get('/manifest', async (req: Request, res: Response) => {
         ? storedManifest.id 
         : convertSHA256HashToUUID(launchAssetHash || storedManifest.id);
 
+      logger.info({ 
+        requestId, 
+        updateId, 
+        currentUpdateId,
+        idsMatch: currentUpdateId === updateId 
+      }, '🔑 [OTA] Update ID comparison');
+
       // Check if client already has the latest update (protocol v1)
       if (protocolVersion === 1 && currentUpdateId && currentUpdateId === updateId) {
-        logger.info({ currentUpdateId, updateId }, 'Client already has latest update, sending noUpdateAvailable directive');
+        const duration = Date.now() - startTime;
+        logger.info({ requestId, currentUpdateId, updateId, duration }, '⏭️ [OTA] Client already has latest update, sending noUpdateAvailable directive');
         
         const { boundary, body } = createNoUpdateDirectiveResponse();
         
@@ -210,6 +243,7 @@ router.get('/manifest', async (req: Request, res: Response) => {
         res.setHeader('cache-control', 'private, max-age=0');
         res.setHeader('content-type', `multipart/mixed; boundary=${boundary}`);
         
+        logger.info({ requestId, boundary, bodyLength: body.length }, '📤 [OTA] Sending noUpdateAvailable response');
         return res.send(body);
       }
 
@@ -245,13 +279,18 @@ router.get('/manifest', async (req: Request, res: Response) => {
         },
       };
 
+      const duration = Date.now() - startTime;
       logger.info({ 
+        requestId,
         manifestId: expoManifest.id, 
         platform, 
         runtimeVersion,
         protocolVersion,
-        launchAssetUrl: expoManifest.launchAsset.url
-      }, 'Serving update manifest');
+        launchAssetUrl: expoManifest.launchAsset.url,
+        launchAssetHash: expoManifest.launchAsset.hash?.substring(0, 16) + '...',
+        assetsCount: expoManifest.assets.length,
+        duration
+      }, '📦 [OTA] Serving update manifest - UPDATE AVAILABLE');
 
       // Protocol v1: Return multipart/mixed response
       if (protocolVersion === 1) {
@@ -267,6 +306,16 @@ router.get('/manifest', async (req: Request, res: Response) => {
         res.setHeader('cache-control', 'private, max-age=0');
         res.setHeader('content-type', `multipart/mixed; boundary=${boundary}`);
         
+        logger.info({ 
+          requestId, 
+          boundary, 
+          bodyLength: body.length,
+          responseType: 'multipart/mixed'
+        }, '📤 [OTA] Sending multipart manifest response (protocol v1)');
+        
+        // Log the actual response body for debugging
+        logger.debug({ requestId, responseBody: body.toString('utf-8').substring(0, 500) }, '📄 [OTA] Response body preview');
+        
         return res.send(body);
       }
       
@@ -276,10 +325,28 @@ router.get('/manifest', async (req: Request, res: Response) => {
       res.setHeader('cache-control', 'private, max-age=0');
       res.setHeader('content-type', 'application/json');
 
+      logger.info({ requestId, responseType: 'application/json' }, '📤 [OTA] Sending JSON manifest response (protocol v0)');
       return res.json(expoManifest);
     } catch (error: any) {
       // No manifest found
-      logger.warn({ platform, runtimeVersion, error: error.message }, 'No manifest found for platform/runtime');
+      const duration = Date.now() - startTime;
+      logger.warn({ 
+        requestId, 
+        platform, 
+        runtimeVersion, 
+        manifestPath,
+        error: error.message,
+        errorCode: error.code,
+        duration
+      }, '⚠️ [OTA] No manifest found for platform/runtime');
+      
+      // List available manifests for debugging
+      try {
+        const availableManifests = await fs.readdir(MANIFESTS_DIR);
+        logger.info({ requestId, availableManifests }, '📋 [OTA] Available manifest files');
+      } catch (listError) {
+        logger.warn({ requestId, error: (listError as Error).message }, '📋 [OTA] Could not list manifest directory');
+      }
       
       // Protocol v1: Return noUpdateAvailable directive
       if (protocolVersion === 1) {
@@ -290,14 +357,16 @@ router.get('/manifest', async (req: Request, res: Response) => {
         res.setHeader('cache-control', 'private, max-age=0');
         res.setHeader('content-type', `multipart/mixed; boundary=${boundary}`);
         
+        logger.info({ requestId }, '📤 [OTA] Sending noUpdateAvailable (no manifest found)');
         return res.send(body);
       }
       
       // Protocol v0: Return 204
+      logger.info({ requestId }, '📤 [OTA] Sending 204 No Content (protocol v0, no manifest)');
       return res.status(204).send();
     }
   } catch (error) {
-    logger.error({ error }, 'Error serving update manifest');
+    logger.error({ error }, '❌ [OTA] Error serving update manifest');
     return res.status(400).json({ error: 'Invalid request parameters' });
   }
 });
@@ -307,14 +376,20 @@ router.get('/manifest', async (req: Request, res: Response) => {
  * Serves update assets (JS bundles, source maps, etc.)
  */
 router.get('/assets/:hash', async (req: Request, res: Response) => {
+  const requestId = crypto.randomUUID().substring(0, 8);
+  
   try {
     const { hash } = req.params;
     
+    logger.info({ requestId, hash: hash?.substring(0, 16) + '...', userAgent: req.headers['user-agent'] }, '📥 [OTA] Asset request received');
+    
     if (!hash || !/^[a-f0-9]+$/i.test(hash)) {
+      logger.warn({ requestId, hash }, '❌ [OTA] Invalid asset hash format');
       return res.status(400).json({ error: 'Invalid asset hash' });
     }
 
     const assetPath = path.join(BUNDLES_DIR, hash);
+    logger.info({ requestId, assetPath }, '📂 [OTA] Looking for asset file');
     
     try {
       const assetData = await fs.readFile(assetPath);
@@ -331,13 +406,29 @@ router.get('/assets/:hash', async (req: Request, res: Response) => {
       res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
       res.setHeader('ETag', hash);
 
+      logger.info({ 
+        requestId, 
+        hash: hash.substring(0, 16) + '...', 
+        size: assetData.length, 
+        contentType 
+      }, '✅ [OTA] Asset found and serving');
+      
       return res.send(assetData);
-    } catch (error) {
-      logger.warn({ hash }, 'Asset not found');
+    } catch (error: any) {
+      logger.warn({ requestId, hash, assetPath, error: error.message, errorCode: error.code }, '⚠️ [OTA] Asset not found');
+      
+      // List available assets for debugging
+      try {
+        const availableAssets = await fs.readdir(BUNDLES_DIR);
+        logger.info({ requestId, availableAssetsCount: availableAssets.length, sampleAssets: availableAssets.slice(0, 5) }, '📋 [OTA] Available assets');
+      } catch (listError) {
+        logger.warn({ requestId }, '📋 [OTA] Could not list bundles directory');
+      }
+      
       return res.status(404).json({ error: 'Asset not found' });
     }
   } catch (error) {
-    logger.error({ error }, 'Error serving asset');
+    logger.error({ requestId, error }, '❌ [OTA] Error serving asset');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -474,6 +565,287 @@ router.get('/status', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error({ error }, 'Error getting update status');
     return res.status(500).json({ error: 'Failed to get update status' });
+  }
+});
+
+/**
+ * GET /api/updates/debug
+ * Comprehensive debug endpoint to diagnose OTA update issues
+ */
+router.get('/debug', async (req: Request, res: Response) => {
+  const debugInfo: any = {
+    timestamp: new Date().toISOString(),
+    server: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      cwd: process.cwd(),
+    },
+    directories: {
+      UPDATES_DIR,
+      MANIFESTS_DIR,
+      BUNDLES_DIR,
+    },
+    manifests: [],
+    bundles: [],
+    errors: [],
+  };
+
+  try {
+    // Check if directories exist
+    try {
+      await fs.access(UPDATES_DIR);
+      debugInfo.directories.updatesExists = true;
+    } catch {
+      debugInfo.directories.updatesExists = false;
+      debugInfo.errors.push('UPDATES_DIR does not exist');
+    }
+
+    try {
+      await fs.access(MANIFESTS_DIR);
+      debugInfo.directories.manifestsExists = true;
+    } catch {
+      debugInfo.directories.manifestsExists = false;
+      debugInfo.errors.push('MANIFESTS_DIR does not exist');
+    }
+
+    try {
+      await fs.access(BUNDLES_DIR);
+      debugInfo.directories.bundlesExists = true;
+    } catch {
+      debugInfo.directories.bundlesExists = false;
+      debugInfo.errors.push('BUNDLES_DIR does not exist');
+    }
+
+    // List all manifests with full details
+    if (debugInfo.directories.manifestsExists) {
+      try {
+        const manifestFiles = await fs.readdir(MANIFESTS_DIR);
+        debugInfo.manifests = [];
+        
+        for (const file of manifestFiles) {
+          if (file.endsWith('.json')) {
+            try {
+              const manifestPath = path.join(MANIFESTS_DIR, file);
+              const stat = await fs.stat(manifestPath);
+              const content = await fs.readFile(manifestPath, 'utf-8');
+              const manifest = JSON.parse(content);
+              
+              // Check if the bundle file exists
+              const bundleHash = manifest.launchAsset?.hash;
+              let bundleExists = false;
+              let bundleSize = 0;
+              
+              if (bundleHash) {
+                const bundlePath = path.join(BUNDLES_DIR, bundleHash);
+                try {
+                  const bundleStat = await fs.stat(bundlePath);
+                  bundleExists = true;
+                  bundleSize = bundleStat.size;
+                } catch {
+                  bundleExists = false;
+                  debugInfo.errors.push(`Bundle file missing for manifest ${file}: ${bundleHash}`);
+                }
+              }
+              
+              debugInfo.manifests.push({
+                file,
+                size: stat.size,
+                modified: stat.mtime,
+                manifest: {
+                  id: manifest.id,
+                  platform: manifest.platform,
+                  runtimeVersion: manifest.runtimeVersion,
+                  createdAt: manifest.createdAt,
+                  bundleType: manifest.bundleType,
+                  launchAsset: {
+                    hash: manifest.launchAsset?.hash,
+                    hashPreview: manifest.launchAsset?.hash?.substring(0, 16) + '...',
+                    key: manifest.launchAsset?.key,
+                    contentType: manifest.launchAsset?.contentType,
+                    url: manifest.launchAsset?.url,
+                  },
+                  assetsCount: manifest.assets?.length || 0,
+                },
+                bundle: {
+                  exists: bundleExists,
+                  size: bundleSize,
+                  sizeFormatted: bundleExists ? `${(bundleSize / 1024 / 1024).toFixed(2)} MB` : 'N/A',
+                },
+              });
+            } catch (parseError: any) {
+              debugInfo.errors.push(`Failed to parse manifest ${file}: ${parseError.message}`);
+            }
+          }
+        }
+      } catch (readError: any) {
+        debugInfo.errors.push(`Failed to read manifests directory: ${readError.message}`);
+      }
+    }
+
+    // List all bundles
+    if (debugInfo.directories.bundlesExists) {
+      try {
+        const bundleFiles = await fs.readdir(BUNDLES_DIR);
+        debugInfo.bundles = [];
+        
+        for (const file of bundleFiles.slice(0, 20)) { // Limit to 20 for performance
+          try {
+            const bundlePath = path.join(BUNDLES_DIR, file);
+            const stat = await fs.stat(bundlePath);
+            debugInfo.bundles.push({
+              hash: file,
+              hashPreview: file.substring(0, 16) + '...',
+              size: stat.size,
+              sizeFormatted: `${(stat.size / 1024 / 1024).toFixed(2)} MB`,
+              modified: stat.mtime,
+            });
+          } catch {
+            // Skip files we can't stat
+          }
+        }
+        
+        debugInfo.bundlesTotal = bundleFiles.length;
+      } catch (readError: any) {
+        debugInfo.errors.push(`Failed to read bundles directory: ${readError.message}`);
+      }
+    }
+
+    // Test manifest endpoint simulation
+    debugInfo.testEndpoints = {
+      manifestUrl: '/api/updates/manifest',
+      assetsUrl: '/api/updates/assets/:hash',
+      statusUrl: '/api/updates/status',
+      uploadUrl: '/api/updates/upload',
+    };
+
+    // Add expected request format
+    debugInfo.expectedRequestFormat = {
+      headers: {
+        'expo-platform': 'android | ios',
+        'expo-runtime-version': '1.0.0',
+        'expo-protocol-version': '0 | 1',
+        'expo-current-update-id': 'UUID (optional)',
+      },
+      example: 'curl -H "expo-platform: android" -H "expo-runtime-version: 1.0.0" -H "expo-protocol-version: 1" https://api.circle.orincore.com/api/updates/manifest',
+    };
+
+    // Summary
+    debugInfo.summary = {
+      totalManifests: debugInfo.manifests.length,
+      totalBundles: debugInfo.bundlesTotal || debugInfo.bundles.length,
+      totalErrors: debugInfo.errors.length,
+      status: debugInfo.errors.length === 0 ? 'OK' : 'ISSUES_FOUND',
+    };
+
+    logger.info({ debugInfo: debugInfo.summary }, '🔧 [OTA] Debug info requested');
+
+    return res.json(debugInfo);
+  } catch (error: any) {
+    logger.error({ error: error.message }, '❌ [OTA] Error generating debug info');
+    debugInfo.errors.push(`Fatal error: ${error.message}`);
+    return res.status(500).json(debugInfo);
+  }
+});
+
+/**
+ * GET /api/updates/test-manifest
+ * Test endpoint that simulates what expo-updates would receive
+ * Usage: /api/updates/test-manifest?platform=android&runtimeVersion=1.0.0
+ */
+router.get('/test-manifest', async (req: Request, res: Response) => {
+  const platform = (req.query.platform as string) || 'android';
+  const runtimeVersion = (req.query.runtimeVersion as string) || '1.0.0';
+  const protocolVersion = parseInt((req.query.protocolVersion as string) || '1', 10);
+
+  logger.info({ platform, runtimeVersion, protocolVersion }, '🧪 [OTA] Test manifest request');
+
+  try {
+    const manifestPath = path.join(MANIFESTS_DIR, `${platform}-${runtimeVersion}.json`);
+    
+    try {
+      const manifestData = await fs.readFile(manifestPath, 'utf-8');
+      const storedManifest = JSON.parse(manifestData);
+      
+      const baseUrl = getBaseUrl(req);
+      const launchAssetHash = storedManifest.launchAsset?.hash || '';
+      const base64UrlHash = launchAssetHash.length === 64 ? hexToBase64Url(launchAssetHash) : launchAssetHash;
+      const updateId = storedManifest.id.includes('-') 
+        ? storedManifest.id 
+        : convertSHA256HashToUUID(launchAssetHash || storedManifest.id);
+
+      // Check if bundle exists
+      const bundlePath = path.join(BUNDLES_DIR, launchAssetHash);
+      let bundleExists = false;
+      let bundleSize = 0;
+      try {
+        const stat = await fs.stat(bundlePath);
+        bundleExists = true;
+        bundleSize = stat.size;
+      } catch {
+        bundleExists = false;
+      }
+
+      const expoManifest = {
+        id: updateId,
+        createdAt: storedManifest.createdAt,
+        runtimeVersion: storedManifest.runtimeVersion,
+        launchAsset: {
+          hash: base64UrlHash,
+          key: storedManifest.launchAsset?.key || 'bundle',
+          contentType: storedManifest.launchAsset?.contentType || 'application/javascript',
+          url: `${baseUrl}${storedManifest.launchAsset?.url || `/api/updates/assets/${launchAssetHash}`}`,
+        },
+        assets: storedManifest.assets || [],
+        metadata: storedManifest.metadata || {},
+        extra: storedManifest.extra || {},
+      };
+
+      return res.json({
+        success: true,
+        message: 'Manifest found and would be served',
+        request: {
+          platform,
+          runtimeVersion,
+          protocolVersion,
+        },
+        manifestFile: `${platform}-${runtimeVersion}.json`,
+        bundle: {
+          exists: bundleExists,
+          hash: launchAssetHash,
+          size: bundleSize,
+          sizeFormatted: bundleExists ? `${(bundleSize / 1024 / 1024).toFixed(2)} MB` : 'N/A',
+        },
+        manifest: expoManifest,
+        responseFormat: protocolVersion === 1 ? 'multipart/mixed' : 'application/json',
+      });
+    } catch (error: any) {
+      // List available manifests
+      let availableManifests: string[] = [];
+      try {
+        availableManifests = await fs.readdir(MANIFESTS_DIR);
+      } catch {
+        // Ignore
+      }
+
+      return res.json({
+        success: false,
+        message: 'No manifest found for this platform/runtime combination',
+        request: {
+          platform,
+          runtimeVersion,
+          protocolVersion,
+        },
+        manifestFile: `${platform}-${runtimeVersion}.json`,
+        error: error.message,
+        availableManifests,
+        hint: 'Make sure OTA updates have been built and uploaded for this platform and runtime version',
+      });
+    }
+  } catch (error: any) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
   }
 });
 
