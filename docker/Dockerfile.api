@@ -45,6 +45,9 @@ ENV NODE_ENV=production
 ENV SERVICE_TYPE=api
 ENV PORT=8080
 
+# Install su-exec for dropping privileges in entrypoint
+RUN apk add --no-cache su-exec
+
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
@@ -59,10 +62,18 @@ COPY package.json ./
 # Copy PM2 config
 COPY docker/ecosystem.api.config.cjs ./ecosystem.config.cjs
 
-# Set ownership
+# Copy entrypoint script
+COPY docker/api-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create OTA updates directory structure with correct permissions
+# This directory will be mounted as a volume, but we need the structure to exist
+RUN mkdir -p /app/public/updates/manifests /app/public/updates/bundles
+
+# Set ownership of entire app directory including OTA directories
 RUN chown -R nodejs:nodejs /app
 
-USER nodejs
+# Note: We don't switch to nodejs user here - entrypoint handles that after fixing volume permissions
 
 EXPOSE 8080
 
@@ -73,6 +84,9 @@ HEALTHCHECK --interval=10s --timeout=10s --start-period=60s --retries=5 \
 # Node.js performance tuning
 ENV NODE_OPTIONS="--max-old-space-size=512"
 ENV UV_THREADPOOL_SIZE=8
+
+# Use entrypoint to fix volume permissions before starting
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Start with PM2 for clustering (uses all available CPUs)
 CMD ["pm2-runtime", "ecosystem.config.cjs"]
