@@ -115,7 +115,7 @@ function createNoUpdateDirectiveResponse(): { boundary: string; body: Buffer } {
 }
 
 // OTA Routes Version - for debugging deployment issues
-const OTA_ROUTES_VERSION = '2.0.1';
+const OTA_ROUTES_VERSION = '2.0.2';
 
 // Directory structure for updates
 const UPDATES_DIR = path.join(process.cwd(), 'public', 'updates');
@@ -387,7 +387,7 @@ router.get('/assets/:hash', async (req: Request, res: Response) => {
   try {
     const { hash } = req.params;
     
-    logger.info({ requestId, hash: hash?.substring(0, 16) + '...', userAgent: req.headers['user-agent'] }, '📥 [OTA] Asset request received');
+    logger.info({ requestId, hash: hash?.substring(0, 16) + '...', userAgent: req.headers['user-agent'], BUNDLES_DIR }, '📥 [OTA] Asset request received');
     
     if (!hash || !/^[a-f0-9]+$/i.test(hash)) {
       logger.warn({ requestId, hash }, '❌ [OTA] Invalid asset hash format');
@@ -395,7 +395,15 @@ router.get('/assets/:hash', async (req: Request, res: Response) => {
     }
 
     const assetPath = path.join(BUNDLES_DIR, hash);
-    logger.info({ requestId, assetPath }, '📂 [OTA] Looking for asset file');
+    
+    // Check if directory exists first
+    try {
+      await fs.access(BUNDLES_DIR);
+      const files = await fs.readdir(BUNDLES_DIR);
+      logger.info({ requestId, assetPath, bundlesDirExists: true, filesCount: files.length, filesPreview: files.slice(0, 3) }, '📂 [OTA] Looking for asset file');
+    } catch (dirError: any) {
+      logger.error({ requestId, BUNDLES_DIR, error: dirError.message }, '❌ [OTA] BUNDLES_DIR does not exist or not accessible');
+    }
     
     try {
       const assetData = await fs.readFile(assetPath);
