@@ -29,12 +29,25 @@ const UpdateManifestSchema = z.object({
   }),
 });
 
-// Client update request schema
+// Client update request schema (for query params - legacy)
 const UpdateRequestSchema = z.object({
-  runtimeVersion: z.string(),
-  platform: z.enum(['android', 'ios']),
+  runtimeVersion: z.string().optional(),
+  platform: z.enum(['android', 'ios']).optional(),
   currentBundleId: z.string().optional(),
 });
+
+// Helper to convert hex hash to base64url
+function hexToBase64Url(hex: string): string {
+  const bytes = Buffer.from(hex, 'hex');
+  return bytes.toString('base64url');
+}
+
+// Helper to get base URL for assets
+function getBaseUrl(req: Request): string {
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'api.circle.orincore.com';
+  return `${protocol}://${host}`;
+}
 
 // Directory structure for updates
 const UPDATES_DIR = path.join(process.cwd(), 'public', 'updates');
@@ -65,37 +78,95 @@ ensureDirectories();
 
 /**
  * GET /api/updates/manifest
- * Returns the update manifest for expo-updates
+ * Returns the update manifest for expo-updates protocol v1
+ * 
+ * expo-updates sends these headers:
+ * - expo-platform: ios | android
+ * - expo-runtime-version: string
+ * - expo-protocol-version: 1
  */
 router.get('/manifest', async (req: Request, res: Response) => {
   try {
-    const query = UpdateRequestSchema.parse(req.query);
-    const { runtimeVersion, platform, currentBundleId } = query;
+    // Parse from headers (expo-updates protocol v1) or fallback to query params
+    const platform = (req.headers['expo-platform'] as string) || (req.query.platform as string);
+    const runtimeVersion = (req.headers['expo-runtime-version'] as string) || (req.query.runtimeVersion as string);
+    const currentUpdateId = req.headers['expo-current-update-id'] as string;
+    const protocolVersion = req.headers['expo-protocol-version'] as string;
 
-    logger.info({ query }, 'Update manifest requested');
+    logger.info({ 
+      platform, 
+      runtimeVersion, 
+      currentUpdateId,
+      protocolVersion,
+      headers: req.headers 
+    }, 'Update manifest requested');
+
+    // Validate required fields
+    if (!platform || !runtimeVersion) {
+      logger.warn({ platform, runtimeVersion }, 'Missing platform or runtimeVersion');
+      return res.status(400).json({ error: 'Missing platform or runtimeVersion' });
+    }
+
+    if (platform !== 'ios' && platform !== 'android') {
+      return res.status(400).json({ error: 'Invalid platform' });
+    }
 
     // Get the latest manifest for the platform and runtime version
     const manifestPath = path.join(MANIFESTS_DIR, `${platform}-${runtimeVersion}.json`);
     
     try {
       const manifestData = await fs.readFile(manifestPath, 'utf-8');
-      const manifest = JSON.parse(manifestData);
+      const storedManifest = JSON.parse(manifestData);
 
       // Check if client already has the latest update
-      if (currentBundleId && manifest.id === currentBundleId) {
+      if (currentUpdateId && storedManifest.id === currentUpdateId) {
+        logger.info({ currentUpdateId }, 'Client already has latest update');
         return res.status(204).send(); // No update available
       }
 
-      // Set required headers for expo-updates
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Expo-Protocol-Version', '0');
-      res.setHeader('Expo-Sfv-Version', '0');
+      const baseUrl = getBaseUrl(req);
 
-      return res.json(manifest);
+      // Convert stored manifest to expo-updates protocol v1 format
+      const launchAssetHash = storedManifest.launchAsset?.hash || '';
+      const base64UrlHash = launchAssetHash.length === 64 ? hexToBase64Url(launchAssetHash) : launchAssetHash;
+
+      const expoManifest = {
+        id: storedManifest.id,
+        createdAt: storedManifest.createdAt,
+        runtimeVersion: storedManifest.runtimeVersion,
+        launchAsset: {
+          hash: base64UrlHash,
+          key: storedManifest.launchAsset?.key || 'bundle',
+          contentType: storedManifest.launchAsset?.contentType || 'application/javascript',
+          url: `${baseUrl}${storedManifest.launchAsset?.url || `/api/updates/assets/${launchAssetHash}`}`,
+        },
+        assets: (storedManifest.assets || []).map((asset: any) => ({
+          hash: asset.hash?.length === 64 ? hexToBase64Url(asset.hash) : asset.hash,
+          key: asset.key,
+          contentType: asset.contentType,
+          fileExtension: asset.fileExtension,
+          url: asset.url?.startsWith('http') ? asset.url : `${baseUrl}${asset.url}`,
+        })),
+        metadata: storedManifest.metadata || {},
+        extra: storedManifest.extra || {
+          eas: {
+            projectId: 'c9234d97-8ff5-45bc-8f8f-8772ef0926a5'
+          }
+        },
+      };
+
+      // Set required headers for expo-updates protocol v1
+      res.setHeader('expo-protocol-version', '1');
+      res.setHeader('expo-sfv-version', '0');
+      res.setHeader('cache-control', 'private, max-age=0');
+      res.setHeader('content-type', 'application/json');
+
+      logger.info({ manifestId: expoManifest.id, platform, runtimeVersion }, 'Serving update manifest');
+
+      return res.json(expoManifest);
     } catch (error) {
       // No manifest found - return 204 (no update available)
-      logger.warn({ platform, runtimeVersion }, 'No manifest found for platform/runtime');
+      logger.warn({ platform, runtimeVersion, error }, 'No manifest found for platform/runtime');
       return res.status(204).send();
     }
   } catch (error) {
@@ -209,7 +280,7 @@ router.post('/upload', upload.single('bundle'), async (req: Request, res: Respon
     const bundlePath = path.join(BUNDLES_DIR, bundleHash);
     await fs.writeFile(bundlePath, bundleBuffer);
 
-    // Create manifest
+    // Create manifest with expo-updates protocol v1 required fields
     const updateManifest = {
       id: updateId,
       createdAt: timestamp,
@@ -222,6 +293,12 @@ router.post('/upload', upload.single('bundle'), async (req: Request, res: Respon
         key: bundleType === 'hermes' ? 'bundle.hbc' : 'bundle.js',
         contentType: bundleType === 'hermes' ? 'application/octet-stream' : 'application/javascript',
         url: `/api/updates/assets/${bundleHash}`,
+      },
+      metadata: {},
+      extra: {
+        eas: {
+          projectId: 'c9234d97-8ff5-45bc-8f8f-8772ef0926a5'
+        }
       },
     };
 
