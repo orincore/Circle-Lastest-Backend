@@ -115,7 +115,7 @@ function createNoUpdateDirectiveResponse(): { boundary: string; body: Buffer } {
 }
 
 // OTA Routes Version - for debugging deployment issues
-const OTA_ROUTES_VERSION = '2.0.2';
+const OTA_ROUTES_VERSION = '2.0.3';
 
 // Directory structure for updates
 const UPDATES_DIR = path.join(process.cwd(), 'public', 'updates');
@@ -454,6 +454,9 @@ router.get('/assets/:hash', async (req: Request, res: Response) => {
  */
 router.post('/upload', upload.single('bundle'), async (req: Request, res: Response) => {
   try {
+    // Ensure directories exist before upload
+    await ensureDirectories();
+    
     // This should be protected with API key or internal network only
     const apiKey = req.headers['x-api-key'];
     const internalApiKey = process.env.INTERNAL_API_KEY;
