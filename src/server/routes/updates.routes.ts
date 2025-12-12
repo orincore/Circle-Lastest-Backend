@@ -115,7 +115,7 @@ function createNoUpdateDirectiveResponse(): { boundary: string; body: Buffer } {
 }
 
 // OTA Routes Version - for debugging deployment issues
-const OTA_ROUTES_VERSION = '2.0.3';
+const OTA_ROUTES_VERSION = '2.0.4';
 
 // Directory structure for updates
 const UPDATES_DIR = path.join(process.cwd(), 'public', 'updates');
@@ -124,6 +124,18 @@ const BUNDLES_DIR = path.join(UPDATES_DIR, 'bundles');
 
 // Log version on module load
 logger.info({ version: OTA_ROUTES_VERSION, UPDATES_DIR, MANIFESTS_DIR, BUNDLES_DIR }, '🚀 [OTA] Routes module loaded');
+
+// Initialize directories on module load
+(async () => {
+  try {
+    await fs.mkdir(UPDATES_DIR, { recursive: true });
+    await fs.mkdir(MANIFESTS_DIR, { recursive: true });
+    await fs.mkdir(BUNDLES_DIR, { recursive: true });
+    logger.info({ UPDATES_DIR, MANIFESTS_DIR, BUNDLES_DIR }, '✅ [OTA] Directories initialized on startup');
+  } catch (error) {
+    logger.error({ error }, '❌ [OTA] Failed to initialize directories on startup');
+  }
+})();
 
 // Ensure directories exist
 async function ensureDirectories() {
