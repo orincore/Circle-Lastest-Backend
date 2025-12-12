@@ -433,13 +433,13 @@ pipeline {
                                 fi
                                 
                                 # ============================================
-                                # Step 8: Aggressive Cleanup
+                                # Step 8: Cleanup (preserving OTA volume)
                                 # ============================================
                                 echo ""
                                 echo "🧹 Step 7: Cleanup..."
                                 docker image prune -f > /dev/null 2>&1 || true
                                 docker container prune -f > /dev/null 2>&1 || true
-                                docker volume prune -f > /dev/null 2>&1 || true
+                                # Note: NOT pruning volumes to preserve OTA updates data
                                 
                                 # ============================================
                                 # Final Status
