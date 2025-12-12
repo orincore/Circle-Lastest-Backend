@@ -114,10 +114,16 @@ function createNoUpdateDirectiveResponse(): { boundary: string; body: Buffer } {
   return { boundary, body };
 }
 
+// OTA Routes Version - for debugging deployment issues
+const OTA_ROUTES_VERSION = '2.0.1';
+
 // Directory structure for updates
 const UPDATES_DIR = path.join(process.cwd(), 'public', 'updates');
 const MANIFESTS_DIR = path.join(UPDATES_DIR, 'manifests');
 const BUNDLES_DIR = path.join(UPDATES_DIR, 'bundles');
+
+// Log version on module load
+logger.info({ version: OTA_ROUTES_VERSION, UPDATES_DIR, MANIFESTS_DIR, BUNDLES_DIR }, '🚀 [OTA] Routes module loaded');
 
 // Ensure directories exist
 async function ensureDirectories() {
@@ -575,6 +581,7 @@ router.get('/status', async (req: Request, res: Response) => {
 router.get('/debug', async (req: Request, res: Response) => {
   const debugInfo: any = {
     timestamp: new Date().toISOString(),
+    otaRoutesVersion: OTA_ROUTES_VERSION,
     server: {
       nodeVersion: process.version,
       platform: process.platform,
