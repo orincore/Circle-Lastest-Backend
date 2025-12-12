@@ -228,6 +228,8 @@ services:
       UV_THREADPOOL_SIZE: 8
     expose:
       - "8080"
+    volumes:
+      - ota_updates:/app/public/updates
     depends_on:
       redis:
         condition: service_healthy
@@ -250,6 +252,8 @@ services:
       UV_THREADPOOL_SIZE: 8
     expose:
       - "8080"
+    volumes:
+      - ota_updates:/app/public/updates
     depends_on:
       redis:
         condition: service_healthy
@@ -408,4 +412,6 @@ volumes:
   nginx_logs:
     driver: local
   cron_logs:
+    driver: local
+  ota_updates:
     driver: local
