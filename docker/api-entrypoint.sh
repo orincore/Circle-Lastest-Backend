@@ -17,6 +17,9 @@ chown -R 1001:1001 /app/public/updates
 echo "✅ [API Entrypoint] OTA directories ready with correct permissions"
 ls -la /app/public/updates/
 
+# Fix permissions on stdout/stderr so nodejs user can write to them
+chmod 666 /dev/stdout /dev/stderr 2>/dev/null || true
+
 echo "🚀 [API Entrypoint] Switching to nodejs user and starting PM2..."
 
 # Switch to nodejs user and execute the main command
