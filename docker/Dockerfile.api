@@ -73,7 +73,8 @@ RUN mkdir -p /app/public/updates/manifests /app/public/updates/bundles
 # Set ownership of entire app directory including OTA directories
 RUN chown -R nodejs:nodejs /app
 
-# Note: We don't switch to nodejs user here - entrypoint handles that after fixing volume permissions
+# Don't switch to nodejs user here - we'll run as root and let PM2 drop privileges
+# This allows the entrypoint to fix volume permissions before starting the app
 
 EXPOSE 8080
 

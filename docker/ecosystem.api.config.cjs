@@ -15,6 +15,11 @@ module.exports = {
       instances: 'max',
       exec_mode: 'cluster',
       
+      // Run as nodejs user (uid 1001) for security
+      // Container runs as root to fix volume permissions, then PM2 drops privileges
+      uid: 1001,
+      gid: 1001,
+      
       // Memory management (per instance)
       max_memory_restart: '400M',
       
