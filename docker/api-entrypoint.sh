@@ -18,5 +18,6 @@ ls -la /app/public/updates/
 
 echo "🚀 [API Entrypoint] Starting PM2 as nodejs user..."
 
-# Execute PM2 directly - the container is already running as nodejs user
-exec "$@"
+# Drop privileges to nodejs user and execute PM2
+# su-exec is like sudo but doesn't fork, so signals work properly
+exec su-exec nodejs "$@"

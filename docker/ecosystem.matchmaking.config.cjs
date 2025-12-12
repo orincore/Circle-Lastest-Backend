@@ -27,10 +27,9 @@ module.exports = {
         SERVICE_TYPE: 'matchmaking-worker'
       },
       
-      // Logging
+      // Logging - PM2 will inherit stdout/stderr from parent process
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-      error_file: '/dev/stderr',
-      out_file: '/dev/stdout',
+      combine_logs: true,
       merge_logs: true,
       
       // Graceful shutdown

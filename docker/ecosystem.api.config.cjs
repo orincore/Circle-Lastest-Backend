@@ -15,11 +15,6 @@ module.exports = {
       instances: 'max',
       exec_mode: 'cluster',
       
-      // Run as nodejs user (uid 1001) for security
-      // Container runs as root to fix volume permissions, then PM2 drops privileges
-      uid: 1001,
-      gid: 1001,
-      
       // Memory management (per instance)
       max_memory_restart: '400M',
       
@@ -33,10 +28,10 @@ module.exports = {
         SERVICE_TYPE: 'api'
       },
       
-      // Logging
+      // Logging - PM2 will inherit stdout/stderr from parent process
+      // No need to specify log files when running in Docker
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-      error_file: '/dev/stderr',
-      out_file: '/dev/stdout',
+      combine_logs: true,
       merge_logs: true,
       
       // Graceful shutdown - fast for zero-downtime deploys
