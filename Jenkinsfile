@@ -240,6 +240,44 @@ pipeline {
                                 sleep 5
                                 
                                 # ============================================
+                                # Step 3.5: Deploy ML Matching Service
+                                # ============================================
+                                echo ""
+                                echo "🤖 Step 2.5: Deploying ML Matching Service..."
+                                docker-compose -f ${COMPOSE_FILE} build ml-matching
+                                docker-compose -f ${COMPOSE_FILE} up -d --no-deps --remove-orphans ml-matching
+                                
+                                # Wait for ML service to be healthy
+                                echo "   Waiting for ML matching service to be healthy..."
+                                ML_RETRIES=20
+                                for i in \$(seq 1 \$ML_RETRIES); do
+                                    ML_HEALTH=\$(docker inspect circle-ml-matching --format="{{.State.Health.Status}}" 2>/dev/null || echo "none")
+                                    ML_RUNNING=\$(docker inspect circle-ml-matching --format="{{.State.Running}}" 2>/dev/null || echo "false")
+                                    echo "      Attempt \$i/\$ML_RETRIES: health=\$ML_HEALTH, running=\$ML_RUNNING"
+                                    
+                                    if [ "\$ML_HEALTH" = "healthy" ]; then
+                                        echo "   ✅ ML matching service is healthy!"
+                                        break
+                                    fi
+                                    
+                                    if [ "\$ML_RUNNING" != "true" ]; then
+                                        echo "   ⚠️ ML container not running! Checking logs..."
+                                        docker logs --tail 30 circle-ml-matching 2>&1 || true
+                                    fi
+                                    
+                                    sleep 5
+                                done
+                                
+                                # Check final ML health
+                                ML_HEALTH=\$(docker inspect circle-ml-matching --format="{{.State.Health.Status}}" 2>/dev/null || echo "none")
+                                if [ "\$ML_HEALTH" != "healthy" ]; then
+                                    echo "   ⚠️ ML matching service health: \$ML_HEALTH"
+                                    echo "   === ML Container Logs ==="
+                                    docker logs --tail 100 circle-ml-matching 2>&1 || true
+                                    echo "   ⚠️ WARNING: ML service may not be fully operational"
+                                fi
+                                
+                                # ============================================
                                 # Step 4: Blue-Green Rolling Update
                                 # ============================================
                                 echo ""
@@ -405,9 +443,11 @@ pipeline {
                                 SOCKET_GREEN_HEALTH=\$(check_container_health "circle-socket-green")
                                 NGINX_HEALTH=\$(check_container_health "circle-nginx")
                                 REDIS_HEALTH=\$(check_container_health "circle-redis")
+                                ML_HEALTH=\$(check_container_health "circle-ml-matching")
                                 
                                 echo "   NGINX:        \$NGINX_HEALTH"
                                 echo "   Redis:        \$REDIS_HEALTH"
+                                echo "   ML Matching:  \$ML_HEALTH"
                                 echo "   API Blue:     \$API_BLUE_HEALTH"
                                 echo "   API Green:    \$API_GREEN_HEALTH"
                                 echo "   Socket Blue:  \$SOCKET_BLUE_HEALTH"
@@ -454,8 +494,9 @@ pipeline {
                                 echo ""
                                 echo "Health Summary:"
                                 echo "   🌐 NGINX:  \$NGINX_HEALTH"
-                                echo "   �️ Redis:  \$REDIS_HEALTH"
-                                echo "   �🔵 Blue:   API=\$API_BLUE_HEALTH, Socket=\$SOCKET_BLUE_HEALTH"
+                                echo "   🗄️ Redis:  \$REDIS_HEALTH"
+                                echo "   🤖 ML:     \$ML_HEALTH"
+                                echo "   🔵 Blue:   API=\$API_BLUE_HEALTH, Socket=\$SOCKET_BLUE_HEALTH"
                                 echo "   🟢 Green:  API=\$API_GREEN_HEALTH, Socket=\$SOCKET_GREEN_HEALTH"
                                 echo ""
                                 echo "Traffic is now load-balanced across both sets!"
