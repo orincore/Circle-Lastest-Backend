@@ -42,6 +42,9 @@ docs
 
 # Python services (separate container)
 python-services
+!python-services/
+!python-services/ml-matching/
+!python-services/ml-matching/**
 
 # Misc
 .DS_Store
