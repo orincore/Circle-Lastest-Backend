@@ -166,6 +166,62 @@ router.get('/status/:requestId', requireAuth, async (req: AuthRequest, res) => {
       return res.status(403).json({ error: 'Unauthorized' })
     }
 
+    let matchedGiver = null
+
+    // If matched, fetch giver details with beaconPreview
+    if (request.status === 'matched' && request.matched_giver_id) {
+      try {
+        const { data: giverProfile } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name, age, gender, profile_photo_url')
+          .eq('id', request.matched_giver_id)
+          .maybeSingle()
+
+        if (giverProfile) {
+          const { data: giverData } = await supabase
+            .from('giver_profiles')
+            .select('skills, categories, is_available, total_helps_given, average_rating')
+            .eq('user_id', request.matched_giver_id)
+            .maybeSingle()
+
+          const skills = Array.isArray(giverData?.skills) ? giverData.skills : []
+          const categories = Array.isArray(giverData?.categories) ? giverData.categories : []
+          const helpTopics = Array.from(new Set([...skills, ...categories])).filter(Boolean)
+
+          const maskWord = (word: string | null | undefined): string => {
+            if (!word || typeof word !== 'string' || word.length === 0) return ''
+            if (word.length === 1) return word[0] + '*'
+            return word[0] + '*'.repeat(word.length - 1)
+          }
+
+          const maskFullName = (firstName: string | null | undefined, lastName: string | null | undefined): string => {
+            const first = maskWord(firstName)
+            const last = maskWord(lastName)
+            if (!first && !last) return 'Anonymous'
+            if (!last) return first
+            if (!first) return last
+            return `${first} ${last}`
+          }
+
+          matchedGiver = {
+            giver_user_id: request.matched_giver_id,
+            is_available: giverData?.is_available ?? false,
+            total_helps_given: giverData?.total_helps_given ?? 0,
+            average_rating: giverData?.average_rating ?? 0,
+            beaconPreview: {
+              maskedName: maskFullName(giverProfile.first_name, giverProfile.last_name),
+              age: giverProfile.age ?? null,
+              gender: giverProfile.gender ?? null,
+              profilePhotoUrl: giverProfile.profile_photo_url ?? null,
+              helpTopics: helpTopics.slice(0, 8)
+            }
+          }
+        }
+      } catch (giverError) {
+        logger.error({ error: giverError, giverId: request.matched_giver_id }, 'Error fetching matched giver details')
+      }
+    }
+
     res.json({
       requestId: request.id,
       status: request.status,
@@ -173,7 +229,8 @@ router.get('/status/:requestId', requireAuth, async (req: AuthRequest, res) => {
       createdAt: request.created_at,
       expiresAt: request.expires_at,
       matchedGiverId: request.matched_giver_id,
-      chatRoomId: request.chat_room_id
+      chatRoomId: request.chat_room_id,
+      matchedGiver
     })
 
   } catch (error) {

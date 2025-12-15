@@ -50,6 +50,30 @@ export interface GiverMatch {
   is_available: boolean
   total_helps_given: number
   average_rating: number
+  beaconPreview?: {
+    maskedName: string
+    age?: number | null
+    gender?: string | null
+    profilePhotoUrl?: string | null
+    helpTopics?: string[]
+  }
+}
+
+function maskWord(word: string): string {
+  const clean = (word || '').trim()
+  if (!clean) return ''
+  if (clean.length === 1) return '*'
+  return clean[0] + '*'.repeat(clean.length - 1)
+}
+
+function maskFullName(firstName?: string | null, lastName?: string | null): string {
+  const f = (firstName || '').trim()
+  const l = (lastName || '').trim()
+
+  if (f && l) return `${maskWord(f)} ${maskWord(l)}`
+  if (f) return maskWord(f)
+  if (l) return maskWord(l)
+  return 'Beacon Helper'
 }
 
 export class PromptMatchingService {
@@ -543,6 +567,8 @@ export class PromptMatchingService {
         .select(`
           user_id,
           is_available,
+          skills,
+          categories,
           total_helps_given,
           average_rating,
           profile_embedding,
@@ -794,6 +820,30 @@ export class PromptMatchingService {
       // Take only the single best match for targeted approach
       const bestMatch = matches[0] as GiverMatch
 
+      // Attach safe Beacon preview (masked) for receiver UI
+      try {
+        const { data: giverProfile } = await supabase
+          .from('profiles')
+          .select('first_name, last_name, age, gender, profile_photo_url')
+          .eq('id', bestMatch.giver_user_id)
+          .maybeSingle()
+
+        const giverRow = (ageFilteredGivers || []).find((g: any) => g?.user_id === bestMatch.giver_user_id)
+        const skills = Array.isArray(giverRow?.skills) ? giverRow.skills : []
+        const categories = Array.isArray(giverRow?.categories) ? giverRow.categories : []
+        const helpTopics = Array.from(new Set([...(skills || []), ...(categories || [])])).filter(Boolean)
+
+        bestMatch.beaconPreview = {
+          maskedName: maskFullName(giverProfile?.first_name, giverProfile?.last_name),
+          age: giverProfile?.age ?? null,
+          gender: giverProfile?.gender ?? null,
+          profilePhotoUrl: giverProfile?.profile_photo_url ?? null,
+          helpTopics: helpTopics.slice(0, 8)
+        }
+      } catch (_e) {
+        // If preview enrichment fails, keep matching working
+      }
+
       // Create giver request attempt record
       const { error: attemptError } = await supabase
         .from('giver_request_attempts')
@@ -845,12 +895,7 @@ export class PromptMatchingService {
         message: 'Found a perfect helper! Waiting for their response...',
         progress: 80,
         requestId,
-        matchedGiver: {
-          id: bestMatch.giver_user_id,
-          // Masked info - don't reveal identity until accepted
-          displayName: 'Helper #' + bestMatch.giver_user_id.substring(0, 4).toUpperCase(),
-          similarityScore: bestMatch.similarity_score
-        }
+        matchedGiver: bestMatch
       })
 
       // Send push notification with AI-summarized content
