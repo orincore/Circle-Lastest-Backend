@@ -71,6 +71,7 @@ import debugMatchingRouter from './routes/debug-matching.routes.js'
 import updatesRouter from './routes/updates.routes.js'
 import locationRouter from './routes/location.routes.js'
 import webhookRouter from './routes/webhook.routes.js'
+import mlMatchingRouter from './routes/ml-matching.routes.js'
 import { setupGraphQL } from './graphql/index.js'
 
 const app = express()
@@ -327,6 +328,7 @@ app.use('/api/debug/match', debugMatchingRouter)
 app.use('/api/updates', updatesRouter)
 app.use('/api/location', locationRouter)
 app.use('/api/webhook', webhookRouter)
+app.use('/api/ml-matching', mlMatchingRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 

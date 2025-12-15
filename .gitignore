@@ -25,3 +25,7 @@ python-services/*/*.pyc
 python-services/*/.pytest_cache/
 python-services/*/logs/
 python-services/*/*.log
+
+.env.production.example
+.env.production
+

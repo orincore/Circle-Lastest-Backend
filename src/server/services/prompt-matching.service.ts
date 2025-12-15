@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 import { TogetherAIService } from './ai/together-ai.service.js'
+import { MLMatchingService } from './ml-matching.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
 import { PushNotificationService } from './pushNotificationService.js'
@@ -599,8 +600,45 @@ export class PromptMatchingService {
           helpPrompt = helpRequest?.prompt || ''
         }
 
-        // Use Together AI for intelligent giver selection with age-filtered givers
-        const enhancedMatches = await this.findPerfectGiverWithAI(
+        // Prefer Python ML service for selecting the single best Beacon-enabled helper
+        try {
+          const candidateIds = ageFilteredGivers
+            .map(g => g?.user_id)
+            .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+
+          const best = await MLMatchingService.findSingleBestMatch(receiverUserId, helpPrompt, {
+            ageRange: demographics?.preferredAgeMin || demographics?.preferredAgeMax
+              ? [demographics?.preferredAgeMin ?? 18, demographics?.preferredAgeMax ?? 100]
+              : undefined,
+            candidateIds,
+            excludeUserIds: allExcludedIds,
+          })
+
+          if (best?.id) {
+            const giver = ageFilteredGivers.find(g => g?.user_id === best.id)
+            matches = [
+              {
+                giver_user_id: best.id,
+                similarity_score: Math.max(0, Math.min(1, (best.match_score || 0) / 100)),
+                is_available: true,
+                total_helps_given: giver?.total_helps_given || 0,
+                average_rating: giver?.average_rating || 0,
+              }
+            ]
+            logger.info({
+              requestId,
+              receiverUserId,
+              matchedGiverId: best.id,
+              matchScore: best.match_score,
+              candidatePoolSize: candidateIds.length,
+            }, 'ML service selected best Beacon helper')
+          }
+        } catch (error) {
+          logger.warn({ error, requestId, receiverUserId }, 'ML service selection failed, falling back to existing matching')
+        }
+
+        // Fallback to existing TogetherAI/embedding approach
+        const enhancedMatches = matches.length > 0 ? [] : await this.findPerfectGiverWithAI(
           promptEmbedding,
           ageFilteredGivers,
           receiverUserId,
