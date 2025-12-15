@@ -309,6 +309,27 @@ export async function getChatMessages(chatId: string, limit = 30, before?: strin
   return (data || []) as (ChatMessage & { reactions: MessageReaction[]; receipts: { user_id: string; status: string }[] })[]
 }
 
+export async function getRecentChatTextMessagesForModeration(chatId: string, limit = 10) {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('id, chat_id, sender_id, text, created_at, is_deleted, media_url, media_type')
+    .eq('chat_id', chatId)
+    .eq('is_deleted', false)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  if (error) throw error
+
+  // Return only text messages (ignore media-only messages for context)
+  return (data || [])
+    .filter((m: any) => typeof m.text === 'string' && m.text.trim().length > 0)
+    .map((m: any) => ({
+      sender_id: m.sender_id,
+      text: String(m.text),
+      created_at: m.created_at,
+    }))
+}
+
 export async function insertMessage(
   chatId: string, 
   senderId: string, 

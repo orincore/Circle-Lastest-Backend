@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { logger } from '../config/logger.js'
-import { ensureChatForUsers } from '../repos/chat.repo.js'
+import { ensureChatForUsers, getRecentChatTextMessagesForModeration } from '../repos/chat.repo.js'
 import { CompatibilityService } from './compatibility.service.js'
 import { ContentFilterService, type PersonalInfoAnalysis } from './ai/content-filter.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
@@ -1280,8 +1280,20 @@ export class BlindDatingService {
 
       // Only if quickCheck found potential issues, do AI analysis
       // This is the only part that might take time, but it's only for suspicious messages
+      let recentMessages: any[] = []
+      try {
+        if (match.chat_id) {
+          recentMessages = await getRecentChatTextMessagesForModeration(match.chat_id, 10)
+        }
+      } catch (e) {
+        logger.warn({ error: e, matchId }, '[BlindDate] Failed to load recent messages for moderation context')
+      }
+
       const analysis = await ContentFilterService.analyzeMessage(message, {
-        messageCount: match.message_count
+        messageCount: match.message_count,
+        // Provide recent conversation so the filter can catch context-based identity reveal
+        // e.g. "What is your name?" -> "Akash"
+        recentMessages
       })
 
       if (!analysis.containsPersonalInfo) {

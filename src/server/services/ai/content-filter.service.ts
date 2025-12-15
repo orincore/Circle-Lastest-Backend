@@ -23,6 +23,12 @@ export interface PersonalInfoAnalysis {
   rawAnalysis?: string
 }
 
+export interface ModerationContextMessage {
+  sender_id?: string
+  text: string
+  created_at?: string
+}
+
 export type PersonalInfoType = 
   | 'first_name'
   | 'last_name'
@@ -267,6 +273,7 @@ export class ContentFilterService {
     senderGender?: string
     receiverGender?: string
     messageCount?: number
+    recentMessages?: ModerationContextMessage[]
   }): Promise<PersonalInfoAnalysis> {
     try {
       if (!message || message.trim().length === 0) {
@@ -275,6 +282,31 @@ export class ContentFilterService {
           confidence: 1.0,
           detectedTypes: [],
           flaggedContent: []
+        }
+      }
+
+      // Context-aware heuristic: block name-only replies when the previous context asked for a name
+      // Example:
+      //  - "What is your name?"
+      //  - "Akash"
+      if (context?.recentMessages && context.recentMessages.length > 0) {
+        const last = context.recentMessages[0]?.text || ''
+        if (this.isAskingForName(last) && this.isLikelyStandaloneName(message)) {
+          return {
+            containsPersonalInfo: true,
+            confidence: 0.92,
+            detectedTypes: ['first_name'],
+            flaggedContent: [
+              {
+                type: 'first_name',
+                text: message.trim(),
+                startIndex: 0,
+                endIndex: message.trim().length,
+                confidence: 0.92,
+              },
+            ],
+            rawAnalysis: 'Context indicates the user is answering a name request with a standalone name.'
+          }
         }
       }
 
@@ -327,6 +359,7 @@ export class ContentFilterService {
     senderGender?: string
     receiverGender?: string
     messageCount?: number
+    recentMessages?: ModerationContextMessage[]
   }): Promise<PersonalInfoAnalysis> {
     const response = await fetch(`${this.API_BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -411,8 +444,18 @@ Remember: Adult content allowed in ALL languages. ONLY block identity info.`
     senderGender?: string
     receiverGender?: string
     messageCount?: number
+    recentMessages?: ModerationContextMessage[]
   }): string {
+    const recent = (context?.recentMessages || [])
+      .slice(0, 10)
+      .reverse()
+      .map((m) => `- ${String(m.text).replace(/\s+/g, ' ').trim()}`)
+      .join('\n')
+
     return `Analyze this dating app message for IDENTITY-REVEALING info only:
+
+RECENT CONVERSATION (most recent last):
+${recent || '- (no prior messages)'}
 
 MESSAGE: "${message}"
 
@@ -427,6 +470,39 @@ ONLY check for identity-revealing info:
 Generic info is ALLOWED: "I'm an engineer", "I live in a big city", any adult content.
 
 Does this message reveal the person's real-world identity?`
+  }
+
+  private static isAskingForName(text: string): boolean {
+    const t = (text || '').toLowerCase().trim()
+    return (
+      /\b(what('?s| is) your name|your name\?|name\?|tell me your name)\b/i.test(t) ||
+      /\b(mera naam kya hai|tumhara naam kya hai|aapka naam kya hai|naam kya hai)\b/i.test(t)
+    )
+  }
+
+  private static isLikelyStandaloneName(message: string): boolean {
+    const trimmed = (message || '').trim()
+    if (!trimmed) return false
+
+    // Single token or two tokens only
+    const parts = trimmed.split(/\s+/).filter(Boolean)
+    if (parts.length < 1 || parts.length > 2) return false
+
+    // No digits, no @, no punctuation-heavy strings
+    if (/[0-9@]/.test(trimmed)) return false
+    if (/https?:\/\//i.test(trimmed)) return false
+
+    // Only letters for each token (allow simple hyphenated names)
+    const ok = parts.every((p) => /^[A-Za-z]+(?:-[A-Za-z]+)?$/.test(p))
+    if (!ok) return false
+
+    // Heuristic: match common first names or capitalized single word
+    const first = parts[0].toLowerCase()
+    if (COMMON_FIRST_NAMES.has(first)) return true
+    // If not in list, still treat as potential name if short and looks like a name
+    if (parts.length === 1 && parts[0].length >= 3 && parts[0].length <= 15) return true
+
+    return false
   }
 
   /**

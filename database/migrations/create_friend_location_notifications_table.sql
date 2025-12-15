@@ -17,7 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_friend_location_notifications_sent_at ON friend_l
 CREATE INDEX IF NOT EXISTS idx_friend_location_notifications_user_pair ON friend_location_notifications(from_user_id, to_user_id);
 
 -- Add comment explaining the table purpose
-COMMENT ON TABLE friend_location_notifications IS 'Tracks friend location notifications with 24-hour cooldown to prevent spam. Only for mutual friends.';
+COMMENT ON TABLE friend_location_notifications IS 'Tracks friend location notifications with 5-day cooldown to prevent spam. Only for mutual friends within 3km.';
 COMMENT ON COLUMN friend_location_notifications.from_user_id IS 'User who triggered the location update notification';
 COMMENT ON COLUMN friend_location_notifications.to_user_id IS 'Friend who received the location notification';
-COMMENT ON COLUMN friend_location_notifications.sent_at IS 'When the notification was sent (used for 24-hour cooldown calculation)';
+COMMENT ON COLUMN friend_location_notifications.sent_at IS 'When the notification was sent (used for 5-day cooldown calculation)';
