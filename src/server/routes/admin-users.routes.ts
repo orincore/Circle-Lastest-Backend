@@ -49,6 +49,7 @@ router.get('/', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
       .select(`
         id,
         email,
+        email_verified,
         username,
         first_name,
         last_name,
@@ -56,6 +57,8 @@ router.get('/', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
         gender,
         phone_number,
         profile_photo_url,
+        verification_status,
+        verified_at,
         created_at,
         last_seen,
         is_suspended,
@@ -186,6 +189,13 @@ router.get('/:userId', requireAuth, requireAdmin, async (req: AdminRequest, res)
   try {
     const { userId } = req.params
 
+    const {
+      activityLimit = '50',
+      subscriptionsLimit = '50',
+      refundsLimit = '50',
+      verificationLimit = '10'
+    } = req.query
+
     // Get user profile
     const { data: user, error: userError } = await supabase
       .from('profiles')
@@ -219,6 +229,71 @@ router.get('/:userId', requireAuth, requireAdmin, async (req: AdminRequest, res)
       .select('id', { count: 'exact', head: true })
       .eq('reporter_id', userId)
 
+    const activityLimitNum = Math.min(parseInt(activityLimit as string) || 50, 200)
+    const subscriptionsLimitNum = Math.min(parseInt(subscriptionsLimit as string) || 50, 200)
+    const refundsLimitNum = Math.min(parseInt(refundsLimit as string) || 50, 200)
+    const verificationLimitNum = Math.min(parseInt(verificationLimit as string) || 10, 50)
+
+    const { data: recentMessages } = await supabase
+      .from('messages')
+      .select('id, content, created_at, chat_id')
+      .eq('sender_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(activityLimitNum)
+
+    const { data: recentFriendships } = await supabase
+      .from('friendships')
+      .select('id, created_at, status, user1_id, user2_id')
+      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+      .order('created_at', { ascending: false })
+      .limit(50)
+
+    const { data: recentReports } = await supabase
+      .from('user_reports')
+      .select('*')
+      .or(`reporter_id.eq.${userId},reported_user_id.eq.${userId}`)
+      .order('created_at', { ascending: false })
+      .limit(50)
+
+    const { data: subscriptions } = await supabase
+      .from('subscriptions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(subscriptionsLimitNum)
+
+    const { data: cashfreeSubscriptions } = await supabase
+      .from('user_subscriptions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(subscriptionsLimitNum)
+
+    const { data: refunds } = await supabase
+      .from('refunds')
+      .select(`
+        *,
+        subscription:subscriptions(plan_type, started_at),
+        processed_by_profile:profiles!refunds_processed_by_fkey(username)
+      `)
+      .eq('user_id', userId)
+      .order('requested_at', { ascending: false })
+      .limit(refundsLimitNum)
+
+    const { data: faceVerifications } = await supabase
+      .from('face_verifications')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(verificationLimitNum)
+
+    const { data: verificationAttempts } = await supabase
+      .from('verification_attempts')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(verificationLimitNum)
+
     // Log the action
     await logAdminAction(req.user!.id, 'view_user_details', 'user', userId, {
       userEmail: user.email
@@ -231,6 +306,20 @@ router.get('/:userId', requireAuth, requireAdmin, async (req: AdminRequest, res)
         messagesCount: messagesCount || 0,
         reportsReceived: reportsReceived || 0,
         reportsSent: reportsSent || 0
+      },
+      activity: {
+        messages: recentMessages || [],
+        friendships: recentFriendships || [],
+        reports: recentReports || []
+      },
+      subscriptions: {
+        subscriptions: subscriptions || [],
+        cashfreeSubscriptions: cashfreeSubscriptions || []
+      },
+      refunds: refunds || [],
+      verification: {
+        faceVerifications: faceVerifications || [],
+        attempts: verificationAttempts || []
       }
     })
   } catch (error) {
@@ -242,6 +331,108 @@ router.get('/:userId', requireAuth, requireAdmin, async (req: AdminRequest, res)
 // ============================================
 // User Actions
 // ============================================
+
+router.post('/:userId/verify', requireAuth, requireAdmin, requireModerator, async (req: AdminRequest, res) => {
+  try {
+    const { userId } = req.params
+
+    const { data: existingUser, error: existingUserError } = await supabase
+      .from('profiles')
+      .select('id, email, verification_status')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (existingUserError || !existingUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    if (existingUser.verification_status === 'verified') {
+      return res.json({
+        success: true,
+        message: 'User already verified'
+      })
+    }
+
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('profiles')
+      .update({
+        verification_status: 'verified',
+        verified_at: new Date().toISOString(),
+        verification_required: false
+      })
+      .eq('id', userId)
+      .select('*')
+      .single()
+
+    if (updateError) {
+      console.error('Error verifying user:', updateError)
+      return res.status(500).json({ error: 'Failed to verify user' })
+    }
+
+    await logAdminAction(req.user!.id, 'verify_user', 'user', userId, {
+      userEmail: existingUser.email
+    })
+
+    return res.json({
+      success: true,
+      user: updatedUser
+    })
+  } catch (error) {
+    console.error('Verify user error:', error)
+    return res.status(500).json({ error: 'Failed to verify user' })
+  }
+})
+
+router.post('/:userId/unverify', requireAuth, requireAdmin, requireModerator, async (req: AdminRequest, res) => {
+  try {
+    const { userId } = req.params
+
+    const { data: existingUser, error: existingUserError } = await supabase
+      .from('profiles')
+      .select('id, email, verification_status')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (existingUserError || !existingUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    if (existingUser.verification_status === 'pending') {
+      return res.json({
+        success: true,
+        message: 'User already pending'
+      })
+    }
+
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('profiles')
+      .update({
+        verification_status: 'pending',
+        verified_at: null,
+        verification_required: true
+      })
+      .eq('id', userId)
+      .select('*')
+      .single()
+
+    if (updateError) {
+      console.error('Error unverifying user:', updateError)
+      return res.status(500).json({ error: 'Failed to unverify user' })
+    }
+
+    await logAdminAction(req.user!.id, 'unverify_user', 'user', userId, {
+      userEmail: existingUser.email
+    })
+
+    return res.json({
+      success: true,
+      user: updatedUser
+    })
+  } catch (error) {
+    console.error('Unverify user error:', error)
+    return res.status(500).json({ error: 'Failed to unverify user' })
+  }
+})
 
 /**
  * Suspend user
