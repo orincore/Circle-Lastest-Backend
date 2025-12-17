@@ -53,6 +53,7 @@ import revenueRouter from './routes/revenue.routes.js'
 import aiSupportRouter from './routes/ai-support.routes.js'
 import aiAdminRouter from './routes/ai-admin.routes.js'
 import publicStatsRouter from './routes/public-stats.routes.js'
+import publicProfileRouter from './routes/public-profile.routes.js'
 import userPhotosRouter from './routes/user-photos.routes.js'
 import accountDeletionRouter from './routes/account-deletion.routes.js'
 import referralRouter from './routes/referral.routes.js'
@@ -277,6 +278,7 @@ app.get('/app-ads.txt', (req, res) => {
 
 // Health check is defined at the top of the file (before middleware)
 app.use('/api/public', publicStatsRouter)
+app.use('/api/public', publicProfileRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/auth', emailVerificationRouter)
 app.use('/api/auth', passwordResetRouter)
