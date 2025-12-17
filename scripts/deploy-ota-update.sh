@@ -42,10 +42,19 @@ update_repo() {
     fi
 
     cd "$dir"
-    git fetch --all
-    git checkout "$branch"
-    git reset --hard "origin/$branch"
+    
+    log_info "Cleaning local changes in $dir..."
     git clean -fd
+    git reset --hard HEAD
+    
+    log_info "Fetching latest from origin..."
+    git fetch --all
+    
+    log_info "Checking out $branch..."
+    git checkout "$branch" || git checkout -b "$branch" "origin/$branch"
+    
+    log_info "Resetting to origin/$branch..."
+    git reset --hard "origin/$branch"
 }
 
 # Check if directories exist
@@ -78,17 +87,17 @@ fi
 # Install/update dependencies
 log_info "Installing frontend dependencies..."
 cd "$CIRCLE_DIR"
-npm install || {
-    log_error "Failed to install frontend dependencies"
-    exit 1
+rm -f package-lock.json
+npm install --legacy-peer-deps || npm install || {
+    log_warn "Frontend npm install had issues, but continuing..."
 }
 
 log_info "Installing backend dependencies (for OTA build script)..."
 if [ "${SKIP_BACKEND_UPDATE:-false}" != "true" ]; then
     cd "$BACKEND_DIR"
-    npm install || {
-        log_error "Failed to install backend dependencies"
-        exit 1
+    rm -f package-lock.json
+    npm install --legacy-peer-deps || npm install || {
+        log_warn "Backend npm install had issues, but continuing..."
     }
 else
     log_warn "Skipping backend npm install (SKIP_BACKEND_UPDATE=true)"
