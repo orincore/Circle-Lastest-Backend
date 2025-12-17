@@ -43,18 +43,27 @@ update_repo() {
 
     cd "$dir"
     
-    log_info "Cleaning local changes in $dir..."
-    git clean -fd
+    log_info "Aggressively cleaning local changes in $dir..."
+    # Remove package-lock.json explicitly before any git operations
+    rm -f package-lock.json
+    # Clean untracked files and directories
+    git clean -ffd
+    # Remove git index to force refresh
+    rm -f .git/index.lock
+    # Reset all tracked files to HEAD
     git reset --hard HEAD
+    # Remove any stashed changes
+    git stash drop || true
     
     log_info "Fetching latest from origin..."
-    git fetch --all
+    git fetch --all --prune
     
     log_info "Checking out $branch..."
-    git checkout "$branch" || git checkout -b "$branch" "origin/$branch"
+    git checkout -f "$branch" || git checkout -f -b "$branch" "origin/$branch"
     
     log_info "Resetting to origin/$branch..."
     git reset --hard "origin/$branch"
+    git clean -ffd
 }
 
 # Check if directories exist
