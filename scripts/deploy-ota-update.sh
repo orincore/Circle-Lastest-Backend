@@ -102,15 +102,11 @@ npm install --legacy-peer-deps || npm install || {
 }
 
 log_info "Installing backend dependencies (for OTA build script)..."
-if [ "${SKIP_BACKEND_UPDATE:-false}" != "true" ]; then
-    cd "$BACKEND_DIR"
-    rm -f package-lock.json
-    npm install --legacy-peer-deps || npm install || {
-        log_warn "Backend npm install had issues, but continuing..."
-    }
-else
-    log_warn "Skipping backend npm install (SKIP_BACKEND_UPDATE=true)"
-fi
+cd "$BACKEND_DIR"
+rm -f package-lock.json
+npm install --legacy-peer-deps || npm install || {
+    log_warn "Backend npm install had issues, but continuing..."
+}
 
 # Build OTA updates
 log_info "Building OTA updates..."
