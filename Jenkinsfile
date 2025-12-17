@@ -574,19 +574,19 @@ pipeline {
                             ),
                             string(credentialsId: 'circle-internal-api-key', variable: 'INTERNAL_API_KEY')
                         ]) {
-                            sh '''
+                            sh """
                                 echo "[OTA] Connecting to ${SERVER_USER}@${SERVER_IP}..."
-                                ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
+                                ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} \"
                                     set -e
-                                    echo "[OTA] Running deploy-ota-update.sh in ${DEPLOY_DIR}"
-                                    export INTERNAL_API_KEY="'"$INTERNAL_API_KEY"'"
-                                    export RUNTIME_VERSION="'"${RUNTIME_VERSION}"'"
-                                    export SKIP_BACKEND_UPDATE="'"''' + skipBackendUpdate + '''"'"
+                                    echo \"[OTA] Running deploy-ota-update.sh in ${DEPLOY_DIR}\"
+                                    export INTERNAL_API_KEY=\"\$INTERNAL_API_KEY\"
+                                    export RUNTIME_VERSION=\"${RUNTIME_VERSION}\"
+                                    export SKIP_BACKEND_UPDATE=\"${skipBackendUpdate}\"
                                     cd ${DEPLOY_DIR}
                                     chmod +x scripts/deploy-ota-update.sh
                                     ./scripts/deploy-ota-update.sh
-                                '
-                            '''
+                                \"
+                            """
                         }
 
                         echo "✅ OTA Updates deployed successfully!"
