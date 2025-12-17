@@ -43,6 +43,7 @@ pipeline {
         booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild Docker images without cache')
         booleanParam(name: 'SKIP_DEPLOY', defaultValue: false, description: 'Skip deployment (only validate)')
         booleanParam(name: 'DEPLOY_OTA', defaultValue: true, description: 'Deploy OTA updates after backend deployment')
+        booleanParam(name: 'OTA_ONLY', defaultValue: false, description: 'Run only OTA update deployment (skip backend blue-green deploy)')
         choice(name: 'DEPLOY_TARGET', choices: ['rolling', 'blue-only', 'green-only'], description: 'Deployment target (rolling = both sets)')
     }
 
@@ -99,7 +100,7 @@ pipeline {
         // ============================================
         stage('Deploy') {
             when {
-                expression { return !params.SKIP_DEPLOY }
+                expression { return !params.SKIP_DEPLOY && !params.OTA_ONLY }
             }
             steps {
                 withCredentials([sshUserPrivateKey(
@@ -502,6 +503,40 @@ pipeline {
                                 echo "Traffic is now load-balanced across both sets!"
                             '
                         """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy OTA Updates') {
+            when {
+                expression { return !params.SKIP_DEPLOY && params.DEPLOY_OTA }
+            }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'root-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    ),
+                    string(credentialsId: 'circle-internal-api-key', variable: 'INTERNAL_API_KEY')
+                ]) {
+                    script {
+                        def skipBackendUpdate = params.OTA_ONLY ? 'true' : 'false'
+                        sh '''
+                            echo "[OTA] Connecting to ${SERVER_USER}@${SERVER_IP}..."
+
+                            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} '
+                                set -e
+                                echo "[OTA] Running deploy-ota-update.sh in ${DEPLOY_DIR}"
+                                export INTERNAL_API_KEY="'"$INTERNAL_API_KEY"'"
+                                export RUNTIME_VERSION="'"${RUNTIME_VERSION}"'"
+                                export SKIP_BACKEND_UPDATE="'"''' + skipBackendUpdate + '''"'"
+                                cd ${DEPLOY_DIR}
+                                chmod +x scripts/deploy-ota-update.sh
+                                ./scripts/deploy-ota-update.sh
+                            '
+                        '''
                     }
                 }
             }

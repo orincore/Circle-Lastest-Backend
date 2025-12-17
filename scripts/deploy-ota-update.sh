@@ -32,6 +32,22 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+update_repo() {
+    local dir="$1"
+    local branch="$2"
+
+    if [ ! -d "$dir/.git" ]; then
+        log_error "Not a git repo: $dir"
+        exit 1
+    fi
+
+    cd "$dir"
+    git fetch --all
+    git checkout "$branch"
+    git reset --hard "origin/$branch"
+    git clean -fd
+}
+
 # Check if directories exist
 if [ ! -d "$CIRCLE_DIR" ]; then
     log_error "Circle frontend directory not found: $CIRCLE_DIR"
@@ -45,17 +61,19 @@ fi
 
 # Pull latest changes
 log_info "Pulling latest changes..."
-cd "$CIRCLE_DIR"
-git pull origin main || {
+update_repo "$CIRCLE_DIR" "main" || {
     log_error "Failed to pull frontend changes"
     exit 1
 }
 
-cd "$BACKEND_DIR"
-git pull origin main || {
-    log_error "Failed to pull backend changes"
-    exit 1
-}
+if [ "${SKIP_BACKEND_UPDATE:-false}" != "true" ]; then
+    update_repo "$BACKEND_DIR" "main" || {
+        log_error "Failed to pull backend changes"
+        exit 1
+    }
+else
+    log_warn "Skipping backend repo update (SKIP_BACKEND_UPDATE=true)"
+fi
 
 # Install/update dependencies
 log_info "Installing frontend dependencies..."
@@ -66,11 +84,15 @@ npm install || {
 }
 
 log_info "Installing backend dependencies (for OTA build script)..."
-cd "$BACKEND_DIR"
-npm install || {
-    log_error "Failed to install backend dependencies"
-    exit 1
-}
+if [ "${SKIP_BACKEND_UPDATE:-false}" != "true" ]; then
+    cd "$BACKEND_DIR"
+    npm install || {
+        log_error "Failed to install backend dependencies"
+        exit 1
+    }
+else
+    log_warn "Skipping backend npm install (SKIP_BACKEND_UPDATE=true)"
+fi
 
 # Build OTA updates
 log_info "Building OTA updates..."
