@@ -69,7 +69,6 @@ import dockerMonitoringRouter from './routes/docker-monitoring.routes.js'
 import appVersionRouter from './routes/app-version.routes.js'
 import promptMatchingRouter from './routes/prompt-matching.routes.js'
 import debugMatchingRouter from './routes/debug-matching.routes.js'
-import updatesRouter from './routes/updates.routes.js'
 import locationRouter from './routes/location.routes.js'
 import webhookRouter from './routes/webhook.routes.js'
 import mlMatchingRouter from './routes/ml-matching.routes.js'
@@ -184,11 +183,8 @@ app.use((req, res, next) => {
     return next();
   }
   
-  // Allow larger payloads for OTA updates (up to 10MB for Hermes bundles)
-  const limit = req.path.includes('/api/updates/upload') ? '10mb' : '2mb';
-  
   express.json({ 
-    limit,
+    limit: '2mb',
     strict: true,
     verify: (req: any, _res: any, buf: Buffer) => {
       (req as any).rawBody = buf;
@@ -204,12 +200,9 @@ app.use((req, res, next) => {
     return next();
   }
   
-  // Allow larger payloads for OTA updates
-  const limit = req.path.includes('/api/updates/upload') ? '10mb' : '2mb';
-  
   express.urlencoded({ 
     extended: true,
-    limit,
+    limit: '2mb',
     parameterLimit: 100,
   })(req, res, next);
 });
@@ -224,12 +217,11 @@ app.use((req, res, next) => {
   sanitizeInput(req, res, next);
 });
 
-// Request size validation (skip for file upload routes and OTA updates)
+// Request size validation (skip for file upload routes)
 app.use((req, res, next) => {
   if (req.path.includes('/verification/submit') || 
       req.path.includes('/upload') ||
-      req.path.includes('/user-photos') ||
-      req.path.includes('/api/updates/upload')) {
+      req.path.includes('/user-photos')) {
     return next();
   }
   validateRequestSize(2 * 1024 * 1024)(req, res, next); // 2MB limit
@@ -327,7 +319,6 @@ app.use('/api/app-version', appVersionRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/match', promptMatchingRouter)
 app.use('/api/debug/match', debugMatchingRouter)
-app.use('/api/updates', updatesRouter)
 app.use('/api/location', locationRouter)
 app.use('/api/webhook', webhookRouter)
 app.use('/api/ml-matching', mlMatchingRouter)

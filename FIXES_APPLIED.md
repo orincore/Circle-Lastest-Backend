@@ -106,29 +106,26 @@ exec su-exec nodejs "$@"
 
 ---
 
-## 🚀 OTA Updates - Now Working
+## 🚀 OTA Updates - Migrated to EAS Update
 
-### Directory Structure
+**Note:** The self-hosted OTA update system has been removed and replaced with Expo's official EAS Update service.
+
+### What Changed
+- ❌ **REMOVED:** Self-hosted `/api/updates/*` endpoints
+- ❌ **REMOVED:** Local bundle storage in `/app/public/updates/`
+- ✅ **MIGRATED TO:** Expo EAS Update (https://u.expo.dev/)
+
+### Benefits of EAS Update
+- Global CDN for faster update delivery
+- No server maintenance required
+- Built-in runtime version compatibility
+- Channel-based deployment (development, preview, production)
+
+### Publishing Updates
+```bash
+# From CircleReact directory
+eas update --channel production --message "Your update message"
 ```
-/app/public/updates/
-├── manifests/          # Update manifests (JSON)
-│   ├── android-1.0.0.json
-│   └── ios-1.0.0.json
-└── bundles/            # JS bundles (by hash)
-    └── <sha256-hash>
-```
-
-### Permissions
-- Owner: `nodejs:nodejs` (uid 1001, gid 1001)
-- Created by entrypoint as root, then chowned
-- Shared volume across blue/green deployments
-
-### Endpoints Working
-- ✅ `GET /api/updates/manifest` - Expo updates protocol v0 & v1
-- ✅ `GET /api/updates/assets/:hash` - Bundle downloads
-- ✅ `POST /api/updates/upload` - CI/CD upload endpoint
-- ✅ `GET /api/updates/status` - Current versions
-- ✅ `GET /api/updates/debug` - Diagnostic info
 
 ---
 
@@ -169,25 +166,13 @@ docker ps
 ```
 **Expected:** All containers show "healthy" status
 
-### 3. Test OTA Endpoints
+### 3. Test EAS Update (from CircleReact directory)
 ```bash
-# Debug endpoint
-curl https://api.circle.orincore.com/api/updates/debug
+# Check update status
+eas update:list --channel production
 
-# Test manifest
-curl -H "expo-platform: android" \
-     -H "expo-runtime-version: 1.0.0" \
-     -H "expo-protocol-version: 1" \
-     https://api.circle.orincore.com/api/updates/manifest
-```
-
-### 4. Upload New Update (CI/CD)
-```bash
-curl -X POST https://api.circle.orincore.com/api/updates/upload \
-  -H "x-api-key: $INTERNAL_API_KEY" \
-  -F "bundle=@bundle.js" \
-  -F "platform=android" \
-  -F "runtimeVersion=1.0.0"
+# Publish a new update
+eas update --channel production --message "Update description"
 ```
 
 ---
@@ -237,7 +222,7 @@ curl -X POST https://api.circle.orincore.com/api/updates/upload \
 - ✅ Socket.IO servers handling WebSocket connections
 - ✅ Matchmaking workers processing background jobs
 - ✅ Cron jobs running on schedule
-- ✅ OTA updates working for mobile apps
+- ✅ OTA updates via Expo EAS Update
 - ✅ CI/CD pipeline deploying successfully
 - ✅ Blue-green deployments with zero downtime
 - ✅ All health checks passing
