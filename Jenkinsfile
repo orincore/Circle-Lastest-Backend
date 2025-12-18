@@ -27,8 +27,7 @@ pipeline {
         DRAIN_WAIT_SECONDS = '5'
         GRACEFUL_SHUTDOWN_WAIT = '3'
         
-        // OTA Update Configuration
-        RUNTIME_VERSION = '1.0.0'
+        // Internal API Key for ML service
         INTERNAL_API_KEY = credentials('circle-internal-api-key')
     }
 
@@ -42,8 +41,6 @@ pipeline {
     parameters {
         booleanParam(name: 'FORCE_REBUILD', defaultValue: false, description: 'Force rebuild Docker images without cache')
         booleanParam(name: 'SKIP_DEPLOY', defaultValue: false, description: 'Skip deployment (only validate)')
-        booleanParam(name: 'DEPLOY_OTA', defaultValue: true, description: 'Deploy OTA updates after backend deployment')
-        booleanParam(name: 'OTA_ONLY', defaultValue: false, description: 'Run only OTA update deployment (skip backend blue-green deploy)')
         choice(name: 'DEPLOY_TARGET', choices: ['rolling', 'blue-only', 'green-only'], description: 'Deployment target (rolling = both sets)')
     }
 
@@ -100,7 +97,7 @@ pipeline {
         // ============================================
         stage('Deploy') {
             when {
-                expression { return !params.SKIP_DEPLOY && !params.OTA_ONLY }
+                expression { return !params.SKIP_DEPLOY }
             }
             steps {
                 withCredentials([sshUserPrivateKey(
@@ -474,13 +471,13 @@ pipeline {
                                 fi
                                 
                                 # ============================================
-                                # Step 8: Cleanup (preserving OTA volume)
+                                # Step 8: Cleanup
                                 # ============================================
                                 echo ""
                                 echo "🧹 Step 7: Cleanup..."
                                 docker image prune -f > /dev/null 2>&1 || true
                                 docker container prune -f > /dev/null 2>&1 || true
-                                # Note: NOT pruning volumes to preserve OTA updates data
+                                # Note: NOT pruning volumes to preserve persistent data
                                 
                                 # ============================================
                                 # Final Status
@@ -548,57 +545,6 @@ pipeline {
             }
         }
 
-        // ============================================
-        // Stage 4: Deploy OTA Updates
-        // ============================================
-        stage('Deploy OTA Updates') {
-            when {
-                allOf {
-                    expression { return !params.SKIP_DEPLOY }
-                    expression { return params.DEPLOY_OTA }
-                }
-            }
-            steps {
-                script {
-                    echo "🚀 Starting OTA Update Deployment..."
-
-                    def skipBackendUpdate = params.OTA_ONLY ? 'true' : 'false'
-
-                    // Do not fail the whole pipeline if OTA fails; just mark this stage as failed
-                    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                        withCredentials([
-                            sshUserPrivateKey(
-                                credentialsId: 'root-ssh-key',
-                                keyFileVariable: 'SSH_KEY',
-                                usernameVariable: 'SSH_USER'
-                            ),
-                            string(credentialsId: 'circle-internal-api-key', variable: 'INTERNAL_API_KEY')
-                        ]) {
-                            sh """
-                                echo "[OTA] Connecting to ${SERVER_USER}@${SERVER_IP}..."
-                                ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} \"
-                                    set -e
-                                    echo \"[OTA] Pulling latest backend repo to get fresh deploy script...\"
-                                    cd ${DEPLOY_DIR}
-                                    git fetch --all
-                                    git reset --hard origin/main
-                                    git clean -ffd
-                                    
-                                    echo \"[OTA] Running deploy-ota-update.sh in ${DEPLOY_DIR}\"
-                                    export INTERNAL_API_KEY=\"\$INTERNAL_API_KEY\"
-                                    export RUNTIME_VERSION=\"${RUNTIME_VERSION}\"
-                                    export SKIP_BACKEND_UPDATE=\"${skipBackendUpdate}\"
-                                    chmod +x scripts/deploy-ota-update.sh
-                                    ./scripts/deploy-ota-update.sh
-                                \"
-                            """
-                        }
-
-                        echo "✅ OTA Updates deployed successfully!"
-                    }
-                }
-            }
-        }
     }
 
     // ============================================
