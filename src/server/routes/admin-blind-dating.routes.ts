@@ -348,6 +348,59 @@ router.post('/force-match-all', requireAuth, requireAdmin, async (req: AdminRequ
 })
 
 /**
+ * POST /api/admin/blind-dating/test-continuous-matcher
+ * Test the continuous blind matching service
+ */
+router.post('/test-continuous-matcher', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    logger.info({ adminId: req.user!.id }, '🧪 Admin testing continuous blind matcher')
+    
+    // Import and run one matching cycle
+    const { runMatchingCycle } = await import('../workers/continuous-blind-matching.js')
+    const result = await runMatchingCycle()
+    
+    res.json({
+      success: true,
+      message: 'Continuous matcher test completed',
+      result,
+      note: 'This ran one matching cycle. The actual service runs every 4-5 hours automatically.'
+    })
+  } catch (error) {
+    logger.error({ error, adminId: req.user!.id }, 'Error testing continuous matcher')
+    res.status(500).json({ 
+      error: 'Failed to test continuous matcher',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    })
+  }
+})
+
+/**
+ * POST /api/admin/blind-dating/test-reminder-service
+ * Test the inactive blind date reminder service
+ */
+router.post('/test-reminder-service', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
+  try {
+    logger.info({ adminId: req.user!.id }, '🧪 Admin testing reminder service')
+    
+    // Import and run one check cycle
+    const { checkInactiveMatches } = await import('../workers/inactive-blind-date-reminder.js')
+    await checkInactiveMatches()
+    
+    res.json({
+      success: true,
+      message: 'Reminder service test completed',
+      note: 'This checked for inactive matches and sent reminders. The actual service runs every 6 hours automatically.'
+    })
+  } catch (error) {
+    logger.error({ error, adminId: req.user!.id }, 'Error testing reminder service')
+    res.status(500).json({ 
+      error: 'Failed to test reminder service',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    })
+  }
+})
+
+/**
  * POST /api/admin/blind-dating/create-match
  * Create a blind date match between two specific users
  * Validates: opposite genders, not already friends, no existing active match

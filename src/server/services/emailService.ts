@@ -2981,6 +2981,106 @@ https://circle.orincore.com
     </html>
     `
   }
+
+  /**
+   * Send blind date reminder email
+   */
+  async sendBlindDateReminder(email: string, name: string, matchId: string): Promise<boolean> {
+    try {
+      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle - Dating App" <noreply@circle.orincore.com>'
+      const mailOptions = {
+        from: defaultFrom,
+        to: email,
+        subject: '💬 Your Blind Date Match is Waiting!',
+        html: this.getBlindDateReminderTemplate(name, matchId),
+        text: `Hi ${name},\n\nYou have an active blind date match waiting for you! Start chatting to reveal their identity and see if there's a connection.\n\nOpen Circle app to start chatting: https://circle.orincore.com\n\nBest regards,\nThe Circle Team`,
+        headers: {
+          'X-Priority': '3',
+          'X-Mailer': 'Circle Dating App',
+        },
+      }
+
+      await this.transporter.sendMail(mailOptions)
+      console.log('✅ Blind date reminder email sent:', email)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send blind date reminder email:', error)
+      return false
+    }
+  }
+
+  /**
+   * Get blind date reminder email template
+   */
+  private getBlindDateReminderTemplate(name: string, matchId: string): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; text-align: center; }
+            .logo { font-size: 32px; font-weight: bold; color: #ffffff; margin-bottom: 10px; }
+            .header-text { color: #ffffff; font-size: 18px; }
+            .content { padding: 40px 30px; }
+            .title { font-size: 24px; font-weight: bold; color: #1a1a1a; margin-bottom: 20px; text-align: center; }
+            .message { font-size: 16px; color: #4a4a4a; line-height: 1.6; margin-bottom: 30px; }
+            .cta-button { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: bold; font-size: 16px; text-align: center; margin: 20px 0; }
+            .features { background-color: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
+            .feature-item { margin: 10px 0; padding-left: 25px; position: relative; }
+            .feature-item:before { content: "💕"; position: absolute; left: 0; }
+            .footer { background-color: #f8f9fa; padding: 30px; text-align: center; color: #6c757d; font-size: 14px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">Circle</div>
+                <div class="header-text">Your Blind Date is Waiting!</div>
+            </div>
+            
+            <div class="content">
+                <div class="title">💬 Don't Miss Your Match!</div>
+                
+                <div class="message">
+                    Hi ${name},<br><br>
+                    You have an <strong>active blind date match</strong> waiting for you! 🎭<br><br>
+                    Your match is excited to connect, but you haven't started chatting yet. 
+                    Start the conversation now to reveal their identity and see if there's a spark!
+                </div>
+                
+                <div style="text-align: center;">
+                    <a href="https://circle.orincore.com" class="cta-button">Open Circle & Start Chatting</a>
+                </div>
+                
+                <div class="features">
+                    <div class="feature-item">Send messages to reveal their identity</div>
+                    <div class="feature-item">The more you chat, the closer you get to the reveal</div>
+                    <div class="feature-item">Build a connection before seeing their profile</div>
+                </div>
+                
+                <div class="message" style="margin-top: 30px; font-size: 14px; color: #6c757d;">
+                    <strong>Tip:</strong> Blind dates are all about personality first! Ask interesting questions 
+                    and be yourself. The reveal will be worth the wait! ✨
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div style="font-weight: bold; margin-bottom: 10px;">Circle</div>
+                <div>Making meaningful connections, one conversation at a time 💜</div>
+                <div style="margin-top: 20px; font-size: 12px;">
+                    This is an automated reminder. Please do not reply to this email.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
+  }
 }
 
 export default new EmailService()

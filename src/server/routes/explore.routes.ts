@@ -110,12 +110,65 @@ async function getAllSectionsLogic(currentUserId: string) {
     if (otherId) blindPartnerIds.add(otherId)
   })
 
-  // Filter eligible users
-  const eligibleUsers = allUsers?.filter(user => 
-    !friendIds.has(user.id) &&
-    !blockedIds.has(user.id) &&
-    !blindPartnerIds.has(user.id)
-  ) || []
+  // Get current user's preferences for filtering
+  const userNeeds = currentUser.needs || []
+  const userInterests = currentUser.interests || []
+  const userAgePreference = currentUser.age_preference || 'flexible'
+  const userLocationPreference = currentUser.location_preference || 'nearby'
+  
+  // Calculate age range based on preference
+  const getAgeRange = (preference: string, userAge: number) => {
+    switch (preference) {
+      case 'younger': return [Math.max(18, userAge - 10), userAge]
+      case 'older': return [userAge, userAge + 10]
+      case 'similar': return [userAge - 5, userAge + 5]
+      case 'flexible':
+      default: return [18, 100]
+    }
+  }
+  
+  const [minAge, maxAge] = getAgeRange(userAgePreference, currentUser.age || 25)
+  
+  // Filter eligible users based on preferences
+  const eligibleUsers = allUsers?.filter(user => {
+    // Basic filters
+    if (friendIds.has(user.id) || blockedIds.has(user.id) || blindPartnerIds.has(user.id)) {
+      return false
+    }
+    
+    // Age preference filter
+    if (user.age && (user.age < minAge || user.age > maxAge)) {
+      return false
+    }
+    
+    // Needs matching - at least one common need
+    const userNeedsLower = userNeeds.map((n: string) => n.toLowerCase())
+    const candidateNeeds = (user.needs || []).map((n: string) => n.toLowerCase())
+    const hasCommonNeed = userNeedsLower.length === 0 || candidateNeeds.length === 0 || 
+      userNeedsLower.some((need: string) => candidateNeeds.includes(need))
+    
+    if (!hasCommonNeed) {
+      return false
+    }
+    
+    // Location preference filter (if user has location data)
+    if (currentUser.latitude && currentUser.longitude && user.latitude && user.longitude) {
+      const distance = calculateDistance(
+        currentUser.latitude, currentUser.longitude,
+        user.latitude, user.longitude
+      )
+      
+      // Apply location preference
+      if (userLocationPreference === 'nearby' && distance > 50) {
+        return false
+      } else if (userLocationPreference === 'same_city' && distance > 100) {
+        return false
+      }
+      // 'flexible' and 'international' allow all distances
+    }
+    
+    return true
+  }) || []
 
   // Calculate scores and categorize users
   const sevenDaysAgo = new Date()

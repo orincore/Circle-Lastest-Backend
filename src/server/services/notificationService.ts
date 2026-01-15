@@ -304,9 +304,8 @@ export class NotificationService {
    * Create notification for profile visit
    */
   static async notifyProfileVisit(profileOwnerId: string, visitorId: string, visitorName: string): Promise<void> {
-    
-    
     try {
+      // Create in-app notification
       await this.createNotification({
         recipient_id: profileOwnerId,
         sender_id: visitorId,
@@ -315,6 +314,23 @@ export class NotificationService {
         message: `${visitorName} visited your profile`,
         data: { action: 'profile_visit' }
       });
+      
+      // Also send push notification for immediate awareness
+      const { PushNotificationService } = await import('./pushNotificationService.js');
+      await PushNotificationService.sendPushNotification(profileOwnerId, {
+        title: '👀 Profile Visit',
+        body: `${visitorName} checked out your profile!`,
+        data: {
+          type: 'profile_visit',
+          userId: visitorId,
+          action: 'view_profile',
+          screen: 'profile-view',
+          params: { userId: visitorId }
+        },
+        sound: 'default',
+        priority: 'default'
+      });
+      
       //console.log('✅ Profile visit notification created successfully');
     } catch (error) {
       console.error('❌ Failed to create profile visit notification:', error);
