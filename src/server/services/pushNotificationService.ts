@@ -56,6 +56,24 @@ export class PushNotificationService {
     notification: PushNotificationData
   ): Promise<boolean> {
     try {
+      // First verify user account is active and not deleted/suspended
+      const { data: userProfile, error: userError } = await supabase
+        .from('profiles')
+        .select('id, deleted_at, is_suspended')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (userError || !userProfile) {
+        logger.warn({ userId, error: userError }, 'User profile not found for push notification');
+        return false;
+      }
+
+      // Don't send notifications to deleted or suspended accounts
+      if (userProfile.deleted_at || userProfile.is_suspended) {
+        logger.info({ userId, deleted: !!userProfile.deleted_at, suspended: userProfile.is_suspended }, 'Skipping push notification for inactive account');
+        return false;
+      }
+
       // Get user's push tokens
       const { data: pushTokens, error } = await supabase
         .from('push_tokens')
