@@ -475,11 +475,11 @@ export async function deleteMessage(chatId: string, messageId: string, userId: s
   }
 
   // Soft delete by marking as deleted instead of hard delete
+  // Keep original text intact - only mark as deleted
   const { error } = await supabase
     .from('messages')
     .update({ 
       is_deleted: true,
-      text: 'This message was deleted',
       updated_at: new Date().toISOString()
     })
     .eq('id', messageId)
