@@ -6,6 +6,8 @@ import { MLMatchingService } from './ml-matching.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
 import { PushNotificationService } from './pushNotificationService.js'
+import { BeaconRetryService } from './beacon-retry.service.js'
+import EmailService from './emailService.js'
 
 /**
  * Prompt-Based Giver/Receiver Matching Service
@@ -552,14 +554,31 @@ export class PromptMatchingService {
         friendship.user1_id === receiverUserId ? friendship.user2_id : friendship.user1_id
       ) || []
 
-      // Combine excluded giver IDs with friend IDs
-      const allExcludedIds = [...excludedGiverIds, ...friendIds]
+      // Get active blind date partners to exclude
+      const { data: blindDates, error: blindDateError } = await supabase
+        .from('blind_date_matches')
+        .select('user1_id, user2_id')
+        .or(`user1_id.eq.${receiverUserId},user2_id.eq.${receiverUserId}`)
+        .in('status', ['active', 'matched'])
+
+      if (blindDateError) {
+        logger.error({ error: blindDateError }, 'Error fetching blind dates for exclusion')
+      }
+
+      // Extract blind date partner IDs
+      const blindDatePartnerIds = blindDates?.map(match => 
+        match.user1_id === receiverUserId ? match.user2_id : match.user1_id
+      ) || []
+
+      // Combine all excluded IDs: previous attempts, friends, and blind date partners
+      const allExcludedIds = [...excludedGiverIds, ...friendIds, ...blindDatePartnerIds]
 
       logger.info({ 
         receiverUserId, 
-        friendsCount: friendIds.length, 
+        friendsCount: friendIds.length,
+        blindDatePartnersCount: blindDatePartnerIds.length,
         totalExcluded: allExcludedIds.length 
-      }, 'Excluding friends from giver matching')
+      }, 'Excluding friends and blind date partners from giver matching')
 
       // Build query with demographic filters
       let query = supabase
@@ -902,7 +921,7 @@ export class PromptMatchingService {
       await PushNotificationService.sendPushNotification(
         bestMatch.giver_user_id,
         {
-          title: '� Someone Needs Your Help!',
+          title: '🆘 Someone Needs Your Help!',
           body: summary || `Somebody needs help with something you're good at!`,
           data: {
             type: 'help_request',
@@ -914,13 +933,26 @@ export class PromptMatchingService {
         }
       )
 
+      // Send email notification to giver
+      await BeaconRetryService.sendGiverEmailNotification(
+        bestMatch.giver_user_id,
+        requestId,
+        receiverProfile?.first_name || 'Someone',
+        promptText,
+        summary || promptText.substring(0, 100)
+      )
+
+      // Start timeout monitoring (1 hour)
+      BeaconRetryService.startTimeoutMonitoring(requestId, bestMatch.giver_user_id, 1)
+
       logger.info({ 
         requestId, 
         giverId: bestMatch.giver_user_id, 
         similarityScore: bestMatch.similarity_score,
         excludedFriendsCount: friendIds.length,
+        excludedBlindDatesCount: blindDatePartnerIds.length,
         isTargetedMatch: true
-      }, 'Single perfect giver notified of targeted help request')
+      }, 'Single perfect giver notified of targeted help request with email and timeout monitoring started')
 
       return { 
         requestId, 

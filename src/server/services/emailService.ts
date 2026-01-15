@@ -11,9 +11,11 @@ interface EmailOTP {
 
 class EmailService {
   private transporter: nodemailer.Transporter
+  private defaultFrom: string
 
   constructor() {
     
+    this.defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle - Dating App" <verify@circle.orincore.com>'
 
     // Configure email transporter using SMTP (same as campaigns)
     this.transporter = nodemailer.createTransport({
@@ -48,9 +50,8 @@ class EmailService {
    */
   async sendOTPEmail(email: string, otp: string, name?: string): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle - Dating App" <verify@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: this.defaultFrom,
         to: email,
         subject: `${otp} is your Circle verification code`,
         html: this.getOTPEmailTemplate(otp, name),
@@ -3007,6 +3008,132 @@ https://circle.orincore.com
       console.error('❌ Failed to send blind date reminder email:', error)
       return false
     }
+  }
+
+  /**
+   * Send beacon helper request email to giver
+   */
+  async sendBeaconHelperRequest(
+    email: string,
+    giverName: string,
+    receiverName: string,
+    helpSummary: string,
+    requestId: string
+  ): Promise<boolean> {
+    try {
+      const mailOptions = {
+        from: this.defaultFrom,
+        to: email,
+        subject: '🆘 Someone Needs Your Help!',
+        html: this.getBeaconHelperRequestTemplate(giverName, receiverName, helpSummary, requestId),
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High',
+          'Importance': 'high',
+        },
+      }
+
+      await this.transporter.sendMail(mailOptions)
+      console.log('✅ Beacon helper request email sent:', email)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to send beacon helper request email:', error)
+      return false
+    }
+  }
+
+  /**
+   * Get beacon helper request email template
+   */
+  private getBeaconHelperRequestTemplate(
+    giverName: string,
+    receiverName: string,
+    helpSummary: string,
+    requestId: string
+  ): string {
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; }
+            .header { background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%); padding: 40px 20px; text-align: center; }
+            .logo { font-size: 32px; font-weight: bold; color: #ffffff; margin-bottom: 10px; }
+            .header-text { color: #ffffff; font-size: 18px; }
+            .content { padding: 40px 30px; }
+            .title { font-size: 24px; font-weight: bold; color: #1a1a1a; margin-bottom: 20px; text-align: center; }
+            .message { font-size: 16px; color: #4a4a4a; line-height: 1.6; margin-bottom: 30px; }
+            .help-request { background: linear-gradient(135deg, #FFF5F5 0%, #FFE8E8 100%); border-left: 4px solid #FF6B6B; padding: 20px; border-radius: 8px; margin: 20px 0; }
+            .help-text { font-size: 16px; color: #2d3748; font-style: italic; line-height: 1.6; }
+            .cta-button { display: inline-block; background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: bold; font-size: 16px; text-align: center; margin: 20px 0; }
+            .features { background-color: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
+            .feature-item { margin: 10px 0; padding-left: 25px; position: relative; }
+            .feature-item:before { content: "✨"; position: absolute; left: 0; }
+            .footer { background-color: #f8f9fa; padding: 30px; text-align: center; color: #6c757d; font-size: 14px; }
+            .urgent-badge { display: inline-block; background-color: #FF6B6B; color: white; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 15px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">🆘 Circle</div>
+                <div class="header-text">Beacon Helper Request</div>
+            </div>
+            
+            <div class="content">
+                <div style="text-align: center;">
+                    <span class="urgent-badge">⏰ RESPONSE NEEDED</span>
+                </div>
+                <div class="title">Someone Needs Your Help!</div>
+                
+                <div class="message">
+                    Hi ${giverName},<br><br>
+                    <strong>${receiverName}</strong> has reached out for help with something you're skilled at! 🌟<br><br>
+                    They're counting on your expertise and would really appreciate your guidance.
+                </div>
+                
+                <div class="help-request">
+                    <div style="font-weight: bold; color: #FF6B6B; margin-bottom: 10px;">📝 Help Request:</div>
+                    <div class="help-text">"${helpSummary}"</div>
+                </div>
+                
+                <div style="text-align: center;">
+                    <a href="https://circle.orincore.com" class="cta-button">Open Circle & Respond</a>
+                </div>
+                
+                <div class="features">
+                    <div class="feature-item">Review the full request in the app</div>
+                    <div class="feature-item">Accept to start a private chat</div>
+                    <div class="feature-item">Share your knowledge and make a difference</div>
+                    <div class="feature-item">Build your helper reputation</div>
+                </div>
+                
+                <div class="message" style="margin-top: 30px; font-size: 14px; color: #6c757d;">
+                    <strong>⏱️ Time Sensitive:</strong> Please respond within 1 hour if you're available to help. 
+                    If you can't help right now, we'll find another helper for them.
+                </div>
+                
+                <div class="message" style="font-size: 14px; color: #6c757d;">
+                    <strong>💡 Why You?</strong> Our AI matched you based on your skills, interests, and experience. 
+                    You're the perfect person to help with this request!
+                </div>
+            </div>
+            
+            <div class="footer">
+                <div style="font-weight: bold; margin-bottom: 10px;">Circle Beacon Helper</div>
+                <div>Connecting people who need help with those who can provide it 🤝</div>
+                <div style="margin-top: 20px; font-size: 12px;">
+                    This is an automated notification. Please respond through the Circle app.
+                    <br>© 2024 Circle App. All rights reserved.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `
   }
 
   /**
