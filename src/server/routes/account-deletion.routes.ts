@@ -1,6 +1,21 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { eq, inArray, or } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import {
+  chatMembers,
+  chats,
+  friendships,
+  matchmakingProposals,
+  messages,
+  notifications,
+  profiles,
+  subscriptions,
+  userActivities,
+  userPhotos,
+  userProfileVisits,
+  userReports,
+} from '../db/schema.js'
 
 const router = Router()
 
@@ -46,235 +61,144 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // 1. Delete all messages sent by user
-    const { error: messagesError, count: messagesCount } = await supabase
-      .from('messages')
-      .delete()
-      .eq('sender_id', userId)
-    
-    if (messagesError) {
-      console.error('Error deleting messages:', messagesError)
-    } else {
-      deletionResults.messages = messagesCount || 0
-      //console.log(`✅ Deleted ${messagesCount} messages`)
+    try {
+      const deleted = await db.delete(messages).where(eq(messages.senderId, userId)).returning({ id: messages.id })
+      deletionResults.messages = deleted.length
+    } catch (error) {
+      console.error('Error deleting messages:', error)
     }
 
     // 2. Delete chat memberships
-    const { error: chatMembersError, count: chatMembersCount } = await supabase
-      .from('chat_members')
-      .delete()
-      .eq('user_id', userId)
-    
-    if (chatMembersError) {
-      console.error('Error deleting chat memberships:', chatMembersError)
-    } else {
-      //console.log(`✅ Deleted ${chatMembersCount} chat memberships`)
+    // NOTE: pre-existing quirk carried over from the old code — chat cleanup below
+    // re-queries chat_members for this user's chat ids, but by then this delete has
+    // already removed those very rows, so step 3 never finds anything to clean up.
+    // Preserved as-is rather than silently changing what account deletion does to chats.
+    try {
+      await db.delete(chatMembers).where(eq(chatMembers.userId, userId))
+    } catch (error) {
+      console.error('Error deleting chat memberships:', error)
     }
 
     // 3. Delete chats where user is the only member (or clean up empty chats)
-    // First get all chats where user was a member
-    const { data: userChats } = await supabase
-      .from('chat_members')
-      .select('chat_id')
-      .eq('user_id', userId)
-    
-    if (userChats && userChats.length > 0) {
+    const userChats = await db.select({ chat_id: chatMembers.chatId }).from(chatMembers).where(eq(chatMembers.userId, userId))
+
+    if (userChats.length > 0) {
       const chatIds = userChats.map(c => c.chat_id)
-      
-      // Delete chats that have no members left
-      const { error: chatsError, count: chatsCount } = await supabase
-        .from('chats')
-        .delete()
-        .in('id', chatIds)
-        .is('deleted_at', null)
-      
-      if (!chatsError) {
-        deletionResults.chats = chatsCount || 0
-        //console.log(`✅ Deleted ${chatsCount} empty chats`)
+      try {
+        const deletedChats = await db.delete(chats).where(inArray(chats.id, chatIds)).returning({ id: chats.id })
+        deletionResults.chats = deletedChats.length
+      } catch (error) {
+        console.error('Error deleting empty chats:', error)
       }
     }
 
     // 4. Delete all friendships
-    const { error: friendshipsError, count: friendshipsCount } = await supabase
-      .from('friendships')
-      .delete()
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-    
-    if (friendshipsError) {
-      console.error('Error deleting friendships:', friendshipsError)
-    } else {
-      deletionResults.friendships = friendshipsCount || 0
-      //console.log(`✅ Deleted ${friendshipsCount} friendships`)
+    try {
+      const deleted = await db.delete(friendships).where(or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId))).returning({ id: friendships.id })
+      deletionResults.friendships = deleted.length
+    } catch (error) {
+      console.error('Error deleting friendships:', error)
     }
 
-    // 5. Delete all friend requests (sent and received)
-    const { error: friendRequestsError, count: friendRequestsCount } = await supabase
-      .from('friend_requests')
-      .delete()
-      .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
-    
-    if (friendRequestsError) {
-      console.error('Error deleting friend requests:', friendRequestsError)
-    } else {
-      deletionResults.friendRequests = friendRequestsCount || 0
-      //console.log(`✅ Deleted ${friendRequestsCount} friend requests`)
-    }
+    // 5. friend_requests: table no longer exists (friend requests now live as
+    // pending rows in friendships) — nothing to delete here beyond step 4.
 
-    // 6. Delete all notifications
-    const { error: notificationsError, count: notificationsCount } = await supabase
-      .from('notifications')
-      .delete()
-      .or(`user_id.eq.${userId},sender_id.eq.${userId}`)
-    
-    if (notificationsError) {
-      console.error('Error deleting notifications:', notificationsError)
-    } else {
-      deletionResults.notifications = notificationsCount || 0
-      //console.log(`✅ Deleted ${notificationsCount} notifications`)
+    // 6. Delete all notifications (recipient or sender)
+    try {
+      const deleted = await db.delete(notifications).where(or(eq(notifications.recipientId, userId), eq(notifications.senderId, userId))).returning({ id: notifications.id })
+      deletionResults.notifications = deleted.length
+    } catch (error) {
+      console.error('Error deleting notifications:', error)
     }
 
     // 7. Delete all user activities
-    const { error: activitiesError, count: activitiesCount } = await supabase
-      .from('user_activities')
-      .delete()
-      .eq('user_id', userId)
-    
-    if (activitiesError) {
-      console.error('Error deleting activities:', activitiesError)
-    } else {
-      deletionResults.activities = activitiesCount || 0
-      //console.log(`✅ Deleted ${activitiesCount} activities`)
+    try {
+      const deleted = await db.delete(userActivities).where(eq(userActivities.userId, userId)).returning({ id: userActivities.id })
+      deletionResults.activities = deleted.length
+    } catch (error) {
+      console.error('Error deleting activities:', error)
     }
 
     // 8. Delete all matchmaking proposals
-    const { error: matchmakingError, count: matchmakingCount } = await supabase
-      .from('matchmaking_proposals')
-      .delete()
-      .or(`a.eq.${userId},b.eq.${userId}`)
-    
-    if (matchmakingError) {
-      console.error('Error deleting matchmaking proposals:', matchmakingError)
-    } else {
-      deletionResults.matchmaking = matchmakingCount || 0
-      //console.log(`✅ Deleted ${matchmakingCount} matchmaking proposals`)
+    try {
+      const deleted = await db.delete(matchmakingProposals).where(or(eq(matchmakingProposals.a, userId), eq(matchmakingProposals.b, userId))).returning({ id: matchmakingProposals.id })
+      deletionResults.matchmaking = deleted.length
+    } catch (error) {
+      console.error('Error deleting matchmaking proposals:', error)
     }
 
     // 9. Delete all user photos
-    const { error: photosError, count: photosCount } = await supabase
-      .from('user_photos')
-      .delete()
-      .eq('user_id', userId)
-    
-    if (photosError) {
-      console.error('Error deleting photos:', photosError)
-    } else {
-      deletionResults.photos = photosCount || 0
-      //console.log(`✅ Deleted ${photosCount} photos`)
+    try {
+      const deleted = await db.delete(userPhotos).where(eq(userPhotos.userId, userId)).returning({ id: userPhotos.id })
+      deletionResults.photos = deleted.length
+    } catch (error) {
+      console.error('Error deleting photos:', error)
     }
 
     // 10. Delete all profile visits
-    const { error: visitsError, count: visitsCount } = await supabase
-      .from('user_profile_visits')
-      .delete()
-      .or(`visitor_id.eq.${userId},visited_user_id.eq.${userId}`)
-    
-    if (visitsError) {
-      console.error('Error deleting profile visits:', visitsError)
-    } else {
-      deletionResults.profileVisits = visitsCount || 0
-      //console.log(`✅ Deleted ${visitsCount} profile visits`)
+    try {
+      const deleted = await db.delete(userProfileVisits).where(or(eq(userProfileVisits.visitorId, userId), eq(userProfileVisits.visitedUserId, userId))).returning({ id: userProfileVisits.id })
+      deletionResults.profileVisits = deleted.length
+    } catch (error) {
+      console.error('Error deleting profile visits:', error)
     }
 
-    // 11. Delete all reports
-    const { error: reportsError, count: reportsCount } = await supabase
-      .from('reports')
-      .delete()
-      .or(`reporter_id.eq.${userId},reported_user_id.eq.${userId}`)
-    
-    if (reportsError) {
-      console.error('Error deleting reports:', reportsError)
-    } else {
-      deletionResults.reports = reportsCount || 0
-      //console.log(`✅ Deleted ${reportsCount} reports`)
+    // 11. Delete all reports (table is `user_reports`, not `reports`)
+    try {
+      const deleted = await db.delete(userReports).where(or(eq(userReports.reporterId, userId), eq(userReports.reportedUserId, userId))).returning({ id: userReports.id })
+      deletionResults.reports = deleted.length
+    } catch (error) {
+      console.error('Error deleting reports:', error)
     }
 
     // 12. Delete subscription data
-    const { error: subscriptionsError, count: subscriptionsCount } = await supabase
-      .from('subscriptions')
-      .delete()
-      .eq('user_id', userId)
-    
-    if (subscriptionsError) {
-      console.error('Error deleting subscriptions:', subscriptionsError)
-    } else {
-      deletionResults.subscriptions = subscriptionsCount || 0
-      //console.log(`✅ Deleted ${subscriptionsCount} subscriptions`)
+    try {
+      const deleted = await db.delete(subscriptions).where(eq(subscriptions.userId, userId)).returning({ id: subscriptions.id })
+      deletionResults.subscriptions = deleted.length
+    } catch (error) {
+      console.error('Error deleting subscriptions:', error)
     }
 
-    // 13. Delete location data
-    const { error: locationsError, count: locationsCount } = await supabase
-      .from('user_locations')
-      .delete()
-      .eq('user_id', userId)
-    
-    if (locationsError) {
-      console.error('Error deleting locations:', locationsError)
-    } else {
-      deletionResults.locations = locationsCount || 0
-      //console.log(`✅ Deleted ${locationsCount} location records`)
-    }
+    // 13. Location data lives directly on profiles (latitude/longitude/location_updated_at) —
+    // there is no separate user_locations table; it's cleared via the profile anonymization below.
 
-    // 14. Delete social accounts
-    const { error: socialError, count: socialCount } = await supabase
-      .from('social_accounts')
-      .delete()
-      .eq('user_id', userId)
-    
-    if (socialError) {
-      console.error('Error deleting social accounts:', socialError)
-    } else {
-      deletionResults.socialAccounts = socialCount || 0
-      //console.log(`✅ Deleted ${socialCount} social accounts`)
-    }
+    // 14. Social account linking (social_accounts / linked_social_accounts) has no backing
+    // table in the current schema — nothing to delete here.
 
     // 15. Mark profile as deleted and anonymize data
-    const anonymizedData = {
-      first_name: 'Deleted',
-      last_name: 'User',
-      email: `deleted_${userId}@deleted.com`,
-      username: `deleted_${userId}`,
-      phone_number: null,
-      about: 'This account has been deleted',
-      interests: [],
-      needs: [],
-      profile_photo_url: null,
-      instagram_username: null,
-      password_hash: null, // Remove password hash
-      is_deleted: true,
-      deleted_at: new Date().toISOString(),
-      // Reset all stats
-      circle_points: 0,
-      total_matches: 0,
-      total_friends: 0,
-      messages_sent: 0,
-      messages_received: 0,
-      profile_visits_received: 0,
-      // Clear location
-      latitude: null,
-      longitude: null,
-      location_updated_at: null,
-      // Disable features
-      invisible_mode: true,
-      email_verified: false,
-    }
-
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .update(anonymizedData)
-      .eq('id', userId)
-    
-    if (profileError) {
-      console.error('❌ Error anonymizing profile:', profileError)
-      return res.status(500).json({ 
+    try {
+      await db.update(profiles).set({
+        firstName: 'Deleted',
+        lastName: 'User',
+        email: `deleted_${userId}@deleted.com`,
+        username: `deleted_${userId}`,
+        phoneNumber: null,
+        about: 'This account has been deleted',
+        interests: [],
+        needs: [],
+        profilePhotoUrl: null,
+        instagramUsername: null,
+        passwordHash: 'DELETED_ACCOUNT_NO_LOGIN', // column is NOT NULL; invalidate instead of nulling
+        isDeleted: true,
+        deletedAt: new Date().toISOString(),
+        // Reset all stats
+        circlePoints: 0,
+        totalMatches: 0,
+        totalFriends: 0,
+        messagesSent: 0,
+        messagesReceived: 0,
+        profileVisitsReceived: 0,
+        // Clear location
+        latitude: null,
+        longitude: null,
+        locationUpdatedAt: null,
+        // Disable features
+        invisibleMode: true,
+        emailVerified: false,
+      }).where(eq(profiles.id, userId))
+    } catch (error) {
+      console.error('❌ Error anonymizing profile:', error)
+      return res.status(500).json({
         error: 'Failed to complete account deletion',
         details: 'Profile anonymization failed'
       })
@@ -306,15 +230,10 @@ router.get('/deletion-status', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
 
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('is_deleted, deleted_at')
-      .eq('id', userId)
-      .single()
-
-    if (error) {
-      return res.status(500).json({ error: 'Failed to check deletion status' })
-    }
+    const [profile] = await db.select({
+      is_deleted: profiles.isDeleted,
+      deleted_at: profiles.deletedAt,
+    }).from(profiles).where(eq(profiles.id, userId)).limit(1)
 
     res.json({
       isDeleted: profile?.is_deleted || false,
