@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { blindDateBlockedMessages, blindDateDailyQueue, blindDateMatches, blindDatingSettings, chatMembers, friendships, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 import { ensureChatForUsers, getRecentChatTextMessagesForModeration } from '../repos/chat.repo.js'
 import { CompatibilityService } from './compatibility.service.js'
@@ -70,6 +72,42 @@ export interface MessageFilterResult {
   analysis?: PersonalInfoAnalysis
 }
 
+function rowToBlindDateSettingsRow(row: typeof blindDatingSettings.$inferSelect): BlindDateSettings {
+  return {
+    id: row.id,
+    user_id: row.userId,
+    is_enabled: row.isEnabled ?? false,
+    daily_match_time: row.dailyMatchTime ?? '09:00:00',
+    max_active_matches: row.maxActiveMatches ?? 3,
+    preferred_reveal_threshold: row.preferredRevealThreshold ?? 30,
+    auto_match: row.autoMatch ?? true,
+    notifications_enabled: row.notificationsEnabled ?? true,
+    last_match_at: row.lastMatchAt ?? undefined,
+  }
+}
+
+function rowToBlindDateMatchRow(row: typeof blindDateMatches.$inferSelect): BlindDateMatch {
+  return {
+    id: row.id,
+    user_a: row.userA,
+    user_b: row.userB,
+    chat_id: row.chatId ?? undefined,
+    compatibility_score: Number(row.compatibilityScore ?? 0),
+    status: row.status as BlindDateMatch['status'],
+    message_count: row.messageCount ?? 0,
+    reveal_threshold: row.revealThreshold ?? 30,
+    user_a_revealed: row.userARevealed ?? false,
+    user_b_revealed: row.userBRevealed ?? false,
+    revealed_at: row.revealedAt ?? undefined,
+    reveal_requested_by: row.revealRequestedBy ?? undefined,
+    reveal_requested_at: row.revealRequestedAt ?? undefined,
+    matched_at: row.matchedAt ?? '',
+    ended_at: row.endedAt ?? undefined,
+    ended_by: row.endedBy ?? undefined,
+    end_reason: row.endReason ?? undefined,
+  }
+}
+
 export class BlindDatingService {
   
   /**
@@ -114,19 +152,16 @@ export class BlindDatingService {
    */
   private static async areUsersFriends(userId1: string, userId2: string): Promise<boolean> {
     try {
-      const { data: friendship, error } = await supabase
-        .from('friendships')
-        .select('id')
-        .or(`and(user1_id.eq.${userId1},user2_id.eq.${userId2}),and(user1_id.eq.${userId2},user2_id.eq.${userId1})`)
-        .in('status', ['active', 'accepted'])
+      const [friendship] = await db.select({ id: friendships.id }).from(friendships)
+        .where(and(
+          or(
+            and(eq(friendships.user1Id, userId1), eq(friendships.user2Id, userId2)),
+            and(eq(friendships.user1Id, userId2), eq(friendships.user2Id, userId1)),
+          ),
+          inArray(friendships.status, ['active', 'accepted']),
+        ))
         .limit(1)
-        .maybeSingle()
-      
-      if (error) {
-        logger.error({ error, userId1, userId2 }, 'Error checking friendship status')
-        return false
-      }
-      
+
       return !!friendship
     } catch (error) {
       logger.error({ error, userId1, userId2 }, 'Error checking friendship status')
@@ -139,18 +174,8 @@ export class BlindDatingService {
    */
   static async getSettings(userId: string): Promise<BlindDateSettings | null> {
     try {
-      const { data, error } = await supabase
-        .from('blind_dating_settings')
-        .select('*')
-        .eq('user_id', userId)
-        .maybeSingle()
-      
-      if (error && error.code !== 'PGRST116') {
-        logger.error({ error, userId }, 'Failed to get blind dating settings')
-        throw error
-      }
-      
-      return data as BlindDateSettings | null
+      const [row] = await db.select().from(blindDatingSettings).where(eq(blindDatingSettings.userId, userId)).limit(1)
+      return row ? rowToBlindDateSettingsRow(row) : null
     } catch (error) {
       logger.error({ error, userId }, 'Error getting blind dating settings')
       return null
@@ -162,25 +187,25 @@ export class BlindDatingService {
    */
   static async updateSettings(userId: string, settings: Partial<BlindDateSettings>): Promise<BlindDateSettings> {
     try {
-      const { data, error } = await supabase
-        .from('blind_dating_settings')
-        .upsert({
-          user_id: userId,
-          ...settings,
-          updated_at: new Date().toISOString()
-        }, {
-          onConflict: 'user_id'
+      const patch: Partial<typeof blindDatingSettings.$inferInsert> = {}
+      if (settings.is_enabled !== undefined) patch.isEnabled = settings.is_enabled
+      if (settings.daily_match_time !== undefined) patch.dailyMatchTime = settings.daily_match_time
+      if (settings.max_active_matches !== undefined) patch.maxActiveMatches = settings.max_active_matches
+      if (settings.preferred_reveal_threshold !== undefined) patch.preferredRevealThreshold = settings.preferred_reveal_threshold
+      if (settings.auto_match !== undefined) patch.autoMatch = settings.auto_match
+      if (settings.notifications_enabled !== undefined) patch.notificationsEnabled = settings.notifications_enabled
+      if (settings.last_match_at !== undefined) patch.lastMatchAt = settings.last_match_at
+
+      const [row] = await db.insert(blindDatingSettings)
+        .values({ userId, ...patch, updatedAt: new Date().toISOString() })
+        .onConflictDoUpdate({
+          target: blindDatingSettings.userId,
+          set: { ...patch, updatedAt: new Date().toISOString() },
         })
-        .select('*')
-        .single()
-      
-      if (error) {
-        logger.error({ error, userId }, 'Failed to update blind dating settings')
-        throw error
-      }
-      
+        .returning()
+
       logger.info({ userId, isEnabled: settings.is_enabled }, 'Blind dating settings updated')
-      return data as BlindDateSettings
+      return rowToBlindDateSettingsRow(row)
     } catch (error) {
       logger.error({ error, userId }, 'Error updating blind dating settings')
       throw error
@@ -206,19 +231,14 @@ export class BlindDatingService {
    */
   static async getActiveMatches(userId: string): Promise<BlindDateMatch[]> {
     try {
-      const { data, error } = await supabase
-        .from('blind_date_matches')
-        .select('*')
-        .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-        .in('status', ['active', 'revealed'])
-        .order('matched_at', { ascending: false })
-      
-      if (error) {
-        logger.error({ error, userId }, 'Failed to get active blind date matches')
-        throw error
-      }
-      
-      return (data || []) as BlindDateMatch[]
+      const rows = await db.select().from(blindDateMatches)
+        .where(and(
+          or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
+          inArray(blindDateMatches.status, ['active', 'revealed']),
+        ))
+        .orderBy(desc(blindDateMatches.matchedAt))
+
+      return rows.map(rowToBlindDateMatchRow)
     } catch (error) {
       logger.error({ error, userId }, 'Error getting active blind date matches')
       return []
@@ -231,34 +251,17 @@ export class BlindDatingService {
   static async getMatchByChatId(chatId: string): Promise<BlindDateMatch | null> {
     try {
       // Primary lookup: by chat_id (newer matches should always have this set)
-      const { data, error } = await supabase
-        .from('blind_date_matches')
-        .select('*')
-        .eq('chat_id', chatId)
-        .maybeSingle()
+      const [row] = await db.select().from(blindDateMatches).where(eq(blindDateMatches.chatId, chatId)).limit(1)
 
-      if (error && error.code !== 'PGRST116') {
-        logger.error({ error, chatId }, 'Failed to get blind date match by chat ID')
-        throw error
-      }
-
-      if (data) {
-        return data as BlindDateMatch
+      if (row) {
+        return rowToBlindDateMatchRow(row)
       }
 
       // Fallback for legacy matches where chat_id was not populated
       // 1. Get chat members (we expect 1:1 chats for blind dating)
-      const { data: members, error: membersError } = await supabase
-        .from('chat_members')
-        .select('user_id')
-        .eq('chat_id', chatId)
+      const members = await db.select({ userId: chatMembers.userId }).from(chatMembers).where(eq(chatMembers.chatId, chatId))
 
-      if (membersError) {
-        logger.error({ error: membersError, chatId }, 'Failed to get chat members for blind date fallback lookup')
-        return null
-      }
-
-      const userIds = (members || []).map(m => m.user_id)
+      const userIds = members.map(m => m.userId)
       if (userIds.length !== 2) {
         // Not a standard 1:1 chat, treat as no blind date match
         return null
@@ -267,37 +270,32 @@ export class BlindDatingService {
       const [u1, u2] = userIds.sort()
 
       // 2. Look for an active/revealed blind date match between these two users
-      const { data: fallbackMatch, error: fallbackError } = await supabase
-        .from('blind_date_matches')
-        .select('*')
-        .or(`and(user_a.eq.${u1},user_b.eq.${u2}),and(user_a.eq.${u2},user_b.eq.${u1})`)
-        .in('status', ['active', 'revealed'])
-        .order('matched_at', { ascending: false })
-        .maybeSingle()
-
-      if (fallbackError && fallbackError.code !== 'PGRST116') {
-        logger.error({ error: fallbackError, chatId, u1, u2 }, 'Failed fallback blind date lookup by users')
-        return null
-      }
+      const [fallbackMatch] = await db.select().from(blindDateMatches)
+        .where(and(
+          or(
+            and(eq(blindDateMatches.userA, u1), eq(blindDateMatches.userB, u2)),
+            and(eq(blindDateMatches.userA, u2), eq(blindDateMatches.userB, u1)),
+          ),
+          inArray(blindDateMatches.status, ['active', 'revealed']),
+        ))
+        .orderBy(desc(blindDateMatches.matchedAt))
+        .limit(1)
 
       if (!fallbackMatch) {
         return null
       }
 
       // 3. Best-effort: backfill chat_id on the legacy match so future lookups are fast
-      if (!fallbackMatch.chat_id) {
+      if (!fallbackMatch.chatId) {
         try {
-          await supabase
-            .from('blind_date_matches')
-            .update({ chat_id: chatId })
-            .eq('id', fallbackMatch.id)
+          await db.update(blindDateMatches).set({ chatId }).where(eq(blindDateMatches.id, fallbackMatch.id))
           logger.info({ matchId: fallbackMatch.id, chatId, u1, u2 }, 'Backfilled chat_id on blind date match')
         } catch (updateError) {
           logger.error({ error: updateError, matchId: fallbackMatch.id, chatId }, 'Failed to backfill chat_id on blind date match')
         }
       }
 
-      return fallbackMatch as BlindDateMatch
+      return rowToBlindDateMatchRow(fallbackMatch)
     } catch (error) {
       logger.error({ error, chatId }, 'Error getting blind date match by chat ID')
       return null
@@ -309,18 +307,8 @@ export class BlindDatingService {
    */
   static async getMatchById(matchId: string): Promise<BlindDateMatch | null> {
     try {
-      const { data, error } = await supabase
-        .from('blind_date_matches')
-        .select('*')
-        .eq('id', matchId)
-        .maybeSingle()
-      
-      if (error && error.code !== 'PGRST116') {
-        logger.error({ error, matchId }, 'Failed to get blind date match')
-        throw error
-      }
-      
-      return data as BlindDateMatch | null
+      const [row] = await db.select().from(blindDateMatches).where(eq(blindDateMatches.id, matchId)).limit(1)
+      return row ? rowToBlindDateMatchRow(row) : null
     } catch (error) {
       logger.error({ error, matchId }, 'Error getting blind date match')
       return null
@@ -347,110 +335,104 @@ export class BlindDatingService {
       }
 
       // Get user profile for compatibility scoring
-      const { data: userProfile, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single()
-      
-      if (profileError || !userProfile) {
-        logger.error({ error: profileError, userId }, 'Failed to get user profile')
+      const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1)
+
+      if (!userProfile) {
+        logger.error({ userId }, 'Failed to get user profile')
         return null
       }
 
       // Get users already in active matches with this user (to exclude)
-      const { data: existingMatches } = await supabase
-        .from('blind_date_matches')
-        .select('user_a, user_b')
-        .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-        .in('status', ['active', 'revealed'])
-      
+      const existingMatches = await db.select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
+        .from(blindDateMatches)
+        .where(and(
+          or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
+          inArray(blindDateMatches.status, ['active', 'revealed']),
+        ))
+
       const excludedUserIds = new Set<string>([userId])
-      ;(existingMatches || []).forEach(m => {
-        excludedUserIds.add(m.user_a)
-        excludedUserIds.add(m.user_b)
+      existingMatches.forEach(m => {
+        excludedUserIds.add(m.userA)
+        excludedUserIds.add(m.userB)
       })
 
       logger.info({ userId, excludedCount: excludedUserIds.size - 1 }, 'Finding eligible users for blind dating')
 
       // Try RPC first, but use robust fallback
       let eligibleUsers: Array<{ user_id: string; compatibility_data: any }> = []
-      
-      const { data: rpcUsers, error: eligibleError } = await supabase
-        .rpc('find_blind_dating_eligible_users', {
-          exclude_user_id: userId,
-          max_results: 100
-        })
-      
-      if (eligibleError) {
+
+      try {
+        const rpcResult: any = await db.execute(sql`select * from find_blind_dating_eligible_users(${userId}::uuid, 100)`)
+        if (rpcResult.rows.length > 0) {
+          eligibleUsers = rpcResult.rows.map((r: any) => ({ user_id: r.user_id, compatibility_data: r.compatibility_data }))
+          logger.info({ userId, count: eligibleUsers.length }, 'Found eligible users via RPC')
+        }
+      } catch (eligibleError) {
         logger.warn({ error: eligibleError, userId }, 'RPC failed, using fallback query')
-      } else if (rpcUsers && rpcUsers.length > 0) {
-        eligibleUsers = rpcUsers
-        logger.info({ userId, count: eligibleUsers.length }, 'Found eligible users via RPC')
       }
 
       // If RPC returned no results or failed, use fallback
       if (eligibleUsers.length === 0) {
         logger.info({ userId }, 'Using fallback query for eligible users')
-        
+
         // Get all users with blind dating enabled
-        const { data: enabledSettings, error: settingsError } = await supabase
-          .from('blind_dating_settings')
-          .select('user_id, max_active_matches')
-          .eq('is_enabled', true)
-        
-        if (settingsError) {
+        let enabledSettingsRows: Array<{ userId: string; maxActiveMatches: number | null }> = []
+        try {
+          enabledSettingsRows = await db.select({ userId: blindDatingSettings.userId, maxActiveMatches: blindDatingSettings.maxActiveMatches })
+            .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
+        } catch (settingsError) {
           logger.error({ error: settingsError, userId }, 'Failed to get blind dating settings')
           return null
         }
 
-        const enabledUserIds = (enabledSettings || [])
-          .map(s => s.user_id)
+        const enabledUserIds = enabledSettingsRows
+          .map(s => s.userId)
           .filter(id => !excludedUserIds.has(id))
-        
+
         if (enabledUserIds.length === 0) {
           logger.info({ userId }, 'No other users have blind dating enabled')
           return null
         }
 
         // Get profiles of enabled users (exclude suspended and deleted)
-        const { data: profiles, error: profilesError } = await supabase
-          .from('profiles')
-          .select('id, age, gender, interests, needs, location_city, location_country')
-          .in('id', enabledUserIds)
-          .is('deleted_at', null)
-          .eq('is_suspended', false)
-          .limit(100)
-        
-        if (profilesError) {
+        let candidateProfiles: Array<{ id: string; age: number | null; gender: string | null; interests: string[] | null; needs: string[] | null; locationCity: string | null; locationCountry: string | null }> = []
+        try {
+          candidateProfiles = await db.select({
+            id: profiles.id, age: profiles.age, gender: profiles.gender, interests: profiles.interests,
+            needs: profiles.needs, locationCity: profiles.locationCity, locationCountry: profiles.locationCountry,
+          })
+            .from(profiles)
+            .where(and(inArray(profiles.id, enabledUserIds), isNull(profiles.deletedAt), eq(profiles.isSuspended, false)))
+            .limit(100)
+        } catch (profilesError) {
           logger.error({ error: profilesError, userId }, 'Failed to get profiles')
           return null
         }
 
         // Filter out suspended/invisible users, check max matches, and enforce gender compatibility
-        const validProfiles: typeof profiles = []
+        const validProfiles: typeof candidateProfiles = []
         const userGender = userProfile.gender?.toLowerCase()
-        
-        for (const profile of (profiles || [])) {
+
+        for (const profile of candidateProfiles) {
           // IMPORTANT: Only match compatible genders (opposite genders only)
           const candidateGender = profile.gender?.toLowerCase()
           if (!this.isGenderCompatible(userGender, candidateGender)) {
             logger.debug({ userId, candidateId: profile.id, userGender, candidateGender }, 'Skipping incompatible gender candidate')
             continue
           }
-          
+
           // Check if candidate has reached their max active matches
-          const candidateSettings = enabledSettings?.find(s => s.user_id === profile.id)
-          const maxMatches = candidateSettings?.max_active_matches || 3
-          
-          const { count } = await supabase
-            .from('blind_date_matches')
-            .select('*', { count: 'exact', head: true })
-            .or(`user_a.eq.${profile.id},user_b.eq.${profile.id}`)
-            .in('status', ['active', 'revealed'])
-          
+          const candidateSettings = enabledSettingsRows.find(s => s.userId === profile.id)
+          const maxMatches = candidateSettings?.maxActiveMatches || 3
+
+          const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(blindDateMatches)
+            .where(and(
+              or(eq(blindDateMatches.userA, profile.id), eq(blindDateMatches.userB, profile.id)),
+              inArray(blindDateMatches.status, ['active', 'revealed']),
+            ))
+
           // Include candidates who haven't reached their max
-          if ((count || 0) < maxMatches) {
+          if (count < maxMatches) {
             validProfiles.push(profile)
           } else {
             logger.debug({ userId, candidateId: profile.id, activeMatches: count, max: maxMatches }, 'Skipping candidate - reached max active blind dates')
@@ -498,86 +480,84 @@ export class BlindDatingService {
       }
 
       // Get user profile for compatibility scoring
-      const { data: userProfile, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single()
-      
-      if (profileError || !userProfile) {
-        logger.error({ error: profileError, userId }, 'Failed to get user profile')
+      const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1)
+
+      if (!userProfile) {
+        logger.error({ userId }, 'Failed to get user profile')
         return null
       }
 
       // Get users already in active matches with this user (to exclude)
-      const { data: existingMatches } = await supabase
-        .from('blind_date_matches')
-        .select('user_a, user_b')
-        .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-        .in('status', ['active', 'revealed'])
-      
+      const existingMatches = await db.select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
+        .from(blindDateMatches)
+        .where(and(
+          or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
+          inArray(blindDateMatches.status, ['active', 'revealed']),
+        ))
+
       const excludedUserIds = new Set<string>([userId, ...excludeUserIds])
-      ;(existingMatches || []).forEach(m => {
-        excludedUserIds.add(m.user_a)
-        excludedUserIds.add(m.user_b)
+      existingMatches.forEach(m => {
+        excludedUserIds.add(m.userA)
+        excludedUserIds.add(m.userB)
       })
 
       logger.info({ userId, excludedCount: excludedUserIds.size - 1 }, 'Finding eligible users (with exclusions)')
 
       // Get all users with blind dating enabled
-      const { data: enabledSettings, error: settingsError } = await supabase
-        .from('blind_dating_settings')
-        .select('user_id, max_active_matches')
-        .eq('is_enabled', true)
-      
-      if (settingsError) {
+      let enabledSettingsRows: Array<{ userId: string; maxActiveMatches: number | null }> = []
+      try {
+        enabledSettingsRows = await db.select({ userId: blindDatingSettings.userId, maxActiveMatches: blindDatingSettings.maxActiveMatches })
+          .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
+      } catch (settingsError) {
         logger.error({ error: settingsError, userId }, 'Failed to get blind dating settings')
         return null
       }
 
-      const enabledUserIds = (enabledSettings || [])
-        .map(s => s.user_id)
+      const enabledUserIds = enabledSettingsRows
+        .map(s => s.userId)
         .filter(id => !excludedUserIds.has(id))
-      
+
       if (enabledUserIds.length === 0) {
         logger.info({ userId }, 'No other users available for matching')
         return null
       }
 
       // Get profiles of enabled users
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select('id, age, gender, interests, needs, location_city, location_country')
-        .in('id', enabledUserIds)
-        .is('deleted_at', null)
-        .limit(100)
-      
-      if (profilesError) {
+      let candidateProfiles: Array<{ id: string; age: number | null; gender: string | null; interests: string[] | null; needs: string[] | null; locationCity: string | null; locationCountry: string | null }> = []
+      try {
+        candidateProfiles = await db.select({
+          id: profiles.id, age: profiles.age, gender: profiles.gender, interests: profiles.interests,
+          needs: profiles.needs, locationCity: profiles.locationCity, locationCountry: profiles.locationCountry,
+        })
+          .from(profiles)
+          .where(and(inArray(profiles.id, enabledUserIds), isNull(profiles.deletedAt)))
+          .limit(100)
+      } catch (profilesError) {
         logger.error({ error: profilesError, userId }, 'Failed to get profiles')
         return null
       }
 
       // Filter for gender compatibility and max matches
-      const validProfiles: typeof profiles = []
+      const validProfiles: typeof candidateProfiles = []
       const userGender = userProfile.gender?.toLowerCase()
-      
-      for (const profile of (profiles || [])) {
+
+      for (const profile of candidateProfiles) {
         const candidateGender = profile.gender?.toLowerCase()
         if (!this.isGenderCompatible(userGender, candidateGender)) {
           continue
         }
-        
+
         // Check if candidate has reached their max active matches
-        const candidateSettings = enabledSettings?.find(s => s.user_id === profile.id)
-        const maxMatches = candidateSettings?.max_active_matches || 3
-        
-        const { count } = await supabase
-          .from('blind_date_matches')
-          .select('*', { count: 'exact', head: true })
-          .or(`user_a.eq.${profile.id},user_b.eq.${profile.id}`)
-          .in('status', ['active', 'revealed'])
-        
-        if ((count || 0) < maxMatches) {
+        const candidateSettings = enabledSettingsRows.find(s => s.userId === profile.id)
+        const maxMatches = candidateSettings?.maxActiveMatches || 3
+
+        const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(blindDateMatches)
+          .where(and(
+            or(eq(blindDateMatches.userA, profile.id), eq(blindDateMatches.userB, profile.id)),
+            inArray(blindDateMatches.status, ['active', 'revealed']),
+          ))
+
+        if (count < maxMatches) {
           validProfiles.push(profile)
         }
       }
@@ -695,49 +675,38 @@ export class BlindDatingService {
       // Create chat first
       const chat = await ensureChatForUsers(userId, bestMatch.userId)
 
-      const { data: match, error: matchError } = await supabase
-        .from('blind_date_matches')
-        .insert({
-          user_a: userA,
-          user_b: userB,
-          chat_id: chat.id,
-          compatibility_score: bestMatch.score,
+      let matchRow: typeof blindDateMatches.$inferSelect
+      try {
+        [matchRow] = await db.insert(blindDateMatches).values({
+          userA, userB, chatId: chat.id,
+          compatibilityScore: String(bestMatch.score),
           status: 'active',
-          message_count: 0,
-          reveal_threshold: settings.preferred_reveal_threshold,
-          user_a_revealed: false,
-          user_b_revealed: false,
-          matched_at: new Date().toISOString()
-        })
-        .select('*')
-        .single()
-      
-      if (matchError) {
+          messageCount: 0,
+          revealThreshold: settings.preferred_reveal_threshold,
+          userARevealed: false,
+          userBRevealed: false,
+          matchedAt: new Date().toISOString(),
+        }).returning()
+      } catch (matchError) {
         logger.error({ error: matchError, userId, matchUserId: bestMatch.userId }, 'Failed to create blind date match')
         throw matchError
       }
 
       // Update last match time for both users
       await Promise.all([
-        supabase
-          .from('blind_dating_settings')
-          .update({ last_match_at: new Date().toISOString() })
-          .eq('user_id', userId),
-        supabase
-          .from('blind_dating_settings')
-          .update({ last_match_at: new Date().toISOString() })
-          .eq('user_id', bestMatch.userId)
+        db.update(blindDatingSettings).set({ lastMatchAt: new Date().toISOString() }).where(eq(blindDatingSettings.userId, userId)),
+        db.update(blindDatingSettings).set({ lastMatchAt: new Date().toISOString() }).where(eq(blindDatingSettings.userId, bestMatch.userId)),
       ])
 
-      logger.info({ 
-        matchId: match.id, 
-        userId, 
-        matchUserId: bestMatch.userId, 
-        score: bestMatch.score 
+      logger.info({
+        matchId: matchRow.id,
+        userId,
+        matchUserId: bestMatch.userId,
+        score: bestMatch.score
       }, 'Blind date match created')
 
       // Notify both users
-      const matchData = match as BlindDateMatch
+      const matchData = rowToBlindDateMatchRow(matchRow)
       await this.notifyMatchCreated(userId, bestMatch.userId, matchData)
 
       return matchData
@@ -808,15 +777,13 @@ export class BlindDatingService {
 
       // Send anonymized email notifications to both users if emails are available
       const { default: EmailService }: any = await import('./emailService.js')
-      const { data: emailProfiles } = await supabase
-        .from('profiles')
-        .select('id, email, first_name')
-        .in('id', [userId, otherUserId])
+      const emailProfileRows = await db.select({ id: profiles.id, email: profiles.email, firstName: profiles.firstName })
+        .from(profiles).where(inArray(profiles.id, [userId, otherUserId]))
 
       const emailMap = new Map<string, { email: string; first_name: string | null }>()
-      ;(emailProfiles || []).forEach((p: any) => {
+      emailProfileRows.forEach(p => {
         if (p.email) {
-          emailMap.set(p.id, { email: p.email, first_name: p.first_name })
+          emailMap.set(p.id, { email: p.email, first_name: p.firstName })
         }
       })
 
@@ -874,19 +841,11 @@ export class BlindDatingService {
    */
   static async isBlindDateChat(chatId: string): Promise<boolean> {
     try {
-      const { data, error } = await supabase
-        .from('blind_date_matches')
-        .select('id')
-        .eq('chat_id', chatId)
-        .in('status', ['active', 'revealed'])
+      const rows = await db.select({ id: blindDateMatches.id }).from(blindDateMatches)
+        .where(and(eq(blindDateMatches.chatId, chatId), inArray(blindDateMatches.status, ['active', 'revealed'])))
         .limit(1)
-      
-      if (error) {
-        logger.error({ error, chatId }, 'Error checking if chat is blind date')
-        return false
-      }
-      
-      return Array.isArray(data) ? data.length > 0 : !!data
+
+      return rows.length > 0
     } catch (error) {
       logger.error({ error, chatId }, 'Error checking blind date chat')
       return false
@@ -898,30 +857,30 @@ export class BlindDatingService {
    */
   static async getAnonymizedProfile(userId: string, isRevealed: boolean): Promise<AnonymizedProfile | null> {
     try {
-      const { data: profile, error } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, username, age, gender, about, interests, needs, profile_photo_url, location_city')
-        .eq('id', userId)
-        .single()
-      
-      if (error || !profile) {
-        logger.error({ error, userId }, 'Failed to get profile for anonymization')
+      const [profile] = await db.select({
+        id: profiles.id, firstName: profiles.firstName, lastName: profiles.lastName, username: profiles.username,
+        age: profiles.age, gender: profiles.gender, about: profiles.about, interests: profiles.interests,
+        needs: profiles.needs, profilePhotoUrl: profiles.profilePhotoUrl, locationCity: profiles.locationCity,
+      }).from(profiles).where(eq(profiles.id, userId)).limit(1)
+
+      if (!profile) {
+        logger.error({ userId }, 'Failed to get profile for anonymization')
         return null
       }
 
       if (isRevealed) {
         return {
           id: profile.id,
-          first_name: profile.first_name,
-          last_name: profile.last_name,
+          first_name: profile.firstName,
+          last_name: profile.lastName,
           username: profile.username,
-          age: profile.age,
-          gender: profile.gender,
-          about: profile.about,
-          interests: profile.interests,
-          needs: profile.needs,
-          profile_photo_url: profile.profile_photo_url,
-          location_city: profile.location_city,
+          age: profile.age ?? undefined,
+          gender: profile.gender ?? undefined,
+          about: profile.about ?? undefined,
+          interests: profile.interests ?? undefined,
+          needs: profile.needs ?? undefined,
+          profile_photo_url: profile.profilePhotoUrl ?? undefined,
+          location_city: profile.locationCity ?? undefined,
           is_revealed: true,
           anonymous_avatar: undefined
         }
@@ -935,8 +894,8 @@ export class BlindDatingService {
         return name.charAt(0) + '*'.repeat(Math.max(name.length - 1, 4))
       }
 
-      const anonymizedFirstName = anonymizeName(profile.first_name)
-      const anonymizedLastName = anonymizeName(profile.last_name)
+      const anonymizedFirstName = anonymizeName(profile.firstName)
+      const anonymizedLastName = anonymizeName(profile.lastName)
 
       // Generate a consistent anonymous avatar using user ID
       const anonymousAvatar = `https://api.dicebear.com/7.x/shapes/svg?seed=${userId}&backgroundColor=b6e3f4,c0aede,d1d4f9`
@@ -946,13 +905,13 @@ export class BlindDatingService {
         first_name: anonymizedFirstName,
         last_name: anonymizedLastName,
         username: '***hidden***',
-        age: profile.age,
-        gender: profile.gender,
+        age: profile.age ?? undefined,
+        gender: profile.gender ?? undefined,
         about: undefined, // Hidden in anonymous mode
-        interests: profile.interests,
-        needs: profile.needs, // This contains the preference (girlfriend, boyfriend, etc.)
-        profile_photo_url: profile.profile_photo_url, // Show blurry photo
-        location_city: profile.location_city,
+        interests: profile.interests ?? undefined,
+        needs: profile.needs ?? undefined, // This contains the preference (girlfriend, boyfriend, etc.)
+        profile_photo_url: profile.profilePhotoUrl ?? undefined, // Show blurry photo
+        location_city: profile.locationCity ?? undefined,
         anonymous_avatar: anonymousAvatar,
         is_revealed: false
       }
@@ -1068,36 +1027,33 @@ export class BlindDatingService {
       }
 
       // Update reveal status
-      const updateData: any = {
-        updated_at: new Date().toISOString()
+      const updateData: Partial<typeof blindDateMatches.$inferInsert> = {
+        updatedAt: new Date().toISOString()
       }
 
       if (isUserA) {
-        updateData.user_a_revealed = true
+        updateData.userARevealed = true
       } else {
-        updateData.user_b_revealed = true
+        updateData.userBRevealed = true
       }
 
       // Check if this is the first reveal request
       if (!match.reveal_requested_by) {
-        updateData.reveal_requested_by = requestingUserId
-        updateData.reveal_requested_at = new Date().toISOString()
+        updateData.revealRequestedBy = requestingUserId
+        updateData.revealRequestedAt = new Date().toISOString()
       }
 
       // Check if both will be revealed after this update
       const bothRevealed = (isUserA && match.user_b_revealed) || (isUserB && match.user_a_revealed)
-      
+
       if (bothRevealed) {
         updateData.status = 'revealed'
-        updateData.revealed_at = new Date().toISOString()
+        updateData.revealedAt = new Date().toISOString()
       }
 
-      const { error } = await supabase
-        .from('blind_date_matches')
-        .update(updateData)
-        .eq('id', matchId)
-
-      if (error) {
+      try {
+        await db.update(blindDateMatches).set(updateData).where(eq(blindDateMatches.id, matchId))
+      } catch (error) {
         logger.error({ error, matchId, requestingUserId }, 'Failed to update reveal status')
         throw error
       }
@@ -1185,14 +1141,12 @@ export class BlindDatingService {
       logger.info({ userA, userB, smallerId, largerId }, '[BlindDate] Attempting to create friendship')
       
       // Check if friendship already exists (check all statuses)
-      const { data: existing, error: checkError } = await supabase
-        .from('friendships')
-        .select('id, status')
-        .eq('user1_id', smallerId)
-        .eq('user2_id', largerId)
-        .maybeSingle()
-
-      if (checkError && checkError.code !== 'PGRST116') {
+      let existing: { id: string; status: string } | undefined
+      try {
+        [existing] = await db.select({ id: friendships.id, status: friendships.status }).from(friendships)
+          .where(and(eq(friendships.user1Id, smallerId), eq(friendships.user2Id, largerId)))
+          .limit(1)
+      } catch (checkError) {
         logger.error({ checkError, userA, userB }, '[BlindDate] Error checking existing friendship')
       }
 
@@ -1200,50 +1154,42 @@ export class BlindDatingService {
         logger.info({ userA, userB, existingStatus: existing.status }, '[BlindDate] Friendship already exists')
         // If it exists but not active/accepted, update it
         if (existing.status !== 'active' && existing.status !== 'accepted') {
-          const { error: updateError } = await supabase
-            .from('friendships')
-            .update({ 
-              status: 'accepted', 
-              updated_at: new Date().toISOString() 
-            })
-            .eq('id', existing.id)
-          
-          if (updateError) {
+          try {
+            await db.update(friendships)
+              .set({ status: 'accepted', updatedAt: new Date().toISOString() })
+              .where(eq(friendships.id, existing.id))
+            logger.info({ userA, userB }, '[BlindDate] Updated existing friendship to accepted')
+          } catch (updateError) {
             logger.error({ updateError, userA, userB }, '[BlindDate] Error updating friendship status')
             return false
           }
-          logger.info({ userA, userB }, '[BlindDate] Updated existing friendship to accepted')
         }
         return true
       }
 
       // Create new friendship with all required fields
       const now = new Date().toISOString()
-      const { data: newFriendship, error: insertError } = await supabase
-        .from('friendships')
-        .insert({
-          user1_id: smallerId,
-          user2_id: largerId,
-          sender_id: userA, // First user to reveal is considered the "sender"
+      try {
+        const [newFriendship] = await db.insert(friendships).values({
+          user1Id: smallerId,
+          user2Id: largerId,
+          senderId: userA, // First user to reveal is considered the "sender"
           status: 'accepted', // Use 'accepted' to match friend request acceptance
-          created_at: now,
-          updated_at: now
-        })
-        .select('id')
-        .single()
-      
-      if (insertError) {
+          createdAt: now,
+          updatedAt: now
+        }).returning({ id: friendships.id })
+
+        logger.info({ userA, userB, friendshipId: newFriendship?.id }, '[BlindDate] Successfully created friendship')
+        return true
+      } catch (insertError: any) {
         // Check if it's a duplicate key error (23505) - that's okay
         if (insertError.code === '23505') {
           logger.info({ userA, userB }, '[BlindDate] Friendship already exists (duplicate key)')
           return true
         }
-        logger.error({ insertError, code: insertError.code, message: insertError.message, details: insertError.details }, '[BlindDate] Error inserting friendship')
+        logger.error({ insertError, code: insertError?.code, message: insertError?.message }, '[BlindDate] Error inserting friendship')
         return false
       }
-      
-      logger.info({ userA, userB, friendshipId: newFriendship?.id }, '[BlindDate] Successfully created friendship')
-      return true
     } catch (error) {
       logger.error({ error, userA, userB }, '[BlindDate] Failed to create friendship for revealed match')
       return false
@@ -1306,29 +1252,22 @@ export class BlindDatingService {
       
       // Store blocked message (fire and forget - don't wait to keep it real-time)
       // This runs in background and doesn't block the response
-      Promise.resolve(supabase
-        .from('blind_date_blocked_messages')
-        .insert({
-          blind_date_id: matchId,
-          sender_id: senderId,
-          original_message: message,
-          filtered_message: ContentFilterService.sanitizeMessage(message, analysis),
-          blocked_reason: blockedReason,
-          detection_confidence: analysis.confidence,
-          ai_analysis: analysis as any,
-          was_released: false
-        }))
-        .then(async (result) => {
-          const { error: insertError } = await result
-          if (insertError) {
-            logger.error({ error: insertError, matchId, senderId }, 'Failed to log blocked message')
-          } else {
-            logger.info({ 
-              matchId, 
-              senderId, 
-              detectedTypes: analysis.detectedTypes 
-            }, 'Message blocked for personal info in blind date')
-          }
+      db.insert(blindDateBlockedMessages).values({
+        blindDateId: matchId,
+        senderId,
+        originalMessage: message,
+        filteredMessage: ContentFilterService.sanitizeMessage(message, analysis),
+        blockedReason,
+        detectionConfidence: String(analysis.confidence),
+        aiAnalysis: analysis as any,
+        wasReleased: false,
+      })
+        .then(() => {
+          logger.info({
+            matchId,
+            senderId,
+            detectedTypes: analysis.detectedTypes
+          }, 'Message blocked for personal info in blind date')
         })
         .catch((err: any) => {
           logger.error({ error: err, matchId, senderId }, 'Failed to log blocked message')
@@ -1362,18 +1301,15 @@ export class BlindDatingService {
         return false
       }
 
-      const { error } = await supabase
-        .from('blind_date_matches')
-        .update({
+      try {
+        await db.update(blindDateMatches).set({
           status: 'ended',
-          ended_at: new Date().toISOString(),
-          ended_by: userId,
-          end_reason: reason || 'user_ended',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', matchId)
-
-      if (error) {
+          endedAt: new Date().toISOString(),
+          endedBy: userId,
+          endReason: reason || 'user_ended',
+          updatedAt: new Date().toISOString()
+        }).where(eq(blindDateMatches.id, matchId))
+      } catch (error) {
         logger.error({ error, matchId, userId }, 'Failed to end blind date match')
         return false
       }
@@ -1476,87 +1412,67 @@ export class BlindDatingService {
       const today = new Date().toISOString().split('T')[0]
       
       // Get users already processed today
-      const { data: processedToday } = await supabase
-        .from('blind_date_daily_queue')
-        .select('user_id')
-        .eq('scheduled_date', today)
-        .eq('status', 'matched')
-      
-      const processedUserIds = new Set((processedToday || []).map(u => u.user_id))
-      
+      const processedToday = await db.select({ userId: blindDateDailyQueue.userId }).from(blindDateDailyQueue)
+        .where(and(eq(blindDateDailyQueue.scheduledDate, today), eq(blindDateDailyQueue.status, 'matched')))
+
+      const processedUserIds = new Set(processedToday.map(u => u.userId))
+
       // Get all users with blind dating enabled
-      const { data: allEnabledUsers, error } = await supabase
-        .from('blind_dating_settings')
-        .select('user_id')
-        .eq('is_enabled', true)
-        .eq('auto_match', true)
-      
-      // Filter out already processed users
-      const enabledUsers = (allEnabledUsers || []).filter(u => !processedUserIds.has(u.user_id))
-      
-      if (error) {
+      let allEnabledUsers: Array<{ userId: string }> = []
+      try {
+        allEnabledUsers = await db.select({ userId: blindDatingSettings.userId }).from(blindDatingSettings)
+          .where(and(eq(blindDatingSettings.isEnabled, true), eq(blindDatingSettings.autoMatch, true)))
+      } catch (error) {
         logger.error({ error }, 'Failed to get enabled users for daily matching')
         return stats
       }
 
-      logger.info({ userCount: enabledUsers?.length || 0 }, 'Processing daily blind date matches')
+      // Filter out already processed users
+      const enabledUsers = allEnabledUsers.filter(u => !processedUserIds.has(u.userId))
 
-      for (const user of (enabledUsers || [])) {
+      logger.info({ userCount: enabledUsers.length }, 'Processing daily blind date matches')
+
+      for (const user of enabledUsers) {
         stats.processed++
-        
+
         try {
           // Create queue entry
-          await supabase
-            .from('blind_date_daily_queue')
-            .upsert({
-              user_id: user.user_id,
-              scheduled_date: today,
-              status: 'pending'
-            }, {
-              onConflict: 'user_id,scheduled_date'
+          await db.insert(blindDateDailyQueue)
+            .values({ userId: user.userId, scheduledDate: today, status: 'pending' })
+            .onConflictDoUpdate({
+              target: [blindDateDailyQueue.userId, blindDateDailyQueue.scheduledDate],
+              set: { status: 'pending' },
             })
 
           // Try to find a match
-          const match = await this.findMatch(user.user_id)
-          
+          const match = await this.findMatch(user.userId)
+
           if (match) {
             stats.matched++
-            
+
             // Update queue entry
-            await supabase
-              .from('blind_date_daily_queue')
-              .update({
-                status: 'matched',
-                matched_user_id: match.user_a === user.user_id ? match.user_b : match.user_a,
-                match_id: match.id,
-                processed_at: new Date().toISOString()
-              })
-              .eq('user_id', user.user_id)
-              .eq('scheduled_date', today)
+            await db.update(blindDateDailyQueue).set({
+              status: 'matched',
+              matchedUserId: match.user_a === user.userId ? match.user_b : match.user_a,
+              matchId: match.id,
+              processedAt: new Date().toISOString()
+            }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today)))
           } else {
             // No match found
-            await supabase
-              .from('blind_date_daily_queue')
-              .update({
-                status: 'no_match',
-                processed_at: new Date().toISOString()
-              })
-              .eq('user_id', user.user_id)
-              .eq('scheduled_date', today)
+            await db.update(blindDateDailyQueue).set({
+              status: 'no_match',
+              processedAt: new Date().toISOString()
+            }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today)))
           }
         } catch (error) {
           stats.errors++
-          logger.error({ error, userId: user.user_id }, 'Error processing daily match for user')
-          
-          await supabase
-            .from('blind_date_daily_queue')
-            .update({
-              status: 'error',
-              error_message: error instanceof Error ? error.message : 'Unknown error',
-              processed_at: new Date().toISOString()
-            })
-            .eq('user_id', user.user_id)
-            .eq('scheduled_date', today)
+          logger.error({ error, userId: user.userId }, 'Error processing daily match for user')
+
+          await db.update(blindDateDailyQueue).set({
+            status: 'error',
+            errorMessage: error instanceof Error ? error.message : 'Unknown error',
+            processedAt: new Date().toISOString()
+          }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today)))
         }
       }
 
@@ -1587,23 +1503,22 @@ export class BlindDatingService {
     
     try {
       // Get all users with blind dating enabled
-      const { data: enabledUsers, error } = await supabase
-        .from('blind_dating_settings')
-        .select('user_id, max_active_matches')
-        .eq('is_enabled', true)
-      
-      if (error) {
+      let enabledUsers: Array<{ user_id: string; max_active_matches: number | null }> = []
+      try {
+        enabledUsers = await db.select({ user_id: blindDatingSettings.userId, max_active_matches: blindDatingSettings.maxActiveMatches })
+          .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
+      } catch (error) {
         logger.error({ error }, 'Failed to get enabled users for force matching')
         return stats
       }
 
-      logger.info({ userCount: enabledUsers?.length || 0 }, '🚀 Force matching all blind dating users')
+      logger.info({ userCount: enabledUsers.length }, '🚀 Force matching all blind dating users')
 
       // Track users who got matched in THIS run to ensure 1:1 per run
       const matchedInThisRun = new Set<string>()
-      
+
       // Process each user
-      for (const user of (enabledUsers || [])) {
+      for (const user of enabledUsers) {
         stats.processed++
         
         // Skip if user was already matched with someone in this run
@@ -1720,35 +1635,35 @@ export class BlindDatingService {
 
     try {
       // Get ALL users (not just enabled ones) to show complete picture
-      const { data: allUsers, error: usersError } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, email, age, gender, interests, needs')
-        .is('deleted_at', null)
-        .order('created_at', { ascending: false })
-
-      if (usersError) {
+      let allUsers: Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null; age: number | null; gender: string | null; interests: string[] | null; needs: string[] | null }> = []
+      try {
+        allUsers = await db.select({
+          id: profiles.id, first_name: profiles.firstName, last_name: profiles.lastName, email: profiles.email,
+          age: profiles.age, gender: profiles.gender, interests: profiles.interests, needs: profiles.needs,
+        }).from(profiles).where(isNull(profiles.deletedAt)).orderBy(desc(profiles.createdAt))
+      } catch (usersError) {
         logger.error({ error: usersError }, 'Failed to get users for detailed matching')
         throw usersError
       }
 
-      summary.totalUsers = allUsers?.length || 0
+      summary.totalUsers = allUsers.length
 
       // Get all blind dating settings
-      const { data: allSettings } = await supabase
-        .from('blind_dating_settings')
-        .select('*')
+      const allSettings = await db.select({
+        user_id: blindDatingSettings.userId, is_enabled: blindDatingSettings.isEnabled,
+        auto_match: blindDatingSettings.autoMatch, max_active_matches: blindDatingSettings.maxActiveMatches,
+      }).from(blindDatingSettings)
 
-      const settingsMap = new Map((allSettings || []).map(s => [s.user_id, s]))
+      const settingsMap = new Map(allSettings.map(s => [s.user_id, s]))
 
       // Get all active matches
-      const { data: allActiveMatches } = await supabase
-        .from('blind_date_matches')
-        .select('user_a, user_b, status')
-        .in('status', ['active', 'revealed'])
+      const allActiveMatches = await db.select({
+        user_a: blindDateMatches.userA, user_b: blindDateMatches.userB, status: blindDateMatches.status,
+      }).from(blindDateMatches).where(inArray(blindDateMatches.status, ['active', 'revealed']))
 
       // Build a map of user -> active match partners
       const activeMatchPartnersMap = new Map<string, Set<string>>()
-      for (const match of (allActiveMatches || [])) {
+      for (const match of allActiveMatches) {
         if (!activeMatchPartnersMap.has(match.user_a)) {
           activeMatchPartnersMap.set(match.user_a, new Set())
         }
@@ -1857,8 +1772,8 @@ export class BlindDatingService {
 
           // Calculate compatibility score
           const compatibility = CompatibilityService.calculateEnhancedCompatibility(
-            { age: user.age, interests: user.interests, needs: user.needs },
-            { age: candidate.age, interests: candidate.interests, needs: candidate.needs }
+            { age: user.age ?? undefined, interests: user.interests ?? undefined, needs: user.needs ?? undefined },
+            { age: candidate.age ?? undefined, interests: candidate.interests ?? undefined, needs: candidate.needs ?? undefined }
           )
 
           eligibleCandidates.push({
@@ -1973,60 +1888,53 @@ export class BlindDatingService {
   }> {
     try {
       // Total users
-      const { count: totalUsers } = await supabase
-        .from('profiles')
-        .select('*', { count: 'exact', head: true })
-        .is('deleted_at', null)
-      
+      const [{ count: totalUsers }] = await db.select({ count: sql<number>`count(*)::int` }).from(profiles).where(isNull(profiles.deletedAt))
+
       // Users with blind dating enabled
-      const { data: enabledSettings } = await supabase
-        .from('blind_dating_settings')
-        .select('user_id, is_enabled, auto_match, max_active_matches')
-        .eq('is_enabled', true)
-      
-      const usersWithBlindDatingEnabled = enabledSettings?.length || 0
-      const usersWithAutoMatch = enabledSettings?.filter(s => s.auto_match).length || 0
-      
+      const enabledSettings = await db.select({
+        user_id: blindDatingSettings.userId, is_enabled: blindDatingSettings.isEnabled,
+        auto_match: blindDatingSettings.autoMatch, max_active_matches: blindDatingSettings.maxActiveMatches,
+      }).from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
+
+      const usersWithBlindDatingEnabled = enabledSettings.length
+      const usersWithAutoMatch = enabledSettings.filter(s => s.auto_match).length
+
       // Active matches count
-      const { count: totalActiveMatches } = await supabase
-        .from('blind_date_matches')
-        .select('*', { count: 'exact', head: true })
-        .in('status', ['active', 'revealed'])
-      
+      const [{ count: totalActiveMatches }] = await db.select({ count: sql<number>`count(*)::int` }).from(blindDateMatches)
+        .where(inArray(blindDateMatches.status, ['active', 'revealed']))
+
       // Recent matches (last 24 hours)
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-      const { count: recentMatches } = await supabase
-        .from('blind_date_matches')
-        .select('*', { count: 'exact', head: true })
-        .gte('matched_at', yesterday)
-      
+      const [{ count: recentMatches }] = await db.select({ count: sql<number>`count(*)::int` }).from(blindDateMatches)
+        .where(gte(blindDateMatches.matchedAt, yesterday))
+
       // Count users at max matches
       let usersAtMaxMatches = 0
       let eligibleForNewMatches = 0
-      
-      for (const settings of (enabledSettings || [])) {
-        const { count } = await supabase
-          .from('blind_date_matches')
-          .select('*', { count: 'exact', head: true })
-          .or(`user_a.eq.${settings.user_id},user_b.eq.${settings.user_id}`)
-          .in('status', ['active', 'revealed'])
-        
+
+      for (const settings of enabledSettings) {
+        const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(blindDateMatches)
+          .where(and(
+            or(eq(blindDateMatches.userA, settings.user_id), eq(blindDateMatches.userB, settings.user_id)),
+            inArray(blindDateMatches.status, ['active', 'revealed']),
+          ))
+
         const maxMatches = settings.max_active_matches || 3
-        if ((count || 0) >= maxMatches) {
+        if (count >= maxMatches) {
           usersAtMaxMatches++
         } else {
           eligibleForNewMatches++
         }
       }
-      
+
       return {
-        totalUsers: totalUsers || 0,
+        totalUsers,
         usersWithBlindDatingEnabled,
         usersWithAutoMatch,
-        totalActiveMatches: totalActiveMatches || 0,
+        totalActiveMatches,
         usersAtMaxMatches,
         eligibleForNewMatches,
-        recentMatches: recentMatches || 0
+        recentMatches
       }
     } catch (error) {
       logger.error({ error }, 'Error getting diagnostics')
@@ -2054,22 +1962,19 @@ export class BlindDatingService {
       const [userA, userB] = [userId, testBotId].sort()
 
       // Check if match already exists
-      const { data: existingMatch, error: checkError } = await supabase
-        .from('blind_date_matches')
-        .select('*')
-        .eq('user_a', userA)
-        .eq('user_b', userB)
-        .in('status', ['active', 'revealed'])
-        .maybeSingle()
-
-      if (checkError && checkError.code !== 'PGRST116') {
+      let existingMatch: typeof blindDateMatches.$inferSelect | undefined
+      try {
+        [existingMatch] = await db.select().from(blindDateMatches)
+          .where(and(eq(blindDateMatches.userA, userA), eq(blindDateMatches.userB, userB), inArray(blindDateMatches.status, ['active', 'revealed'])))
+          .limit(1)
+      } catch (checkError) {
         logger.error({ error: checkError, userId }, 'Error checking for existing test match')
       }
 
       if (existingMatch) {
         logger.info({ matchId: existingMatch.id, userId, botId: testBotId }, 'Test match already exists')
         return {
-          match: existingMatch as BlindDateMatch,
+          match: rowToBlindDateMatchRow(existingMatch),
           botUserId: testBotId
         }
       }
@@ -2088,62 +1993,48 @@ export class BlindDatingService {
       }
 
       // Create the blind date match
-      const { data: match, error: matchError } = await supabase
-        .from('blind_date_matches')
-        .insert({
-          user_a: userA,
-          user_b: userB,
-          chat_id: chat.id,
-          compatibility_score: 0.85, // Simulated high compatibility
+      let matchRow: typeof blindDateMatches.$inferSelect
+      try {
+        [matchRow] = await db.insert(blindDateMatches).values({
+          userA, userB, chatId: chat.id,
+          compatibilityScore: '0.85', // Simulated high compatibility
           status: 'active',
-          message_count: 0,
-          reveal_threshold: revealThreshold,
-          user_a_revealed: false,
-          user_b_revealed: false,
-          matched_at: new Date().toISOString()
-        })
-        .select('*')
-        .single()
-
-      if (matchError) {
+          messageCount: 0,
+          revealThreshold,
+          userARevealed: false,
+          userBRevealed: false,
+          matchedAt: new Date().toISOString()
+        }).returning()
+      } catch (matchError: any) {
         // If it's a unique constraint error, try to get existing match
         if (matchError.code === '23505') {
           logger.info({ userId, testBotId }, 'Match already exists (unique constraint), fetching existing')
-          const { data: existing } = await supabase
-            .from('blind_date_matches')
-            .select('*')
-            .eq('user_a', userA)
-            .eq('user_b', userB)
-            .in('status', ['active', 'revealed', 'ended'])
-            .order('matched_at', { ascending: false })
+          const [existing] = await db.select().from(blindDateMatches)
+            .where(and(eq(blindDateMatches.userA, userA), eq(blindDateMatches.userB, userB), inArray(blindDateMatches.status, ['active', 'revealed', 'ended'])))
+            .orderBy(desc(blindDateMatches.matchedAt))
             .limit(1)
-            .maybeSingle()
-          
+
           if (existing) {
             return {
-              match: existing as BlindDateMatch,
+              match: rowToBlindDateMatchRow(existing),
               botUserId: testBotId
             }
           }
         }
-        
-        logger.error({ 
-          error: matchError, 
-          errorCode: matchError.code,
-          errorMessage: matchError.message,
-          userId 
+
+        logger.error({
+          error: matchError,
+          errorCode: matchError?.code,
+          errorMessage: matchError?.message,
+          userId
         }, 'Failed to create test match')
         throw matchError
       }
 
-      if (!match) {
-        throw new Error('Match created but no data returned')
-      }
-
-      logger.info({ matchId: match.id, userId, botId: testBotId }, 'Test blind date match created')
+      logger.info({ matchId: matchRow.id, userId, botId: testBotId }, 'Test blind date match created')
 
       return {
-        match: match as BlindDateMatch,
+        match: rowToBlindDateMatchRow(matchRow),
         botUserId: testBotId
       }
     } catch (error) {
@@ -2166,33 +2057,29 @@ export class BlindDatingService {
       const testBotUsername = 'mystery_match_bot'
       
       // Check if bot exists by email
-      const { data: existingBot, error: checkError } = await supabase
-        .from('profiles')
-        .select('id, username')
-        .eq('email', testBotEmail)
-        .maybeSingle()
-
-      if (checkError && checkError.code !== 'PGRST116') {
+      let existingBot: { id: string; username: string | null } | undefined
+      try {
+        [existingBot] = await db.select({ id: profiles.id, username: profiles.username }).from(profiles)
+          .where(eq(profiles.email, testBotEmail)).limit(1)
+      } catch (checkError) {
         logger.error({ error: checkError }, 'Error checking for existing test bot')
       }
 
       if (existingBot) {
         logger.info({ botId: existingBot.id }, 'Test bot already exists')
-        
+
         // Ensure blind dating is enabled for bot
-        const { error: settingsError } = await supabase
-          .from('blind_dating_settings')
-          .upsert({
-            user_id: existingBot.id,
-            is_enabled: true,
-            max_active_matches: 100,
-            preferred_reveal_threshold: 30
-          }, { onConflict: 'user_id' })
-        
-        if (settingsError) {
+        try {
+          await db.insert(blindDatingSettings).values({
+            userId: existingBot.id, isEnabled: true, maxActiveMatches: 100, preferredRevealThreshold: 30,
+          }).onConflictDoUpdate({
+            target: blindDatingSettings.userId,
+            set: { isEnabled: true, maxActiveMatches: 100, preferredRevealThreshold: 30 },
+          })
+        } catch (settingsError) {
           logger.error({ error: settingsError, botId: existingBot.id }, 'Failed to enable blind dating for bot')
         }
-        
+
         return existingBot.id
       }
 
@@ -2200,14 +2087,10 @@ export class BlindDatingService {
       let username = testBotUsername
       let usernameTaken = true
       let attempts = 0
-      
+
       while (usernameTaken && attempts < 5) {
-        const { data: usernameCheck } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('username', username)
-          .maybeSingle()
-        
+        const [usernameCheck] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.username, username)).limit(1)
+
         if (!usernameCheck) {
           usernameTaken = false
         } else {
@@ -2218,76 +2101,54 @@ export class BlindDatingService {
 
       // Create test bot user
       const botId = randomUUID()
-      
+
       // Generate a password hash for the test bot (will never be used for login)
       const dummyPassword = `test_bot_${botId}_${Date.now()}`
       const passwordHash = await hashPassword(dummyPassword)
-      
-      const botData: any = {
-        id: botId,
-        email: testBotEmail,
-        username: username,
-        first_name: 'Mystery',
-        last_name: 'Match',
-        password_hash: passwordHash, // Required field - dummy hash since bot never logs in
-        email_verified: true, // Set to true so bot can function normally
-        gender: Math.random() > 0.5 ? 'female' : 'male',
-        age: Math.floor(Math.random() * 10) + 22, // 22-32
-        about: 'Hi! I am an AI test partner for blind dating. Chat with me to test the feature!',
-        interests: ['Music', 'Travel', 'Movies', 'Food', 'Technology'],
-        needs: ['Friendship', 'Dating', 'Conversation'],
-        location_city: 'Mumbai',
-        location_country: 'India',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }
 
-      // Only add is_test_account if the column exists (optional field)
-      // We'll skip it to avoid schema errors
+      let createdBot: { id: string } | undefined
+      try {
+        [createdBot] = await db.insert(profiles).values({
+          id: botId,
+          email: testBotEmail,
+          username,
+          firstName: 'Mystery',
+          lastName: 'Match',
+          passwordHash, // Required field - dummy hash since bot never logs in
+          emailVerified: true, // Set to true so bot can function normally
+          gender: Math.random() > 0.5 ? 'female' : 'male',
+          age: Math.floor(Math.random() * 10) + 22, // 22-32
+          about: 'Hi! I am an AI test partner for blind dating. Chat with me to test the feature!',
+          interests: ['Music', 'Travel', 'Movies', 'Food', 'Technology'],
+          needs: ['Friendship', 'Dating', 'Conversation'],
+          locationCity: 'Mumbai',
+          locationCountry: 'India',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }).returning({ id: profiles.id })
+      } catch (createError: any) {
+        logger.error({ error: createError }, 'Failed to create test bot profile')
 
-      const { data: createdBot, error: createError } = await supabase
-        .from('profiles')
-        .insert(botData)
-        .select('id')
-        .single()
-
-      if (createError) {
-        logger.error({ error: createError, botData }, 'Failed to create test bot profile')
-        
         // If it's a unique constraint error, try to find existing bot by username
         if (createError.code === '23505') {
-          const { data: existingByUsername } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('username', username)
-            .maybeSingle()
-          
+          const [existingByUsername] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.username, username)).limit(1)
+
           if (existingByUsername) {
             logger.info({ botId: existingByUsername.id }, 'Found existing bot by username')
             return existingByUsername.id
           }
         }
-        
+
         throw createError
       }
 
-      if (!createdBot) {
-        throw new Error('Bot profile created but no data returned')
-      }
-
       // Enable blind dating for bot
-      const { error: settingsError } = await supabase
-        .from('blind_dating_settings')
-        .insert({
-          user_id: createdBot.id,
-          is_enabled: true,
-          max_active_matches: 100,
-          preferred_reveal_threshold: 30,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+      try {
+        await db.insert(blindDatingSettings).values({
+          userId: createdBot.id, isEnabled: true, maxActiveMatches: 100, preferredRevealThreshold: 30,
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
         })
-
-      if (settingsError) {
+      } catch (settingsError) {
         logger.error({ error: settingsError, botId: createdBot.id }, 'Failed to enable blind dating for bot')
         // Don't throw - bot exists, we can continue
       }
@@ -2464,24 +2325,25 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
   }> {
     try {
       // Get both user profiles
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, gender, age, interests, needs')
-        .in('id', [userAId, userBId])
-      
-      if (profilesError) {
+      let profileRows: Array<{ id: string; first_name: string | null; last_name: string | null; gender: string | null; age: number | null; interests: string[] | null; needs: string[] | null }> = []
+      try {
+        profileRows = await db.select({
+          id: profiles.id, first_name: profiles.firstName, last_name: profiles.lastName,
+          gender: profiles.gender, age: profiles.age, interests: profiles.interests, needs: profiles.needs,
+        }).from(profiles).where(inArray(profiles.id, [userAId, userBId]))
+      } catch (profilesError) {
         return { success: false, error: 'Failed to fetch user profiles' }
       }
-      
-      if (!profiles || profiles.length !== 2) {
+
+      if (profileRows.length !== 2) {
         return { success: false, error: 'One or both users not found' }
       }
-      
-      const userA = profiles.find(p => p.id === userAId)
-      const userB = profiles.find(p => p.id === userBId)
-      
+
+      const userA = profileRows.find(p => p.id === userAId)
+      const userB = profileRows.find(p => p.id === userBId)
+
       if (!userA || !userB) {
-        logger.warn({ userAId, userBId, foundProfiles: profiles?.length }, 'Admin match: One or both users not found')
+        logger.warn({ userAId, userBId, foundProfiles: profileRows.length }, 'Admin match: One or both users not found')
         return { success: false, error: 'One or both users not found' }
       }
       
@@ -2495,7 +2357,7 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
       }, 'Admin match: Checking gender compatibility')
       
       // Check gender compatibility (must be opposite genders)
-      if (!this.isGenderCompatible(userA.gender, userB.gender)) {
+      if (!this.isGenderCompatible(userA.gender ?? undefined, userB.gender ?? undefined)) {
         logger.warn({ userAGender: userA.gender, userBGender: userB.gender }, 'Admin match: Gender incompatible')
         return { 
           success: false, 
@@ -2511,14 +2373,16 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
       }
       
       // Check if they already have an active blind date match with each other
-      const { data: existingMatch } = await supabase
-        .from('blind_date_matches')
-        .select('id, status')
-        .or(`and(user_a.eq.${userAId},user_b.eq.${userBId}),and(user_a.eq.${userBId},user_b.eq.${userAId})`)
-        .in('status', ['active', 'revealed'])
+      const [existingMatch] = await db.select({ id: blindDateMatches.id, status: blindDateMatches.status }).from(blindDateMatches)
+        .where(and(
+          or(
+            and(eq(blindDateMatches.userA, userAId), eq(blindDateMatches.userB, userBId)),
+            and(eq(blindDateMatches.userA, userBId), eq(blindDateMatches.userB, userAId)),
+          ),
+          inArray(blindDateMatches.status, ['active', 'revealed']),
+        ))
         .limit(1)
-        .maybeSingle()
-      
+
       if (existingMatch) {
         return { success: false, error: 'These users already have an active blind date match with each other.' }
       }
@@ -2538,44 +2402,41 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
       
       // Calculate compatibility score
       const compatibility = CompatibilityService.calculateEnhancedCompatibility(
-        { age: userA.age, interests: userA.interests, needs: userA.needs },
-        { age: userB.age, interests: userB.interests, needs: userB.needs }
+        { age: userA.age ?? undefined, interests: userA.interests ?? undefined, needs: userA.needs ?? undefined },
+        { age: userB.age ?? undefined, interests: userB.interests ?? undefined, needs: userB.needs ?? undefined }
       )
-      
+
       // Create the blind date match
       const [sortedUserA, sortedUserB] = [userAId, userBId].sort()
-      
-      const { data: match, error: matchError } = await supabase
-        .from('blind_date_matches')
-        .insert({
-          user_a: sortedUserA,
-          user_b: sortedUserB,
-          chat_id: chat.id,
-          compatibility_score: Math.max(compatibility.score, 5), // Minimum score of 5
+
+      let matchRow: typeof blindDateMatches.$inferSelect
+      try {
+        [matchRow] = await db.insert(blindDateMatches).values({
+          userA: sortedUserA,
+          userB: sortedUserB,
+          chatId: chat.id,
+          compatibilityScore: String(Math.max(compatibility.score, 5)), // Minimum score of 5
           status: 'active',
-          message_count: 0,
-          reveal_threshold: 30,
-          user_a_revealed: false,
-          user_b_revealed: false,
-          matched_at: new Date().toISOString()
-        })
-        .select('*')
-        .single()
-      
-      if (matchError) {
+          messageCount: 0,
+          revealThreshold: 30,
+          userARevealed: false,
+          userBRevealed: false,
+          matchedAt: new Date().toISOString()
+        }).returning()
+      } catch (matchError) {
         logger.error({ error: matchError, userAId, userBId }, 'Failed to create admin blind date match')
         return { success: false, error: 'Failed to create match in database' }
       }
-      
+
       // Notify both users
-      const matchData = match as BlindDateMatch
+      const matchData = rowToBlindDateMatchRow(matchRow)
       await this.notifyMatchCreated(userAId, userBId, matchData)
-      
-      logger.info({ 
-        matchId: match.id, 
-        userAId, 
-        userBId, 
-        score: compatibility.score 
+
+      logger.info({
+        matchId: matchRow.id,
+        userAId,
+        userBId,
+        score: compatibility.score
       }, '✅ Admin created blind date match')
       
       return { success: true, match: matchData }
