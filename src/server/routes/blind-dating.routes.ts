@@ -2,7 +2,9 @@ import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { BlindDatingService } from '../services/blind-dating.service.js'
 import { ContentFilterService } from '../services/ai/content-filter.service.js'
-import { supabase } from '../config/supabase.js'
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { blindDateBlockedMessages, blindDateMatches, blindDatingSettings, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 
 const router = Router()
@@ -399,17 +401,26 @@ router.get('/blocked-messages/:matchId', requireAuth, async (req: AuthRequest, r
       return res.json({ messages: [] })
     }
     
-    const { data: blockedMessages, error } = await supabase
-      .from('blind_date_blocked_messages')
-      .select('*')
-      .eq('blind_date_id', matchId)
-      .order('created_at', { ascending: true })
-    
-    if (error) {
-      throw error
-    }
-    
-    res.json({ messages: blockedMessages || [] })
+    const blockedRows = await db.select({
+      id: blindDateBlockedMessages.id,
+      blind_date_id: blindDateBlockedMessages.blindDateId,
+      sender_id: blindDateBlockedMessages.senderId,
+      original_message: blindDateBlockedMessages.originalMessage,
+      filtered_message: blindDateBlockedMessages.filteredMessage,
+      blocked_reason: blindDateBlockedMessages.blockedReason,
+      detection_confidence: blindDateBlockedMessages.detectionConfidence,
+      ai_analysis: blindDateBlockedMessages.aiAnalysis,
+      was_released: blindDateBlockedMessages.wasReleased,
+      released_at: blindDateBlockedMessages.releasedAt,
+      created_at: blindDateBlockedMessages.createdAt,
+    })
+      .from(blindDateBlockedMessages)
+      .where(eq(blindDateBlockedMessages.blindDateId, matchId))
+      .orderBy(asc(blindDateBlockedMessages.createdAt))
+
+    const messages = blockedRows.map(m => ({ ...m, detection_confidence: m.detection_confidence !== null ? Number(m.detection_confidence) : null }))
+
+    res.json({ messages })
   } catch (error) {
     logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error getting blocked messages')
     res.status(500).json({ error: 'Failed to get blocked messages' })
@@ -515,18 +526,15 @@ router.get('/stats', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
     
     // Get total matches
-    const { data: allMatches, error: matchError } = await supabase
-      .from('blind_date_matches')
-      .select('id, status, revealed_at')
-      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-    
-    if (matchError) throw matchError
-    
+    const allMatches = await db.select({ id: blindDateMatches.id, status: blindDateMatches.status, revealedAt: blindDateMatches.revealedAt })
+      .from(blindDateMatches)
+      .where(or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)))
+
     const stats = {
-      totalMatches: allMatches?.length || 0,
-      activeMatches: allMatches?.filter(m => m.status === 'active').length || 0,
-      revealedMatches: allMatches?.filter(m => m.status === 'revealed').length || 0,
-      endedMatches: allMatches?.filter(m => m.status === 'ended').length || 0,
+      totalMatches: allMatches.length,
+      activeMatches: allMatches.filter(m => m.status === 'active').length,
+      revealedMatches: allMatches.filter(m => m.status === 'revealed').length,
+      endedMatches: allMatches.filter(m => m.status === 'ended').length,
       successRate: 0
     }
     
@@ -669,20 +677,17 @@ router.post('/test/create-test-match', requireAuth, async (req: AuthRequest, res
     }
     
     // Check if user already has a test match with the bot
-    const { data: existingMatches } = await supabase
-      .from('blind_date_matches')
-      .select('id, status, chat_id')
-      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-      .in('status', ['active', 'revealed'])
-    
+    const existingMatches = await db.select({ id: blindDateMatches.id, status: blindDateMatches.status, chat_id: blindDateMatches.chatId })
+      .from(blindDateMatches)
+      .where(and(
+        or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
+        inArray(blindDateMatches.status, ['active', 'revealed']),
+      ))
+
     // Check if there's already a match with the test bot
     const testBotEmail = 'blind_dating_test_bot@circle.internal'
-    const { data: testBot } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('email', testBotEmail)
-      .maybeSingle()
-    
+    const [testBot] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.email, testBotEmail)).limit(1)
+
     if (testBot && existingMatches) {
       const existingTestMatch = existingMatches.find(m => {
         // We need to check if the other user is the test bot
@@ -810,42 +815,37 @@ router.get('/test/debug-eligibility', requireAuth, async (req: AuthRequest, res)
     const settings = await BlindDatingService.getSettings(userId)
     
     // Get all users with blind dating enabled
-    const { data: enabledUsers, error: enabledError } = await supabase
-      .from('blind_dating_settings')
-      .select('user_id, is_enabled, max_active_matches')
-      .eq('is_enabled', true)
-    
+    const enabledUsers = await db.select({ user_id: blindDatingSettings.userId, is_enabled: blindDatingSettings.isEnabled, max_active_matches: blindDatingSettings.maxActiveMatches })
+      .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
+
     // Get total users
-    const { count: totalUsers } = await supabase
-      .from('profiles')
-      .select('*', { count: 'exact', head: true })
-      .is('deleted_at', null)
-    
+    const [{ count: totalUsers }] = await db.select({ count: sql<number>`count(*)::int` }).from(profiles).where(isNull(profiles.deletedAt))
+
     // Get user's active matches
     const activeMatches = settings?.is_enabled ? await BlindDatingService.getActiveMatches(userId) : []
-    
+
     // Get users that the current user has already matched with (active only)
-    const { data: activeMatchRecords } = await supabase
-      .from('blind_date_matches')
-      .select('user_a, user_b')
-      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-      .in('status', ['active', 'revealed'])
-    
+    const activeMatchRecords = await db.select({ user_a: blindDateMatches.userA, user_b: blindDateMatches.userB })
+      .from(blindDateMatches)
+      .where(and(
+        or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
+        inArray(blindDateMatches.status, ['active', 'revealed']),
+      ))
+
     const activeMatchedUserIds = new Set(
-      (activeMatchRecords || []).flatMap(m => [m.user_a, m.user_b]).filter(id => id !== userId)
+      activeMatchRecords.flatMap(m => [m.user_a, m.user_b]).filter(id => id !== userId)
     )
-    
+
     // Get all past matches (including ended)
-    const { data: allPastMatches } = await supabase
-      .from('blind_date_matches')
-      .select('user_a, user_b, status')
-      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-    
+    const allPastMatches = await db.select({ user_a: blindDateMatches.userA, user_b: blindDateMatches.userB, status: blindDateMatches.status })
+      .from(blindDateMatches)
+      .where(or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)))
+
     // Calculate eligible users (enabled, not already in active match with user)
-    const eligibleUserIds = (enabledUsers || [])
+    const eligibleUserIds = enabledUsers
       .map(u => u.user_id)
       .filter(id => id !== userId && !activeMatchedUserIds.has(id))
-    
+
     res.json({
       debug: {
         yourUserId: userId,
@@ -856,13 +856,13 @@ router.get('/test/debug-eligibility', requireAuth, async (req: AuthRequest, res)
           autoMatch: settings?.auto_match ?? true
         },
         eligibility: {
-          totalUsersInApp: totalUsers || 0,
-          usersWithBlindDatingEnabled: (enabledUsers || []).length,
+          totalUsersInApp: totalUsers,
+          usersWithBlindDatingEnabled: enabledUsers.length,
           usersEligibleForYou: eligibleUserIds.length,
           eligibleUserIds: eligibleUserIds,
           usersInActiveMatchWithYou: Array.from(activeMatchedUserIds),
           yourCurrentActiveMatches: activeMatches.length,
-          totalPastMatches: (allPastMatches || []).length
+          totalPastMatches: allPastMatches.length
         },
         reason: getNoMatchReason({
           isEnabled: settings?.is_enabled,
@@ -897,40 +897,45 @@ router.post('/test/enable-for-all', async (req, res) => {
     }
     
     // Get all users without blind dating settings
-    const { data: allUsers } = await supabase
-      .from('profiles')
-      .select('id')
-      .is('deleted_at', null)
-    
+    const allUsers = await db.select({ id: profiles.id }).from(profiles).where(isNull(profiles.deletedAt))
+
     let enabled = 0
     let errors = 0
-    
-    for (const user of (allUsers || [])) {
+
+    for (const user of allUsers) {
       try {
-        await supabase
-          .from('blind_dating_settings')
-          .upsert({
-            user_id: user.id,
-            is_enabled: true,
-            auto_match: true,
-            max_active_matches: 3,
-            preferred_reveal_threshold: 30,
-            notifications_enabled: true,
-            updated_at: new Date().toISOString()
-          }, { onConflict: 'user_id' })
+        await db.insert(blindDatingSettings).values({
+          userId: user.id,
+          isEnabled: true,
+          autoMatch: true,
+          maxActiveMatches: 3,
+          preferredRevealThreshold: 30,
+          notificationsEnabled: true,
+          updatedAt: new Date().toISOString()
+        }).onConflictDoUpdate({
+          target: blindDatingSettings.userId,
+          set: {
+            isEnabled: true,
+            autoMatch: true,
+            maxActiveMatches: 3,
+            preferredRevealThreshold: 30,
+            notificationsEnabled: true,
+            updatedAt: new Date().toISOString()
+          },
+        })
         enabled++
       } catch (error) {
         errors++
         logger.error({ error, userId: user.id }, 'Failed to enable blind dating for user')
       }
     }
-    
+
     res.json({
       success: true,
       message: `Enabled blind dating for ${enabled} users`,
       enabled,
       errors,
-      totalUsers: (allUsers || []).length
+      totalUsers: allUsers.length
     })
   } catch (error) {
     logger.error({ error }, 'Error enabling blind dating for all')
