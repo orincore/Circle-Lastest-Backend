@@ -1,6 +1,8 @@
 import type { Profile } from '../repos/profiles.repo.js'
-import { findById, updateLocation, updatePreferences, findNearbyUsers, findUsersInArea } from '../repos/profiles.repo.js'
-import { supabase } from '../config/supabase.js'
+import { findById, updateLocation, updatePreferences, findNearbyUsers, findUsersInArea, rowToProfile } from '../repos/profiles.repo.js'
+import { eq } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { profiles } from '../db/schema.js'
 import { trackLocationUpdated, trackInterestUpdated } from '../services/activityService.js'
 import { cache, cacheKeys, invalidateProfileCache, PROFILE_TTL } from '../services/cache.js'
 
@@ -68,8 +70,6 @@ function toNearbyUser(u: Profile & { distance: number }) {
     distance: Math.round(u.distance * 100) / 100 // Round to 2 decimal places
   }
 }
-
-const TABLE = 'profiles'
 
 export const resolvers = {
   Query: {
@@ -148,13 +148,22 @@ export const resolvers = {
         allowed.invisible_mode = input.invisibleMode
       }
 
-      const { data, error } = await supabase
-        .from(TABLE)
-        .update(allowed)
-        .eq('id', ctx.user.id)
-        .select('*')
-        .single()
-      if (error) throw error
+      const drizzleUpdate: Record<string, unknown> = {}
+      if ('username' in allowed) drizzleUpdate.username = allowed.username
+      if ('first_name' in allowed) drizzleUpdate.firstName = allowed.first_name
+      if ('last_name' in allowed) drizzleUpdate.lastName = allowed.last_name
+      if ('age' in allowed) drizzleUpdate.age = allowed.age
+      if ('gender' in allowed) drizzleUpdate.gender = allowed.gender
+      if ('phone_number' in allowed) drizzleUpdate.phoneNumber = allowed.phone_number
+      if ('about' in allowed) drizzleUpdate.about = allowed.about
+      if ('interests' in allowed) drizzleUpdate.interests = allowed.interests
+      if ('needs' in allowed) drizzleUpdate.needs = allowed.needs
+      if ('profile_photo_url' in allowed) drizzleUpdate.profilePhotoUrl = allowed.profile_photo_url
+      if ('instagram_username' in allowed) drizzleUpdate.instagramUsername = allowed.instagram_username
+      if ('invisible_mode' in allowed) drizzleUpdate.invisibleMode = allowed.invisible_mode
+
+      const rows = await db.update(profiles).set(drizzleUpdate).where(eq(profiles.id, ctx.user.id)).returning()
+      const data = rowToProfile(rows[0])
       
       // Track interests update activity for live feed if interests were updated
       if (Array.isArray(input.interests)) {
