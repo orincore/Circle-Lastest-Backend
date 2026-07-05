@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { chats, chatMembers, messages, chatDeletions, profiles } from '../db/schema.js'
 import { cache, cacheKeys } from '../services/cache.js'
 
 // Cache TTLs (seconds). Short, because invalidation keeps them fresh on writes;
@@ -15,11 +17,8 @@ export async function invalidateChatCaches(chatId: string, memberIds?: string[])
     await cache.delByPrefix(cacheKeys.historyPrefix(chatId))
     let ids = memberIds
     if (!ids) {
-      const { data: members } = await supabase
-        .from('chat_members')
-        .select('user_id')
-        .eq('chat_id', chatId)
-      ids = (members || []).map((m: any) => m.user_id)
+      const members = await db.select({ userId: chatMembers.userId }).from(chatMembers).where(eq(chatMembers.chatId, chatId))
+      ids = members.map((m) => m.userId)
     }
     if (ids && ids.length) {
       await cache.del(...ids.map((id) => cacheKeys.inbox(id)))
@@ -63,6 +62,38 @@ export interface ChatMessage {
   view_once_viewed_at?: string | null
 }
 
+type ChatRow = typeof chats.$inferSelect
+type ChatMessageRow = typeof messages.$inferSelect
+
+/** Bridges Drizzle's camelCase `chats` row back to the snake_case `Chat` shape. */
+export function rowToChat(row: ChatRow): Chat {
+  return {
+    id: row.id,
+    created_at: row.createdAt,
+    last_message_at: row.lastMessageAt,
+  }
+}
+
+/** Bridges Drizzle's camelCase `messages` row back to the snake_case `ChatMessage` shape. */
+export function rowToChatMessage(row: ChatMessageRow): ChatMessage {
+  return {
+    id: row.id,
+    chat_id: row.chatId,
+    sender_id: row.senderId,
+    text: row.text,
+    media_url: row.mediaUrl,
+    media_type: row.mediaType ?? undefined,
+    thumbnail: row.thumbnail,
+    reply_to_id: row.replyToId ?? undefined,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt ?? undefined,
+    is_edited: row.isEdited ?? undefined,
+    is_deleted: row.isDeleted ?? undefined,
+    is_view_once: row.isViewOnce,
+    view_once_viewed_at: row.viewOnceViewedAt,
+  }
+}
+
 /**
  * View-once media must never sit in bulk history/broadcast payloads — only
  * the dedicated consume flow (consumeViewOnceMessage) hands out the real
@@ -95,33 +126,27 @@ export interface ChatDeletion {
 
 export async function ensureChatForUsers(a: string, b: string): Promise<Chat> {
   // Find an existing 1:1 chat for these two users
-  const { data: existing, error: findErr } = await supabase
-    .from('chat_members')
-    .select('chat_id')
-    .in('user_id', [a, b])
-  if (findErr) throw findErr
+  const existing = await db.select({ chatId: chatMembers.chatId }).from(chatMembers).where(inArray(chatMembers.userId, [a, b]))
 
-  if (existing && existing.length) {
+  if (existing.length) {
     // Count members per chat_id
     const counts: Record<string, number> = {}
-    for (const row of existing) counts[row.chat_id] = (counts[row.chat_id] || 0) + 1
+    for (const row of existing) counts[row.chatId] = (counts[row.chatId] || 0) + 1
     const chatId = Object.entries(counts).find(([, c]) => c >= 2)?.[0]
     if (chatId) {
-      const { data, error } = await supabase.from('chats').select('*').eq('id', chatId).maybeSingle()
-      if (error) throw error
-      if (data) return data as Chat
+      const rows = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1)
+      if (rows[0]) return rowToChat(rows[0])
     }
   }
 
   // Create a new chat and add members - set last_message_at to now so it appears at top of list
-  const { data: chat, error: chatErr } = await supabase.from('chats').insert({ last_message_at: new Date().toISOString() }).select('*').single()
-  if (chatErr) throw chatErr
-  const { error: mErr } = await supabase.from('chat_members').insert([
-    { chat_id: chat.id, user_id: a },
-    { chat_id: chat.id, user_id: b },
+  const chatRows = await db.insert(chats).values({ lastMessageAt: new Date().toISOString() }).returning()
+  const chat = rowToChat(chatRows[0])
+  await db.insert(chatMembers).values([
+    { chatId: chat.id, userId: a },
+    { chatId: chat.id, userId: b },
   ])
-  if (mErr) throw mErr
-  return chat as Chat
+  return chat
 }
 
 export async function getUserInbox(userId: string) {
@@ -138,54 +163,32 @@ export async function getUserInbox(userId: string) {
 
 async function computeUserInbox(userId: string) {
   // Get chats the user is a member of
-  const { data: memberships, error: mErr } = await supabase
-    .from('chat_members')
-    .select('chat_id')
-    .eq('user_id', userId)
-  if (mErr) throw mErr
-  const chatIds = (memberships || []).map((m) => m.chat_id)
+  const memberships = await db.select({ chatId: chatMembers.chatId }).from(chatMembers).where(eq(chatMembers.userId, userId))
+  const chatIds = memberships.map((m) => m.chatId)
   if (!chatIds.length) return []
 
   // Fetch chats
-  const { data: chats, error: cErr } = await supabase
-    .from('chats')
-    .select('*')
-    .in('id', chatIds)
-    .order('last_message_at', { ascending: false, nullsFirst: false })
-  if (cErr) throw cErr
+  const chatRows = await db.select().from(chats).where(inArray(chats.id, chatIds))
+    .orderBy(sql`${chats.lastMessageAt} DESC NULLS LAST`)
+  const userChats = chatRows.map(rowToChat)
 
   // For each chat, find the other participant to display name
   const results = [] as Array<{ chat: Chat; lastMessage: ChatMessage | null; unreadCount: number; otherId?: string; otherName?: string; otherProfilePhoto?: string }>
   // Preload members for all chats
-  const { data: members, error: memErr } = await supabase
-    .from('chat_members')
-    .select('chat_id, user_id')
-    .in('chat_id', chatIds)
-  if (memErr) throw memErr
+  const memberRows = await db.select({ chatId: chatMembers.chatId, userId: chatMembers.userId }).from(chatMembers).where(inArray(chatMembers.chatId, chatIds))
   const otherIdsSet = new Set<string>()
   // Get user's chat deletion records to filter out cleared chats and messages
-  const { data: deletions, error: delErr } = await supabase
-    .from('chat_deletions')
-    .select('chat_id, deleted_at')
-    .eq('user_id', userId)
-  if (delErr) throw delErr
+  const deletionRows = await db.select({ chatId: chatDeletions.chatId, deletedAt: chatDeletions.deletedAt }).from(chatDeletions).where(eq(chatDeletions.userId, userId))
 
-  const deletionMap = new Map((deletions || []).map(d => [d.chat_id, d.deleted_at]))
+  const deletionMap = new Map(deletionRows.map((d) => [d.chatId, d.deletedAt]))
 
   // --- Last message per chat (parallel instead of sequential) ---
-  const lastMessages = await Promise.all((chats as Chat[]).map(async (chat) => {
+  const lastMessages = await Promise.all(userChats.map(async (chat) => {
     const deletedAt = deletionMap.get(chat.id)
-    let q = supabase
-      .from('messages')
-      .select('*')
-      .eq('chat_id', chat.id)
-      .eq('is_deleted', false)
-      .order('created_at', { ascending: false })
-      .limit(1)
-    if (deletedAt) q = q.gt('created_at', deletedAt)
-    const { data: last, error: lmErr } = await q.maybeSingle()
-    if (lmErr) throw lmErr
-    return { chat, deletedAt, lastMessage: last ? (last as ChatMessage) : null }
+    const conditions = [eq(messages.chatId, chat.id), eq(messages.isDeleted, false)]
+    if (deletedAt) conditions.push(gt(messages.createdAt, deletedAt))
+    const rows = await db.select().from(messages).where(and(...conditions)).orderBy(desc(messages.createdAt)).limit(1)
+    return { chat, deletedAt, lastMessage: rows[0] ? rowToChatMessage(rows[0]) : null }
   }))
 
   // Keep only chats that should appear in the inbox (cleared+empty chats drop out).
@@ -197,41 +200,33 @@ async function computeUserInbox(userId: string) {
   //     then all of the user's read receipts for those messages, in one round trip each. ---
   const unreadByChat = new Map<string, number>()
   if (visibleChatIds.length) {
-    const { data: candidateMsgs, error: cmErr } = await supabase
-      .from('messages')
-      .select('id, chat_id, created_at')
-      .in('chat_id', visibleChatIds)
-      .eq('is_deleted', false)
-      .not('sender_id', 'eq', userId)
-    if (cmErr) throw cmErr
+    const { messageReceipts } = await import('../db/schema.js')
+    const candidateMsgs = await db.select({ id: messages.id, chatId: messages.chatId, createdAt: messages.createdAt })
+      .from(messages)
+      .where(and(inArray(messages.chatId, visibleChatIds), eq(messages.isDeleted, false), ne(messages.senderId, userId)))
 
     // Apply per-chat clear date and collect ids.
     const perChatMsgIds = new Map<string, string[]>()
     const allMsgIds: string[] = []
-    for (const m of candidateMsgs || []) {
-      const deletedAt = deletionMap.get(m.chat_id)
-      if (deletedAt && !(new Date(m.created_at) > new Date(deletedAt))) continue
-      const arr = perChatMsgIds.get(m.chat_id) || []
+    for (const m of candidateMsgs) {
+      const deletedAt = deletionMap.get(m.chatId)
+      if (deletedAt && !(new Date(m.createdAt) > new Date(deletedAt))) continue
+      const arr = perChatMsgIds.get(m.chatId) || []
       arr.push(m.id)
-      perChatMsgIds.set(m.chat_id, arr)
+      perChatMsgIds.set(m.chatId, arr)
       allMsgIds.push(m.id)
     }
 
     // One query for the user's read receipts across all those messages.
     const readSet = new Set<string>()
     if (allMsgIds.length) {
-      // Chunk to stay within URL/param limits on very large inboxes.
+      // Chunk to stay within parameter limits on very large inboxes.
       const chunkSize = 500
       for (let i = 0; i < allMsgIds.length; i += chunkSize) {
         const chunk = allMsgIds.slice(i, i + chunkSize)
-        const { data: reads, error: rErr } = await supabase
-          .from('message_receipts')
-          .select('message_id')
-          .eq('status', 'read')
-          .eq('user_id', userId)
-          .in('message_id', chunk)
-        if (rErr) throw rErr
-        for (const r of reads || []) readSet.add(r.message_id)
+        const reads = await db.select({ messageId: messageReceipts.messageId }).from(messageReceipts)
+          .where(and(eq(messageReceipts.status, 'read'), eq(messageReceipts.userId, userId), inArray(messageReceipts.messageId, chunk)))
+        for (const r of reads) readSet.add(r.messageId)
       }
     }
 
@@ -241,37 +236,40 @@ async function computeUserInbox(userId: string) {
   }
 
   for (const { chat, lastMessage } of visible) {
-    const mems = (members || []).filter((m: { chat_id: string; user_id: string }) => m.chat_id === chat.id)
-    const otherId = mems.map((m: { user_id: string }) => m.user_id).find((id: string) => id !== userId)
+    const mems = memberRows.filter((m) => m.chatId === chat.id)
+    const otherId = mems.map((m) => m.userId).find((id) => id !== userId)
     if (otherId) otherIdsSet.add(otherId)
     results.push({ chat, lastMessage, unreadCount: unreadByChat.get(chat.id) || 0, otherId })
   }
 
   // fetch names and profile photos for others - exclude suspended/deleted accounts
   if (otherIdsSet.size) {
-    const { data: profiles, error: pErr } = await supabase
-      .from('profiles')
-      .select('id, first_name, last_name, profile_photo_url, is_suspended, deleted_at')
-      .in('id', Array.from(otherIdsSet))
-    if (!pErr && profiles) {
-      // Filter out suspended/deleted users
-      const activeProfiles = profiles.filter((p: any) => !p.deleted_at && !p.is_suspended)
-      const nameMap = new Map((activeProfiles as any[]).map((p) => [p.id, `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim()]))
-      const photoMap = new Map((activeProfiles as any[]).map((p) => [p.id, p.profile_photo_url]))
-      // Track which users are suspended/deleted
-      const suspendedOrDeletedIds = new Set(
-        profiles.filter((p: any) => p.deleted_at || p.is_suspended).map((p: any) => p.id)
-      )
-      for (const item of results) {
-        if (item.otherId) {
-          // Mark suspended/deleted users
-          if (suspendedOrDeletedIds.has(item.otherId)) {
-            item.otherName = 'Deleted User'
-            item.otherProfilePhoto = undefined
-          } else {
-            item.otherName = nameMap.get(item.otherId)
-            item.otherProfilePhoto = photoMap.get(item.otherId)
-          }
+    const profileRows = await db.select({
+      id: profiles.id,
+      firstName: profiles.firstName,
+      lastName: profiles.lastName,
+      profilePhotoUrl: profiles.profilePhotoUrl,
+      isSuspended: profiles.isSuspended,
+      deletedAt: profiles.deletedAt,
+    }).from(profiles).where(inArray(profiles.id, Array.from(otherIdsSet)))
+
+    // Filter out suspended/deleted users
+    const activeProfiles = profileRows.filter((p) => !p.deletedAt && !p.isSuspended)
+    const nameMap = new Map(activeProfiles.map((p) => [p.id, `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim()]))
+    const photoMap = new Map(activeProfiles.map((p) => [p.id, p.profilePhotoUrl]))
+    // Track which users are suspended/deleted
+    const suspendedOrDeletedIds = new Set(
+      profileRows.filter((p) => p.deletedAt || p.isSuspended).map((p) => p.id)
+    )
+    for (const item of results) {
+      if (item.otherId) {
+        // Mark suspended/deleted users
+        if (suspendedOrDeletedIds.has(item.otherId)) {
+          item.otherName = 'Deleted User'
+          item.otherProfilePhoto = undefined
+        } else {
+          item.otherName = nameMap.get(item.otherId)
+          item.otherProfilePhoto = photoMap.get(item.otherId) ?? undefined
         }
       }
     }
@@ -284,40 +282,31 @@ async function computeUserInbox(userId: string) {
 
   if (userMessageIds.length > 0) {
     try {
+      const { messageReceipts } = await import('../db/schema.js')
       // Get all receipts for user's messages in a single query
-      const { data: receipts, error: receiptsErr } = await supabase
-        .from('message_receipts')
-        .select('message_id, status')
-        .in('message_id', userMessageIds)
-        .order('created_at', { ascending: false });
+      const receipts = await db.select({ messageId: messageReceipts.messageId, status: messageReceipts.status })
+        .from(messageReceipts)
+        .where(inArray(messageReceipts.messageId, userMessageIds))
+        .orderBy(desc(messageReceipts.createdAt))
 
-      if (!receiptsErr && receipts) {
-        // Create a map of message_id -> highest status
-        const statusMap = new Map<string, string>();
-        
-        for (const receipt of receipts) {
-          const currentStatus = statusMap.get(receipt.message_id);
-          // Priority: read > delivered
-          if (!currentStatus || 
-              (receipt.status === 'read') || 
-              (receipt.status === 'delivered' && currentStatus !== 'read')) {
-            statusMap.set(receipt.message_id, receipt.status);
-          }
-        }
+      // Create a map of message_id -> highest status
+      const statusMap = new Map<string, string>();
 
-        // Apply status to messages
-        for (const item of results) {
-          if (item.lastMessage && item.lastMessage.sender_id === userId) {
-            const status = statusMap.get(item.lastMessage.id) || 'sent';
-            (item.lastMessage as any).status = status;
-          }
+      for (const receipt of receipts) {
+        const currentStatus = statusMap.get(receipt.messageId)
+        // Priority: read > delivered
+        if (!currentStatus ||
+            (receipt.status === 'read') ||
+            (receipt.status === 'delivered' && currentStatus !== 'read')) {
+          statusMap.set(receipt.messageId, receipt.status);
         }
-      } else {
-        // Default all user messages to 'sent' if query fails
-        for (const item of results) {
-          if (item.lastMessage && item.lastMessage.sender_id === userId) {
-            (item.lastMessage as any).status = 'sent';
-          }
+      }
+
+      // Apply status to messages
+      for (const item of results) {
+        if (item.lastMessage && item.lastMessage.sender_id === userId) {
+          const status = statusMap.get(item.lastMessage.id) || 'sent';
+          (item.lastMessage as any).status = status;
         }
       }
     } catch (error) {
