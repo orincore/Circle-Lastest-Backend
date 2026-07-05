@@ -1,6 +1,8 @@
 import { findById, type Profile } from '../repos/profiles.repo.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
-import { supabase } from '../config/supabase.js'
+import { db } from '../config/db.js'
+import { matchmakingHistory } from '../db/schema.js'
+import { eq } from 'drizzle-orm'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 
 type UserId = string
@@ -156,9 +158,9 @@ export async function decide(userId: string, decision: 'accept' | 'pass'): Promi
           searching.delete(p.b)
           // update matchmaking history
           try {
-            await supabase.from('matchmaking_history')
-              .update({ accepted_a: true, accepted_b: true, matched_at: new Date().toISOString() })
-              .eq('proposal_id', p.id)
+            await db.update(matchmakingHistory)
+              .set({ acceptedA: true, acceptedB: true, matchedAt: new Date().toISOString() })
+              .where(eq(matchmakingHistory.proposalId, p.id))
           } catch {}
           try {
             emitToUser(p.a, 'matchmaking:matched', { chatId, otherName: otherNameA, message: `Hurrey! You got a match with ${otherNameA}` })
@@ -176,9 +178,9 @@ export async function decide(userId: string, decision: 'accept' | 'pass'): Promi
         searching.set(userId, { userId, startedAt: Date.now() })
         searching.set(other, { userId: other, startedAt: Date.now() })
         try {
-          await supabase.from('matchmaking_history')
-            .update({ cancelled_at: new Date().toISOString(), cancel_reason: 'pass' })
-            .eq('proposal_id', p.id)
+          await db.update(matchmakingHistory)
+            .set({ cancelledAt: new Date().toISOString(), cancelReason: 'pass' })
+            .where(eq(matchmakingHistory.proposalId, p.id))
         } catch {}
         return { state: 'cancelled', message: 'Matchmaking cancelled by other user. Starting again…' }
       }
@@ -266,7 +268,7 @@ async function tryPair(userId: string) {
       if (a && b) {
         // insert matchmaking history record
         try {
-          await supabase.from('matchmaking_history').insert({ proposal_id: id, user_a: p.a, user_b: p.b })
+          await db.insert(matchmakingHistory).values({ proposalId: id, userA: p.a, userB: p.b })
         } catch {}
         emitToUser(p.a, 'matchmaking:proposal', {
           id: p.id,

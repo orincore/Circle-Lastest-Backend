@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { startSearch, getStatus, decide, cancelSearch } from '../services/matchmaking-optimized.js'
-import { supabase } from '../config/supabase.js'
+import { and, eq, inArray, or } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { friendships, matchmakingProposals, profiles } from '../db/schema.js'
 import { checkMatchLimit, SubscriptionService } from '../services/subscription.service.js'
 
 const router = Router()
@@ -10,13 +12,12 @@ const router = Router()
 router.post('/start', requireAuth, checkMatchLimit, async (req: AuthRequest, res) => {
   try {
     // Check if user is in invisible mode
-    const { data: user } = await supabase
-      .from('profiles')
-      .select('invisible_mode')
-      .eq('id', req.user!.id)
-      .single()
-    
-    if (user?.invisible_mode) {
+    const [user] = await db.select({ invisibleMode: profiles.invisibleMode })
+      .from(profiles)
+      .where(eq(profiles.id, req.user!.id))
+      .limit(1)
+
+    if (user?.invisibleMode) {
       return res.status(403).json({ 
         error: 'Matchmaking is disabled while in invisible mode. Turn off invisible mode in settings to use this feature.' 
       })
@@ -97,48 +98,46 @@ router.post('/message-request', requireAuth, checkMatchLimit, async (req: AuthRe
     }
     
     // Check if they are already friends (accept both 'active' and 'accepted')
-    const { data: existingFriendship } = await supabase
-      .from('friendships')
-      .select('id')
-      .or(`and(user1_id.eq.${senderId},user2_id.eq.${receiverId}),and(user1_id.eq.${receiverId},user2_id.eq.${senderId})`)
-      .in('status', ['active', 'accepted'])
+    const [existingFriendship] = await db.select({ id: friendships.id }).from(friendships)
+      .where(and(
+        or(
+          and(eq(friendships.user1Id, senderId), eq(friendships.user2Id, receiverId)),
+          and(eq(friendships.user1Id, receiverId), eq(friendships.user2Id, senderId)),
+        ),
+        inArray(friendships.status, ['active', 'accepted']),
+      ))
       .limit(1)
-      .maybeSingle()
-    
+
     if (existingFriendship) {
       return res.status(400).json({ error: 'You are already friends with this user' })
     }
-    
+
     // Check if there's already a pending proposal
-    const { data: existingProposal } = await supabase
-      .from('matchmaking_proposals')
-      .select('id')
-      .or(`and(a.eq.${senderId},b.eq.${receiverId}),and(a.eq.${receiverId},b.eq.${senderId})`)
-      .eq('status', 'pending')
+    const [existingProposal] = await db.select({ id: matchmakingProposals.id }).from(matchmakingProposals)
+      .where(and(
+        or(
+          and(eq(matchmakingProposals.a, senderId), eq(matchmakingProposals.b, receiverId)),
+          and(eq(matchmakingProposals.a, receiverId), eq(matchmakingProposals.b, senderId)),
+        ),
+        eq(matchmakingProposals.status, 'pending'),
+      ))
       .limit(1)
-      .maybeSingle()
-    
+
     if (existingProposal) {
       return res.status(400).json({ error: 'Message request already pending' })
     }
-    
+
     // Create matchmaking proposal
-    const { data: newProposal, error: insertError } = await supabase
-      .from('matchmaking_proposals')
-      .insert({
-        a: senderId,
-        b: receiverId,
-        status: 'pending',
-        type: 'message_request'
-      })
-      .select()
-      .single()
-    
-    if (insertError) {
+    let newProposal: typeof matchmakingProposals.$inferSelect
+    try {
+      [newProposal] = await db.insert(matchmakingProposals)
+        .values({ a: senderId, b: receiverId, status: 'pending', type: 'message_request' })
+        .returning()
+    } catch (insertError) {
       console.error('Error creating message request:', insertError)
       return res.status(500).json({ error: 'Failed to send message request' })
     }
-    
+
     // Emit real-time events
     const io = req.app.get('io')
     if (io) {
@@ -187,16 +186,15 @@ router.get('/pending-status/:userId', requireAuth, async (req: AuthRequest, res)
     const currentUserId = req.user!.id
     
     // Check for pending message requests (matchmaking proposals) in both directions
-    const { data: sentRequest } = await supabase
-      .from('matchmaking_proposals')
-      .select('id')
-      .eq('a', currentUserId)
-      .eq('b', userId)
-      .eq('status', 'pending')
-      .eq('type', 'message_request')
+    const [sentRequest] = await db.select({ id: matchmakingProposals.id }).from(matchmakingProposals)
+      .where(and(
+        eq(matchmakingProposals.a, currentUserId),
+        eq(matchmakingProposals.b, userId),
+        eq(matchmakingProposals.status, 'pending'),
+        eq(matchmakingProposals.type, 'message_request'),
+      ))
       .limit(1)
-      .maybeSingle()
-    
+
     if (sentRequest) {
       return res.json({
         hasPendingRequest: true,
@@ -204,17 +202,16 @@ router.get('/pending-status/:userId', requireAuth, async (req: AuthRequest, res)
         requestId: sentRequest.id
       })
     }
-    
-    const { data: receivedRequest } = await supabase
-      .from('matchmaking_proposals')
-      .select('id')
-      .eq('a', userId)
-      .eq('b', currentUserId)
-      .eq('status', 'pending')
-      .eq('type', 'message_request')
+
+    const [receivedRequest] = await db.select({ id: matchmakingProposals.id }).from(matchmakingProposals)
+      .where(and(
+        eq(matchmakingProposals.a, userId),
+        eq(matchmakingProposals.b, currentUserId),
+        eq(matchmakingProposals.status, 'pending'),
+        eq(matchmakingProposals.type, 'message_request'),
+      ))
       .limit(1)
-      .maybeSingle()
-    
+
     if (receivedRequest) {
       return res.json({
         hasPendingRequest: true,

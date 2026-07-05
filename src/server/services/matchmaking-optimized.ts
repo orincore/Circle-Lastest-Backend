@@ -1,7 +1,9 @@
 import { Redis } from 'ioredis'
 import { findById, type Profile } from '../repos/profiles.repo.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
-import { supabase } from '../config/supabase.js'
+import { and, eq, or } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { friendships, matchmakingHistory, userMatches } from '../db/schema.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 import { logger } from '../config/logger.js'
 import { CirclePointsService } from './circle-points.service.js'
@@ -967,43 +969,41 @@ export async function decide(userId: string, decision: 'accept' | 'pass'): Promi
           logger.info({ userA: proposal.a, userB: proposal.b }, '👥 Creating automatic friendship for matched users')
           
           // Check if friendship already exists
-          const { data: existingFriendship } = await supabase
-            .from('friendships')
-            .select('id, status')
-            .or(`and(user1_id.eq.${proposal.a},user2_id.eq.${proposal.b}),and(user1_id.eq.${proposal.b},user2_id.eq.${proposal.a})`)
+          const [existingFriendship] = await db.select({ id: friendships.id, status: friendships.status })
+            .from(friendships)
+            .where(or(
+              and(eq(friendships.user1Id, proposal.a), eq(friendships.user2Id, proposal.b)),
+              and(eq(friendships.user1Id, proposal.b), eq(friendships.user2Id, proposal.a)),
+            ))
             .limit(1)
-            .maybeSingle()
-          
+
           if (existingFriendship) {
             if (existingFriendship.status === 'inactive') {
               // Reactivate inactive friendship
-              await supabase
-                .from('friendships')
-                .update({ status: 'active', updated_at: new Date().toISOString() })
-                .eq('id', existingFriendship.id)
-              
+              await db.update(friendships)
+                .set({ status: 'active', updatedAt: new Date().toISOString() })
+                .where(eq(friendships.id, existingFriendship.id))
+
               logger.info({ friendshipId: existingFriendship.id }, '✅ Reactivated existing friendship for matched users')
             } else {
               logger.info({ friendshipId: existingFriendship.id }, '✅ Friendship already exists and is active')
             }
           } else {
             // Create new friendship
-            const { data: newFriendship, error: friendshipError } = await supabase
-              .from('friendships')
-              .insert({
-                user1_id: proposal.a,
-                user2_id: proposal.b,
-                status: 'active',
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-              })
-              .select('id')
-              .single()
-            
-            if (friendshipError) {
-              logger.error({ error: friendshipError, userA: proposal.a, userB: proposal.b }, '❌ Failed to create automatic friendship')
-            } else {
+            try {
+              const [newFriendship] = await db.insert(friendships)
+                .values({
+                  user1Id: proposal.a,
+                  user2Id: proposal.b,
+                  status: 'active',
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString()
+                })
+                .returning({ id: friendships.id })
+
               logger.info({ friendshipId: newFriendship.id, userA: proposal.a, userB: proposal.b }, '✅ Created automatic friendship for matched users')
+            } catch (friendshipError) {
+              logger.error({ error: friendshipError, userA: proposal.a, userB: proposal.b }, '❌ Failed to create automatic friendship')
             }
           }
         } catch (error) {
@@ -1019,16 +1019,15 @@ export async function decide(userId: string, decision: 'accept' | 'pass'): Promi
         try {
           // Ensure consistent ordering (smaller ID first) to avoid duplicate constraint issues
           const [user1_id, user2_id] = [proposal.a, proposal.b].sort()
-          
-          await supabase.from('user_matches')
-            .insert({
-              user1_id,
-              user2_id,
-              match_type: proposal.type || 'regular',
-              matched_at: new Date().toISOString(),
-              created_via: 'matchmaking'
-            })
-          
+
+          await db.insert(userMatches).values({
+            user1Id: user1_id,
+            user2Id: user2_id,
+            matchType: proposal.type || 'regular',
+            matchedAt: new Date().toISOString(),
+            createdVia: 'matchmaking'
+          })
+
           logger.info({ user1_id, user2_id, match_type: proposal.type }, '✅ Recorded successful match in database')
         } catch (error) {
           logger.error({ error, proposal }, '❌ Failed to record match in database')
@@ -1036,9 +1035,9 @@ export async function decide(userId: string, decision: 'accept' | 'pass'): Promi
         
         // Update matchmaking history
         try {
-          await supabase.from('matchmaking_history')
-            .update({ accepted_a: true, accepted_b: true, matched_at: new Date().toISOString() })
-            .eq('proposal_id', proposal.id)
+          await db.update(matchmakingHistory)
+            .set({ acceptedA: true, acceptedB: true, matchedAt: new Date().toISOString() })
+            .where(eq(matchmakingHistory.proposalId, proposal.id))
         } catch {}
         
         // Track match activity for live feed
@@ -1190,14 +1189,14 @@ export async function decide(userId: string, decision: 'accept' | 'pass'): Promi
       }
       
       // Update matchmaking history
+      // (the old supabase call also tried to set a `cancelled_by` column that
+      // doesn't exist on matchmaking_history — that made the whole update
+      // silently error every time, since the failure was swallowed by an
+      // empty catch. Dropping the bogus field lets this actually persist.)
       try {
-        await supabase.from('matchmaking_history')
-          .update({ 
-            cancelled_at: new Date().toISOString(), 
-            cancel_reason: 'pass',
-            cancelled_by: userId
-          })
-          .eq('proposal_id', proposal.id)
+        await db.update(matchmakingHistory)
+          .set({ cancelledAt: new Date().toISOString(), cancelReason: 'pass' })
+          .where(eq(matchmakingHistory.proposalId, proposal.id))
       } catch {}
       
       // Trigger immediate matching attempts for both users
@@ -1256,10 +1255,10 @@ async function tryPairUser(userId: string): Promise<void> {
     if (userA && userB) {
       // Insert matchmaking history
       try {
-        await supabase.from('matchmaking_history').insert({ 
-          proposal_id: proposal.id, 
-          user_a: proposal.a, 
-          user_b: proposal.b 
+        await db.insert(matchmakingHistory).values({
+          proposalId: proposal.id,
+          userA: proposal.a,
+          userB: proposal.b
         })
       } catch {}
       
