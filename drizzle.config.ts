@@ -12,6 +12,12 @@ import 'dotenv/config'
 // re-check that `explore_interactions` still has 0 rows on the Supabase source —
 // the empty `auth.users` stub only works because that table has nothing to
 // violate the FK against.
+//
+// `drizzle-kit pull` also regenerates `src/server/db/relations.ts` with a bare
+// `from "./schema"` import, which fails this project's TypeScript config
+// ("module"/"moduleResolution": "NodeNext" requires explicit `.js` extensions
+// on relative imports). After any re-pull, fix that one import line back to
+// `from "./schema.js"` and re-run `npx tsc --noEmit` to confirm.
 export default defineConfig({
   dialect: 'postgresql',
   out: './src/server/db',
