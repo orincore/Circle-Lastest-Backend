@@ -47,7 +47,7 @@ loss and no dependency on Supabase once complete.
 
 ## Environments & flow
 
-1. **Local Mac (dev)** — Docker Postgres, seeded once via `pg_dump` from
+1. **Local Mac (dev)** — Postgres (native Homebrew `postgresql@17`, since Docker Desktop's daemon wasn't running locally — the VPS still uses Docker, see below), seeded once via `pg_dump` from
    Supabase. All rewriting and testing happens here.
 2. **Local full regression pass** — once every section below is migrated,
    run the whole backend end-to-end against the local Postgres replica.

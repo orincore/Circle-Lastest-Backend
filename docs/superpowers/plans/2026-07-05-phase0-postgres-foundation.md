@@ -2,16 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up a local, Docker-based Postgres replica of the Supabase database, wire up Drizzle ORM against it, and introspect a typed schema — so every later migration-phase plan (auth, chat, matchmaking, etc.) has a real Postgres instance and real generated types to write queries against.
+**Goal:** Stand up a local Postgres replica of the Supabase database, wire up Drizzle ORM against it, and introspect a typed schema — so every later migration-phase plan (auth, chat, matchmaking, etc.) has a real Postgres instance and real generated types to write queries against.
 
-**Architecture:** A `postgres:17-alpine` container (matching Supabase's confirmed server version, PostgreSQL 17.6) runs locally on port 5433, seeded once via `pg_dump`/`pg_restore` from Supabase's connection-pooler endpoint. A new `src/server/config/db.ts` exports a `pg.Pool`-backed Drizzle client, used alongside (not replacing) the existing `supabase`/`supabaseAdmin` clients until later phases migrate individual files. `drizzle-kit pull` introspects the restored database into a typed schema file that later phases import.
+**Architecture:** A native Homebrew `postgresql@17` instance (matching Supabase's confirmed server version, PostgreSQL 17.6) runs locally on port 5433, seeded once via `pg_dump`/`pg_restore` from Supabase's connection-pooler endpoint. A new `src/server/config/db.ts` exports a `pg.Pool`-backed Drizzle client, used alongside (not replacing) the existing `supabase`/`supabaseAdmin` clients until later phases migrate individual files. `drizzle-kit pull` introspects the restored database into a typed schema file that later phases import.
 
-**Tech Stack:** `pg` 8.22.0, `drizzle-orm` 0.45.2, `drizzle-kit` 0.31.10 (dev), `@types/pg` 8.20.0 (dev), Docker Compose, Postgres 17.
+**Tech Stack:** `pg` 8.22.0, `drizzle-orm` 0.45.2, `drizzle-kit` 0.31.10 (dev), `@types/pg` 8.20.0 (dev), Postgres 17 (Homebrew locally; Docker on the VPS per the design spec).
 
 ## Global Constraints
 
-- Confirmed live Supabase server version: **PostgreSQL 17.6** — the local Docker image and all `pg_dump`/`pg_restore`/`psql` client binaries used against it must be v17, not whatever default is on `$PATH` (this machine's default `pg_dump` is v14.20 via a different Homebrew package and **will fail** against a v17 server with a version-mismatch error). Use the v17 binaries at `/opt/homebrew/opt/postgresql@17/bin/`.
+- Confirmed live Supabase server version: **PostgreSQL 17.6** — the local Postgres instance and all `pg_dump`/`pg_restore`/`psql` client binaries used against it must be v17, not whatever default is on `$PATH` (this machine's default `pg_dump` is v14.20 via a different Homebrew package and **will fail** against a v17 server with a version-mismatch error). Use the v17 binaries at `/opt/homebrew/opt/postgresql@17/bin/`.
 - This Mac already runs a native Homebrew Postgres 15 on port 5432 for unrelated local projects (`ashwini_hospital`, `msme_schemes`) — the new local Postgres for this project **must not** use port 5432. Use **5433**.
+- **Local dev uses native Homebrew Postgres, not Docker** — Docker Desktop's daemon is not running on this machine and starting it was declined in favor of the already-installed `postgresql@17` Homebrew formula (data directory already initialized at `/opt/homebrew/var/postgresql@17`). This is a local-dev-only deviation from the design spec's general "Docker for parity" preference; the VPS deployment (a later plan) still uses Docker Postgres per the design spec's "Final move to VPS" section — only Phase 0's local setup changed.
+- Homebrew `postgresql@17`'s default `pg_hba.conf` uses `trust` auth for local/`127.0.0.1`/`::1` connections (verified) — a password can still be set on a role and included in connection strings (the driver sends it, the server just doesn't require it), so `postgresql://circle:circle_dev_password@localhost:5433/circle` connects successfully without further `pg_hba.conf` changes.
 - Project uses TypeScript with `"module": "NodeNext"` — relative imports must include the `.js` extension even though the source files are `.ts` (e.g. `import { env } from './env.js'`), matching the existing codebase pattern.
 - Env vars are validated through a single `zod` schema in `src/server/config/env.ts`; any new env var must be added there or `env.FOO` will be `undefined` even if it's in `.env`.
 - `.env` is git-ignored (verified) — safe to edit directly with real credentials. `.env.example` is committed — use placeholder values there, never real credentials.
@@ -59,58 +61,78 @@ git commit -m "chore: add pg and drizzle dependencies for Postgres migration"
 
 ---
 
-### Task 2: Local Postgres via Docker Compose
+### Task 2: Local Postgres via native Homebrew postgresql@17
 
 **Files:**
-- Modify: `docker-compose.yml`
+- Create: `scripts/db-migration/setup-local-postgres.sh`
 
 **Interfaces:**
-- Produces: a reachable Postgres 17 server at `localhost:5433`, user `circle`, password `circle_dev_password`, database `circle` — this is what `DATABASE_URL` in Task 3 points at.
+- Produces: a reachable Postgres 17 server at `localhost:5433`, role `circle` (password `circle_dev_password`), database `circle` owned by that role — this is what `DATABASE_URL` in Task 3 points at. Same connection contract as if this were Docker — only the underlying mechanism is native Homebrew instead.
 
-- [ ] **Step 1: Add the postgres service**
+- [ ] **Step 1: Write the setup script**
 
-In `docker-compose.yml`, add a `postgres` service alongside the existing `redis` service, and a `postgres_data` volume alongside `redis_data`:
+Create `scripts/db-migration/setup-local-postgres.sh` (idempotent — safe to re-run):
 
-```yaml
-  postgres:
-    image: postgres:17-alpine
-    container_name: circle-postgres
-    environment:
-      - POSTGRES_USER=circle
-      - POSTGRES_PASSWORD=circle_dev_password
-      - POSTGRES_DB=circle
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U circle -d circle"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+PG_BIN="/opt/homebrew/opt/postgresql@17/bin"
+PG_CONF="/opt/homebrew/var/postgresql@17/postgresql.conf"
+PORT=5433
+
+if ! grep -qE "^port = $PORT" "$PG_CONF"; then
+  if grep -qE "^port = " "$PG_CONF"; then
+    sed -i '' "s/^port = .*/port = $PORT/" "$PG_CONF"
+  else
+    sed -i '' "s/^#port = 5432.*/port = $PORT/" "$PG_CONF"
+  fi
+  echo "Set port = $PORT in $PG_CONF"
+fi
+
+brew services start postgresql@17
+
+for i in $(seq 1 10); do
+  if "$PG_BIN/pg_isready" -h localhost -p "$PORT" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+"$PG_BIN/pg_isready" -h localhost -p "$PORT"
+
+SUPERUSER=$(whoami)
+
+ROLE_EXISTS=$("$PG_BIN/psql" -h localhost -p "$PORT" -U "$SUPERUSER" -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='circle'")
+if [ "$ROLE_EXISTS" != "1" ]; then
+  "$PG_BIN/psql" -h localhost -p "$PORT" -U "$SUPERUSER" -d postgres -c "CREATE ROLE circle WITH LOGIN PASSWORD 'circle_dev_password';"
+  echo "Created role circle"
+fi
+
+DB_EXISTS=$("$PG_BIN/psql" -h localhost -p "$PORT" -U "$SUPERUSER" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='circle'")
+if [ "$DB_EXISTS" != "1" ]; then
+  "$PG_BIN/createdb" -h localhost -p "$PORT" -U "$SUPERUSER" -O circle circle
+  echo "Created database circle owned by circle"
+fi
+
+echo "Local Postgres ready at postgresql://circle:circle_dev_password@localhost:$PORT/circle"
 ```
 
-The full file's `services:` block should now contain both `redis`, `redis-commander`, and `postgres`; the `volumes:` block should contain both `redis_data:` and `postgres_data:` (each with `driver: local`, matching the existing `redis_data` entry).
+- [ ] **Step 2: Make it executable and run it**
 
-- [ ] **Step 2: Bring it up**
+Run: `chmod +x scripts/db-migration/setup-local-postgres.sh && bash scripts/db-migration/setup-local-postgres.sh`
+Expected: ends with `Local Postgres ready at postgresql://circle:circle_dev_password@localhost:5433/circle`, no errors. (`brew services start postgresql@17` may print `Successfully started` or, if it was already running from a prior run of this script, a message that it's already started — both are fine.)
 
-Run: `docker compose up -d postgres`
-Expected: `Container circle-postgres  Started` (or `Running`), no errors.
+- [ ] **Step 3: Verify the `circle` role can actually connect**
 
-- [ ] **Step 3: Verify it's healthy and reachable**
-
-Run: `docker compose ps postgres`
-Expected: `STATUS` column shows `Up ... (healthy)` (may take ~10s after start — re-run if it shows `starting`).
-
-Run: `docker exec circle-postgres pg_isready -U circle -d circle`
-Expected: `/var/run/postgresql:5432 - accepting connections`
+Run: `/opt/homebrew/opt/postgresql@17/bin/psql "postgresql://circle:circle_dev_password@localhost:5433/circle" -c "SELECT 1 AS ok;"`
+Expected: a one-row result `ok | 1`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docker-compose.yml
-git commit -m "feat: add local Postgres 17 service to docker-compose for Supabase migration"
+git add scripts/db-migration/setup-local-postgres.sh
+git commit -m "feat: add local Postgres 17 setup script (native Homebrew, port 5433)"
 ```
 
 ---
