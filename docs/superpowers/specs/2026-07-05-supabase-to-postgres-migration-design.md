@@ -81,6 +81,34 @@ loss and no dependency on Supabase once complete.
 5. Verify: row counts per table must match exactly between Supabase and the
    local restore before any rewriting starts.
 
+## Conventions established in Batch 1 (apply to every later batch)
+
+Batch 1 (Auth & profiles) settled three patterns every subsequent batch's
+repo/route rewrites should follow, since `drizzle-kit pull`'s generated
+schema doesn't match the shapes the rest of the codebase (still largely
+un-migrated) expects:
+
+- **camelCase ↔ snake_case bridge.** Drizzle's schema properties are
+  camelCase (`firstName`, `passwordHash`) because that's what `drizzle-kit
+  pull` generated, but every not-yet-migrated caller expects the original
+  snake_case shape (`first_name`, `password_hash`) that `supabase-js`
+  returned. Each migrated repo file exports a small `rowToXRow(row)` mapper
+  (e.g. `rowToProfile` in `profiles.repo.ts`) that converts Drizzle's row
+  shape back before returning — never change the public return shape of an
+  already-migrated function's callers can't see it happen. Other files in
+  the same batch that need the same table's shape (e.g. a GraphQL resolver)
+  import and reuse that one mapper rather than redefining their own.
+- **`numeric` columns ↔ `number`.** Postgres `numeric` columns (e.g.
+  `profiles.latitude`/`longitude`) are typed as `string` by Drizzle (to
+  avoid float precision loss) but as `number` in the app-level interfaces
+  that predate this migration. Convert with `Number(...)` on every read and
+  `String(...)` on every write, right at the Drizzle boundary.
+- **`db.execute(sql\`...\`)` (raw SQL / RPC calls) returns raw driver rows**
+  with the actual database column names (snake_case), NOT Drizzle's
+  camelCase — because that path bypasses the schema's column mapping
+  entirely. Only the Drizzle query-builder path (`db.select()...`) returns
+  camelCase and needs the bridge above.
+
 ## Migration order (one batch at a time)
 
 Within each batch: replace `supabase.from(...)` calls in those files with
