@@ -1,6 +1,15 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { and, eq, gt, inArray, ne, notExists, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import {
+  blindDateMatches,
+  chatDeletions,
+  chatUserSettings,
+  messageReceipts,
+  messages,
+  profiles,
+} from '../db/schema.js'
 import { getUserInbox } from '../repos/chat.repo.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 
@@ -20,15 +29,16 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 
     let settingsMap = new Map<string, { archived: boolean; pinned: boolean }>()
     if (chatIds.length > 0) {
-      const { data: settings } = await supabase
-        .from('chat_user_settings')
-        .select('chat_id, archived, pinned')
-        .eq('user_id', userId)
-        .in('chat_id', chatIds)
+      const settings = await db
+        .select({
+          chatId: chatUserSettings.chatId,
+          archived: chatUserSettings.archived,
+          pinned: chatUserSettings.pinned,
+        })
+        .from(chatUserSettings)
+        .where(and(eq(chatUserSettings.userId, userId), inArray(chatUserSettings.chatId, chatIds)))
 
-      if (settings) {
-        settingsMap = new Map(settings.map(s => [s.chat_id, { archived: !!s.archived, pinned: !!s.pinned }]))
-      }
+      settingsMap = new Map(settings.map(s => [s.chatId, { archived: !!s.archived, pinned: !!s.pinned }]))
     }
 
     // Optionally load UNREAD counts (messages from others without a read
@@ -39,53 +49,38 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     if (includeCounts && chatIds.length > 0) {
       for (const chatId of chatIds) {
         try {
-          // Prefer the same RPC the socket layer uses (single source of truth).
-          const { data: rpcCount, error: rpcError } = await supabase.rpc('get_unread_count', {
-            p_chat_id: chatId,
-            p_user_id: userId,
-          })
+          // Count messages from others (post-clear, not deleted) that this
+          // user has no 'read' receipt for.
+          const [deletion] = await db
+            .select({ deletedAt: chatDeletions.deletedAt })
+            .from(chatDeletions)
+            .where(and(eq(chatDeletions.chatId, chatId), eq(chatDeletions.userId, userId)))
+            .limit(1)
 
-          if (!rpcError && typeof rpcCount === 'number') {
-            countsMap.set(chatId, rpcCount)
-            continue
+          const conditions = [
+            eq(messages.chatId, chatId),
+            eq(messages.isDeleted, false),
+            ne(messages.senderId, userId),
+            notExists(
+              db.select({ one: sql`1` })
+                .from(messageReceipts)
+                .where(and(
+                  eq(messageReceipts.messageId, messages.id),
+                  eq(messageReceipts.userId, userId),
+                  eq(messageReceipts.status, 'read'),
+                ))
+            ),
+          ]
+          if (deletion?.deletedAt) {
+            conditions.push(gt(messages.createdAt, deletion.deletedAt))
           }
 
-          // Fallback: count messages from others (post-clear, not deleted) that
-          // this user has no 'read' receipt for.
-          const { data: deletion } = await supabase
-            .from('chat_deletions')
-            .select('deleted_at')
-            .eq('chat_id', chatId)
-            .eq('user_id', userId)
-            .maybeSingle()
+          const [row] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(messages)
+            .where(and(...conditions))
 
-          let q = supabase
-            .from('messages')
-            .select('id')
-            .eq('chat_id', chatId)
-            .eq('is_deleted', false)
-            .neq('sender_id', userId)
-
-          if (deletion?.deleted_at) {
-            q = q.gt('created_at', deletion.deleted_at)
-          }
-
-          const { data: msgs } = await q
-          const ids = (msgs || []).map(m => m.id)
-          if (ids.length === 0) {
-            countsMap.set(chatId, 0)
-            continue
-          }
-
-          const { data: reads } = await supabase
-            .from('message_receipts')
-            .select('message_id')
-            .eq('status', 'read')
-            .eq('user_id', userId)
-            .in('message_id', ids)
-
-          const readSet = new Set((reads || []).map(r => r.message_id))
-          countsMap.set(chatId, ids.filter(id => !readSet.has(id)).length)
+          countsMap.set(chatId, row?.count ?? 0)
         } catch (countError) {
           console.error('chat-list unread count error for chat', chatId, countError)
           countsMap.set(chatId, 0)
@@ -104,37 +99,41 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     }
     let blindDateMap = new Map<string, BlindDateInfo>()
     if (chatIds.length > 0) {
-      const { data: blindMatches } = await supabase
-        .from('blind_date_matches')
-        .select('chat_id, status, user_a, user_b, compatibility_score')
-        .in('chat_id', chatIds)
-        .eq('status', 'active')
+      const blindMatches = await db
+        .select({
+          chatId: blindDateMatches.chatId,
+          userA: blindDateMatches.userA,
+          userB: blindDateMatches.userB,
+        })
+        .from(blindDateMatches)
+        .where(and(inArray(blindDateMatches.chatId, chatIds), eq(blindDateMatches.status, 'active')))
 
-      if (blindMatches && blindMatches.length > 0) {
+      if (blindMatches.length > 0) {
         // Get other user profiles for blind date matches
         for (const match of blindMatches) {
-          const otherUserId = match.user_a === userId ? match.user_b : match.user_a
-          
-          // Processing blind date match silently
-          
+          if (!match.chatId) continue
+          const otherUserId = match.userA === userId ? match.userB : match.userA
+
           // Get other user's profile for gender, age, and name masking
-          const { data: otherProfile, error: profileError } = await supabase
-            .from('profiles')
-            .select('first_name, last_name, gender, age, needs, is_suspended, deleted_at')
-            .eq('id', otherUserId)
-            .single()
-          
+          const [otherProfile] = await db
+            .select({
+              firstName: profiles.firstName,
+              lastName: profiles.lastName,
+              gender: profiles.gender,
+              age: profiles.age,
+              needs: profiles.needs,
+              isSuspended: profiles.isSuspended,
+              deletedAt: profiles.deletedAt,
+            })
+            .from(profiles)
+            .where(eq(profiles.id, otherUserId))
+            .limit(1)
+
           // Skip if user is suspended or deleted
-          if (otherProfile?.is_suspended || otherProfile?.deleted_at) {
+          if (otherProfile?.isSuspended || otherProfile?.deletedAt) {
             continue
           }
-          
-          // Profile fetched for blind date match
-          
-          if (profileError) {
-            console.error('Error fetching blind date profile:', profileError, 'userId:', otherUserId)
-          }
-          
+
           // Get age directly from profile
           const age: number | undefined = otherProfile?.age
           
@@ -147,9 +146,9 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           }
           
           let maskedName = 'Anonymous'
-          if (otherProfile?.first_name && otherProfile.first_name.trim()) {
-            const firstName = maskWord(otherProfile.first_name.trim())
-            const lastName = otherProfile.last_name?.trim() ? maskWord(otherProfile.last_name.trim()) : ''
+          if (otherProfile?.firstName && otherProfile.firstName.trim()) {
+            const firstName = maskWord(otherProfile.firstName.trim())
+            const lastName = otherProfile.lastName?.trim() ? maskWord(otherProfile.lastName.trim()) : ''
             maskedName = lastName ? `${firstName} ${lastName}` : firstName
           }
           
@@ -181,7 +180,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
             genderDisplay = genderDisplay.charAt(0).toUpperCase() + genderDisplay.slice(1).toLowerCase()
           }
           
-          blindDateMap.set(match.chat_id, {
+          blindDateMap.set(match.chatId, {
             isOngoing: true,
             matchReason,
             otherUserGender: genderDisplay || undefined,
@@ -263,22 +262,24 @@ router.post('/:chatId/archive', requireAuth, async (req: AuthRequest, res) => {
     const { chatId } = req.params
     const archived = !!req.body?.archived
 
-    const { data, error } = await supabase
-      .from('chat_user_settings')
-      .upsert({
-        user_id: userId,
-        chat_id: chatId,
-        archived,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'user_id,chat_id' })
-      .select('user_id, chat_id, archived, pinned')
-      .single()
-
-    if (error) throw error
+    const now = new Date().toISOString()
+    const [data] = await db
+      .insert(chatUserSettings)
+      .values({ userId, chatId, archived, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [chatUserSettings.userId, chatUserSettings.chatId],
+        set: { archived, updatedAt: now },
+      })
+      .returning({
+        userId: chatUserSettings.userId,
+        chatId: chatUserSettings.chatId,
+        archived: chatUserSettings.archived,
+        pinned: chatUserSettings.pinned,
+      })
 
     // Notify only this user to refresh chat list
     emitToUser(userId, 'chat:list:changed', { chatId })
-    res.json({ setting: data })
+    res.json({ setting: { user_id: data.userId, chat_id: data.chatId, archived: data.archived, pinned: data.pinned } })
   } catch (error) {
     console.error('archive toggle error:', error)
     res.status(500).json({ error: 'Failed to update archive setting' })
@@ -292,22 +293,24 @@ router.post('/:chatId/pin', requireAuth, async (req: AuthRequest, res) => {
     const { chatId } = req.params
     const pinned = !!req.body?.pinned
 
-    const { data, error } = await supabase
-      .from('chat_user_settings')
-      .upsert({
-        user_id: userId,
-        chat_id: chatId,
-        pinned,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'user_id,chat_id' })
-      .select('user_id, chat_id, archived, pinned')
-      .single()
-
-    if (error) throw error
+    const now = new Date().toISOString()
+    const [data] = await db
+      .insert(chatUserSettings)
+      .values({ userId, chatId, pinned, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [chatUserSettings.userId, chatUserSettings.chatId],
+        set: { pinned, updatedAt: now },
+      })
+      .returning({
+        userId: chatUserSettings.userId,
+        chatId: chatUserSettings.chatId,
+        archived: chatUserSettings.archived,
+        pinned: chatUserSettings.pinned,
+      })
 
     // Notify only this user to refresh chat list
     emitToUser(userId, 'chat:list:changed', { chatId })
-    res.json({ setting: data })
+    res.json({ setting: { user_id: data.userId, chat_id: data.chatId, archived: data.archived, pinned: data.pinned } })
   } catch (error) {
     console.error('pin toggle error:', error)
     res.status(500).json({ error: 'Failed to update pin setting' })
