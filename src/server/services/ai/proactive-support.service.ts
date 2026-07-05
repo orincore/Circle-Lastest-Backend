@@ -1,4 +1,6 @@
-import { supabase } from '../../config/supabase.js'
+import { and, desc, eq, gte, lt, sql } from 'drizzle-orm'
+import { db } from '../../config/db.js'
+import { aiConversations, messages, profiles, subscriptions } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 
 export interface ProactiveAlert {
@@ -49,49 +51,63 @@ export class ProactiveSupportService {
   private static async getUserBehaviorPattern(userId: string): Promise<UserBehaviorPattern> {
     try {
       // Get user profile and subscription
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('last_seen, created_at')
-        .eq('id', userId)
-        .single()
+      const [profile] = await db.select({
+        last_seen: profiles.lastSeen,
+        created_at: profiles.createdAt,
+      }).from(profiles).where(eq(profiles.id, userId))
 
-      const { data: subscription } = await supabase
-        .from('subscriptions')
-        .select('status, plan_type, started_at, cancelled_at')
-        .eq('user_id', userId)
-        .order('started_at', { ascending: false })
+      const [subscription] = await db.select({
+        status: subscriptions.status,
+        plan_type: subscriptions.planType,
+        started_at: subscriptions.startedAt,
+        cancelled_at: subscriptions.cancelledAt,
+      })
+        .from(subscriptions)
+        .where(eq(subscriptions.userId, userId))
+        .orderBy(desc(subscriptions.startedAt))
         .limit(1)
-        .maybeSingle()
 
       // Get recent activity metrics
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-      
+
       // Count logins (approximate from last_seen updates)
-      const { count: loginCount } = await supabase
-        .from('profiles')
-        .select('*', { count: 'exact', head: true })
-        .eq('id', userId)
-        .gte('last_seen', thirtyDaysAgo.toISOString())
+      const [{ count: loginCount }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(profiles)
+        .where(and(
+          eq(profiles.id, userId),
+          gte(profiles.lastSeen, thirtyDaysAgo.toISOString()),
+        ))
 
       // Count support interactions
-      const { count: supportCount } = await supabase
-        .from('ai_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId)
-        .gte('created_at', thirtyDaysAgo.toISOString())
+      const [{ count: supportCount }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(aiConversations)
+        .where(and(
+          eq(aiConversations.userId, userId),
+          gte(aiConversations.createdAt, thirtyDaysAgo.toISOString()),
+        ))
 
       // Count matches and messages (engagement)
-      const { count: matchCount } = await supabase
-        .from('matches')
-        .select('*', { count: 'exact', head: true })
-        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-        .gte('created_at', thirtyDaysAgo.toISOString())
+      // NOTE: the `matches` table referenced by the original supabase query does not
+      // exist in the schema (only `user_matches` does) - preserved as-is via raw sql
+      // so this call fails the same way it did against production/supabase.
+      let matchCount = 0
+      try {
+        const matchResult: any = await db.execute(sql`
+          select count(*)::int as count from matches
+          where (user1_id = ${userId}::uuid or user2_id = ${userId}::uuid)
+            and created_at >= ${thirtyDaysAgo.toISOString()}
+        `)
+        matchCount = matchResult.rows?.[0]?.count || 0
+      } catch (matchError) {
+        throw matchError
+      }
 
-      const { count: messageCount } = await supabase
-        .from('messages')
-        .select('*', { count: 'exact', head: true })
-        .eq('sender_id', userId)
-        .gte('created_at', thirtyDaysAgo.toISOString())
+      const [{ count: messageCount }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(messages)
+        .where(and(
+          eq(messages.senderId, userId),
+          gte(messages.createdAt, thirtyDaysAgo.toISOString()),
+        ))
 
       // Calculate engagement score
       const daysSinceJoin = Math.floor((Date.now() - new Date(profile?.created_at || Date.now()).getTime()) / (1000 * 60 * 60 * 24))
@@ -163,12 +179,16 @@ export class ProactiveSupportService {
     
     try {
       // Check for subscription expiring soon
-      const { data: subscription } = await supabase
-        .from('subscriptions')
-        .select('status, started_at, plan_type')
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .single()
+      const [subscription] = await db.select({
+        status: subscriptions.status,
+        started_at: subscriptions.startedAt,
+        plan_type: subscriptions.planType,
+      })
+        .from(subscriptions)
+        .where(and(
+          eq(subscriptions.userId, userId),
+          eq(subscriptions.status, 'active'),
+        ))
 
       if (subscription) {
         const startDate = new Date(subscription.started_at)
@@ -337,22 +357,22 @@ export class ProactiveSupportService {
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
       
       // Get users with potential issues
-      const { data: inactiveUsers } = await supabase
-        .from('profiles')
-        .select('id')
-        .lt('last_seen', sevenDaysAgo.toISOString())
-        .gte('created_at', thirtyDaysAgo.toISOString())
+      const inactiveUsers = await db.select({ id: profiles.id })
+        .from(profiles)
+        .where(and(
+          lt(profiles.lastSeen, sevenDaysAgo.toISOString()),
+          gte(profiles.createdAt, thirtyDaysAgo.toISOString()),
+        ))
         .limit(100)
 
-      const { data: premiumUsers } = await supabase
-        .from('subscriptions')
-        .select('user_id')
-        .eq('status', 'active')
+      const premiumUsers = await db.select({ user_id: subscriptions.userId })
+        .from(subscriptions)
+        .where(eq(subscriptions.status, 'active'))
         .limit(50)
 
       // Combine and deduplicate
       const userIds = new Set<string>()
-      
+
       inactiveUsers?.forEach(user => userIds.add(user.id))
       premiumUsers?.forEach(sub => userIds.add(sub.user_id))
       

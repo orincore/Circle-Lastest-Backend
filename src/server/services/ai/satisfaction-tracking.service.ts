@@ -1,4 +1,6 @@
-import { supabase } from '../../config/supabase.js'
+import { and, eq, gte, lte } from 'drizzle-orm'
+import { db } from '../../config/db.js'
+import { aiConversations, feedbackAnalysis, followUpTasks, satisfactionRatings, satisfactionSurveys, surveyResponses } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 
 export interface SatisfactionRating {
@@ -129,14 +131,12 @@ export class SatisfactionTrackingService {
       }
 
       // Save survey to database
-      await supabase
-        .from('satisfaction_surveys')
-        .insert({
-          id: survey.id,
-          conversation_id: conversationId,
-          questions: JSON.stringify(survey.questions),
-          created_at: new Date().toISOString()
-        })
+      await db.insert(satisfactionSurveys).values({
+        id: survey.id,
+        conversationId: conversationId,
+        questions: JSON.stringify(survey.questions),
+        createdAt: new Date().toISOString(),
+      })
 
       return survey
     } catch (error) {
@@ -154,18 +154,16 @@ export class SatisfactionTrackingService {
       }
 
       // Save rating to database
-      await supabase
-        .from('satisfaction_ratings')
-        .insert({
-          conversation_id: rating.conversationId,
-          user_id: rating.userId,
-          rating: rating.rating,
-          feedback: rating.feedback,
-          category: rating.category,
-          agent_type: rating.agentType,
-          agent_id: rating.agentId,
-          created_at: ratingWithTimestamp.timestamp.toISOString()
-        })
+      await db.insert(satisfactionRatings).values({
+        conversationId: rating.conversationId,
+        userId: rating.userId,
+        rating: rating.rating,
+        feedback: rating.feedback,
+        category: rating.category,
+        agentType: rating.agentType,
+        agentId: rating.agentId,
+        createdAt: ratingWithTimestamp.timestamp.toISOString(),
+      })
 
       // Analyze feedback if provided
       if (rating.feedback) {
@@ -203,14 +201,12 @@ export class SatisfactionTrackingService {
       }
 
       // Save response to database
-      await supabase
-        .from('survey_responses')
-        .insert({
-          survey_id: surveyId,
-          question_id: questionId,
-          answer: typeof answer === 'string' ? answer : answer.toString(),
-          created_at: response.timestamp.toISOString()
-        })
+      await db.insert(surveyResponses).values({
+        surveyId: surveyId,
+        questionId: questionId,
+        answer: typeof answer === 'string' ? answer : answer.toString(),
+        createdAt: response.timestamp.toISOString(),
+      })
 
       // Check if survey is complete and calculate overall score
       await this.checkSurveyCompletion(surveyId)
@@ -335,25 +331,26 @@ export class SatisfactionTrackingService {
     agentType?: 'ai' | 'human'
   ): Promise<SatisfactionMetrics> {
     try {
-      let query = supabase
-        .from('satisfaction_ratings')
-        .select('rating, category, feedback, created_at, agent_type')
-
+      const conditions = []
       if (startDate) {
-        query = query.gte('created_at', startDate.toISOString())
+        conditions.push(gte(satisfactionRatings.createdAt, startDate.toISOString()))
       }
-
       if (endDate) {
-        query = query.lte('created_at', endDate.toISOString())
+        conditions.push(lte(satisfactionRatings.createdAt, endDate.toISOString()))
       }
-
       if (agentType) {
-        query = query.eq('agent_type', agentType)
+        conditions.push(eq(satisfactionRatings.agentType, agentType))
       }
 
-      const { data: ratings, error } = await query
-
-      if (error) throw error
+      const ratings = await db.select({
+        rating: satisfactionRatings.rating,
+        category: satisfactionRatings.category,
+        feedback: satisfactionRatings.feedback,
+        created_at: satisfactionRatings.createdAt,
+        agent_type: satisfactionRatings.agentType,
+      })
+        .from(satisfactionRatings)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
 
       if (!ratings || ratings.length === 0) {
         return {
@@ -495,19 +492,17 @@ export class SatisfactionTrackingService {
   // Helper methods
   private static async checkSurveyCompletion(surveyId: string): Promise<void> {
     try {
-      const { data: responses } = await supabase
-        .from('survey_responses')
-        .select('question_id, answer')
-        .eq('survey_id', surveyId)
+      const responses = await db.select({
+        question_id: surveyResponses.questionId,
+        answer: surveyResponses.answer,
+      }).from(surveyResponses).where(eq(surveyResponses.surveyId, surveyId))
 
-      const { data: survey } = await supabase
-        .from('satisfaction_surveys')
-        .select('questions')
-        .eq('id', surveyId)
-        .single()
+      const [survey] = await db.select({
+        questions: satisfactionSurveys.questions,
+      }).from(satisfactionSurveys).where(eq(satisfactionSurveys.id, surveyId))
 
       if (survey && responses) {
-        const questions = JSON.parse(survey.questions)
+        const questions = JSON.parse(survey.questions as any)
         const requiredQuestions = questions.filter((q: SurveyQuestion) => q.required)
         const answeredRequired = responses.filter(r => 
           requiredQuestions.some((q: SurveyQuestion) => q.id === r.question_id)
@@ -524,13 +519,12 @@ export class SatisfactionTrackingService {
             : 0
 
           // Mark survey as complete
-          await supabase
-            .from('satisfaction_surveys')
-            .update({
-              overall_score: overallScore,
-              completed_at: new Date().toISOString()
+          await db.update(satisfactionSurveys)
+            .set({
+              overallScore: overallScore as any,
+              completedAt: new Date().toISOString(),
             })
-            .eq('id', surveyId)
+            .where(eq(satisfactionSurveys.id, surveyId))
         }
       }
     } catch (error) {
@@ -540,17 +534,15 @@ export class SatisfactionTrackingService {
 
   private static async logFeedbackAnalysis(conversationId: string, analysis: FeedbackAnalysis): Promise<void> {
     try {
-      await supabase
-        .from('feedback_analysis')
-        .insert({
-          conversation_id: conversationId,
-          sentiment: analysis.sentiment,
-          themes: JSON.stringify(analysis.themes),
-          action_items: JSON.stringify(analysis.actionItems),
-          urgency: analysis.urgency,
-          follow_up_required: analysis.followUpRequired,
-          created_at: new Date().toISOString()
-        })
+      await db.insert(feedbackAnalysis).values({
+        conversationId: conversationId,
+        sentiment: analysis.sentiment,
+        themes: JSON.stringify(analysis.themes),
+        actionItems: JSON.stringify(analysis.actionItems),
+        urgency: analysis.urgency,
+        followUpRequired: analysis.followUpRequired,
+        createdAt: new Date().toISOString(),
+      })
     } catch (error) {
       logger.error({ error, conversationId }, 'Error logging feedback analysis')
     }
@@ -562,17 +554,15 @@ export class SatisfactionTrackingService {
     analysis: FeedbackAnalysis
   ): Promise<void> {
     try {
-      await supabase
-        .from('follow_up_tasks')
-        .insert({
-          conversation_id: conversationId,
-          user_id: userId,
-          urgency: analysis.urgency,
-          reason: 'Low satisfaction rating',
-          action_items: JSON.stringify(analysis.actionItems),
-          scheduled_for: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours from now
-          created_at: new Date().toISOString()
-        })
+      await db.insert(followUpTasks).values({
+        conversationId: conversationId,
+        userId: userId,
+        urgency: analysis.urgency,
+        reason: 'Low satisfaction rating',
+        actionItems: JSON.stringify(analysis.actionItems),
+        scheduledFor: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours from now
+        createdAt: new Date().toISOString(),
+      })
     } catch (error) {
       logger.error({ error, conversationId }, 'Error scheduling follow-up')
     }
@@ -580,13 +570,12 @@ export class SatisfactionTrackingService {
 
   private static async updateConversationSatisfaction(conversationId: string, rating: number): Promise<void> {
     try {
-      await supabase
-        .from('ai_conversations')
-        .update({
-          satisfaction_rating: rating,
-          updated_at: new Date().toISOString()
+      await db.update(aiConversations)
+        .set({
+          satisfactionRating: rating,
+          updatedAt: new Date().toISOString(),
         })
-        .eq('id', conversationId)
+        .where(eq(aiConversations.id, conversationId))
     } catch (error) {
       logger.error({ error, conversationId }, 'Error updating conversation satisfaction')
     }

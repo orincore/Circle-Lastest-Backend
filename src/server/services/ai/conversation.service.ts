@@ -1,4 +1,6 @@
-import { supabase } from '../../config/supabase.js'
+import { desc, eq, gte } from 'drizzle-orm'
+import { db } from '../../config/db.js'
+import { aiConversations, profiles, subscriptions, refunds } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 import { TogetherAIService, type AIMessage, type AIResponse } from './together-ai.service.js'
 import { RefundPolicyService } from './refund-policy.service.js'
@@ -577,24 +579,40 @@ Would you like me to proceed with the cancellation? Say "yes, cancel my subscrip
   // Get conversation by ID
   static async getConversation(conversationId: string): Promise<Conversation | null> {
     try {
-      const { data, error } = await supabase
-        .from('ai_conversations')
-        .select('*')
-        .eq('id', conversationId)
-        .single()
+      const [data] = await db.select({
+        id: aiConversations.id,
+        user_id: aiConversations.userId,
+        session_id: aiConversations.sessionId,
+        messages: aiConversations.messages,
+        status: aiConversations.status,
+        intent: aiConversations.intent,
+        refund_explanation_count: aiConversations.refundExplanationCount,
+        estimated_cost: aiConversations.estimatedCost,
+        token_count: aiConversations.tokenCount,
+        user_context: aiConversations.userContext,
+        created_at: aiConversations.createdAt,
+        updated_at: aiConversations.updatedAt,
+        personality: aiConversations.personality,
+        conversation_state: aiConversations.conversationState,
+        sentiment_analysis: aiConversations.sentimentAnalysis,
+        detected_language: aiConversations.detectedLanguage,
+        escalation_level: aiConversations.escalationLevel,
+        satisfaction_rating: aiConversations.satisfactionRating,
+        proactive_alerts: aiConversations.proactiveAlerts,
+      }).from(aiConversations).where(eq(aiConversations.id, conversationId))
 
-      if (error || !data) {
+      if (!data) {
         return null
       }
 
       return {
         ...data,
         sessionId: data.session_id, // Map session_id to sessionId
-        messages: JSON.parse(data.messages || '[]'),
-        userContext: JSON.parse(data.user_context || 'null'),
-        createdAt: new Date(data.created_at),
-        updatedAt: new Date(data.updated_at)
-      }
+        messages: JSON.parse((data.messages as any) || '[]'),
+        userContext: JSON.parse((data.user_context as any) || 'null'),
+        createdAt: new Date(data.created_at as any),
+        updatedAt: new Date(data.updated_at as any)
+      } as unknown as Conversation
     } catch (error) {
       logger.error({ error, conversationId }, 'Error getting conversation')
       return null
@@ -622,28 +640,27 @@ Would you like me to proceed with the cancellation? Say "yes, cancel my subscrip
 
       const conversationData = {
         id: conversation.id,
-        user_id: conversation.userId,
-        session_id: conversation.sessionId,
+        userId: conversation.userId,
+        sessionId: conversation.sessionId,
         messages: JSON.stringify(conversation.messages),
         status: conversation.status,
         intent: conversation.intent,
-        refund_explanation_count: conversation.refundExplanationCount,
-        user_context: JSON.stringify(conversation.userContext),
-        created_at: conversation.createdAt.toISOString(),
-        updated_at: conversation.updatedAt.toISOString()
+        refundExplanationCount: conversation.refundExplanationCount,
+        userContext: JSON.stringify(conversation.userContext),
+        createdAt: conversation.createdAt.toISOString(),
+        updatedAt: conversation.updatedAt.toISOString()
       }
 
-      logger.info({ 
-        conversationData: { ...conversationData, messages: '[MESSAGES]', user_context: '[CONTEXT]' } 
+      logger.info({
+        conversationData: { ...conversationData, messages: '[MESSAGES]', userContext: '[CONTEXT]' }
       }, 'Upserting conversation data')
 
-      const { error } = await supabase
-        .from('ai_conversations')
-        .upsert(conversationData)
-
-      if (error) {
-        throw error
-      }
+      await db.insert(aiConversations)
+        .values(conversationData as any)
+        .onConflictDoUpdate({
+          target: aiConversations.id,
+          set: conversationData as any,
+        })
     } catch (error) {
       logger.error({ error, conversationId: conversation.id }, 'Error saving conversation')
       throw error
@@ -654,33 +671,41 @@ Would you like me to proceed with the cancellation? Say "yes, cancel my subscrip
   private static async getUserContext(userId: string): Promise<any> {
     try {
       // Get user profile
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('username, email, created_at')
-        .eq('id', userId)
-        .single()
+      const [profile] = await db.select({
+        username: profiles.username,
+        email: profiles.email,
+        created_at: profiles.createdAt,
+      }).from(profiles).where(eq(profiles.id, userId))
 
       // Get user subscriptions
-      const { data: subscriptions } = await supabase
-        .from('subscriptions')
-        .select('plan_type, status, started_at, price_paid, currency')
-        .eq('user_id', userId)
-        .order('started_at', { ascending: false })
+      const subscriptionRows = await db.select({
+        plan_type: subscriptions.planType,
+        status: subscriptions.status,
+        started_at: subscriptions.startedAt,
+        price_paid: subscriptions.pricePaid,
+        currency: subscriptions.currency,
+      })
+        .from(subscriptions)
+        .where(eq(subscriptions.userId, userId))
+        .orderBy(desc(subscriptions.startedAt))
 
       // Get recent refunds
-      const { data: refunds } = await supabase
-        .from('refunds')
-        .select('status, amount, requested_at')
-        .eq('user_id', userId)
-        .order('requested_at', { ascending: false })
+      const refundRows = await db.select({
+        status: refunds.status,
+        amount: refunds.amount,
+        requested_at: refunds.requestedAt,
+      })
+        .from(refunds)
+        .where(eq(refunds.userId, userId))
+        .orderBy(desc(refunds.requestedAt))
         .limit(5)
 
       return {
         profile,
-        subscriptions: subscriptions || [],
-        refunds: refunds || [],
-        hasActiveSubscription: subscriptions?.some(sub => sub.status === 'active') || false,
-        latestSubscription: subscriptions?.[0] || null
+        subscriptions: subscriptionRows || [],
+        refunds: refundRows || [],
+        hasActiveSubscription: subscriptionRows?.some(sub => sub.status === 'active') || false,
+        latestSubscription: subscriptionRows?.[0] || null
       }
     } catch (error) {
       logger.error({ error, userId }, 'Error getting user context')
@@ -778,12 +803,14 @@ Would you like me to proceed with the cancellation? Say "yes, cancel my subscrip
       const startDate = new Date()
       startDate.setDate(startDate.getDate() - days)
 
-      const { data, error } = await supabase
-        .from('ai_conversations')
-        .select('status, intent, refund_explanation_count, created_at')
-        .gte('created_at', startDate.toISOString())
-
-      if (error) throw error
+      const data = await db.select({
+        status: aiConversations.status,
+        intent: aiConversations.intent,
+        refund_explanation_count: aiConversations.refundExplanationCount,
+        created_at: aiConversations.createdAt,
+      })
+        .from(aiConversations)
+        .where(gte(aiConversations.createdAt, startDate.toISOString()))
 
       const analytics = {
         totalConversations: data?.length || 0,

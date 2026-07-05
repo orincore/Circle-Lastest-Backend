@@ -1,4 +1,6 @@
-import { supabase } from '../../config/supabase.js'
+import { and, eq, gte, lte, sql } from 'drizzle-orm'
+import { db } from '../../config/db.js'
+import { aiConversations, satisfactionRatings } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 import SentimentAnalysisService from './sentiment-analysis.service.js'
 import SatisfactionTrackingService from './satisfaction-tracking.service.js'
@@ -84,24 +86,27 @@ export class AnalyticsInsightsService {
     }
   ): Promise<ConversationAnalytics> {
     try {
-      let query = supabase
-        .from('ai_conversations')
-        .select(`
-          id, status, intent, estimated_cost, satisfaction_rating, 
-          created_at, updated_at, messages, user_context
-        `)
-
+      const conditions = []
       if (startDate) {
-        query = query.gte('created_at', startDate.toISOString())
+        conditions.push(gte(aiConversations.createdAt, startDate.toISOString()))
       }
-
       if (endDate) {
-        query = query.lte('created_at', endDate.toISOString())
+        conditions.push(lte(aiConversations.createdAt, endDate.toISOString()))
       }
 
-      const { data: conversations, error } = await query
-
-      if (error) throw error
+      const conversations = await db.select({
+        id: aiConversations.id,
+        status: aiConversations.status,
+        intent: aiConversations.intent,
+        estimated_cost: aiConversations.estimatedCost,
+        satisfaction_rating: aiConversations.satisfactionRating,
+        created_at: aiConversations.createdAt,
+        updated_at: aiConversations.updatedAt,
+        messages: aiConversations.messages,
+        user_context: aiConversations.userContext,
+      })
+        .from(aiConversations)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
 
       if (!conversations || conversations.length === 0) {
         return this.getEmptyAnalytics()
@@ -113,7 +118,7 @@ export class AnalyticsInsightsService {
       // Average conversation length (number of messages)
       const messageCounts = conversations.map(c => {
         try {
-          return JSON.parse(c.messages || '[]').length
+          return JSON.parse((c.messages as any) || '[]').length
         } catch {
           return 0
         }
@@ -130,8 +135,8 @@ export class AnalyticsInsightsService {
 
       // Average response time (simplified calculation)
       const responseTimes = conversations.map(c => {
-        const created = new Date(c.created_at)
-        const updated = new Date(c.updated_at)
+        const created = new Date(c.created_at as string)
+        const updated = new Date(c.updated_at as string)
         return (updated.getTime() - created.getTime()) / (1000 * 60) // minutes
       })
       const averageResponseTime = responseTimes.reduce((sum, time) => sum + time, 0) / totalConversations
@@ -158,13 +163,13 @@ export class AnalyticsInsightsService {
       // Satisfaction score
       const ratingsWithValues = conversations
         .filter(c => c.satisfaction_rating)
-        .map(c => c.satisfaction_rating)
+        .map(c => c.satisfaction_rating as number)
       const satisfactionScore = ratingsWithValues.length > 0
         ? ratingsWithValues.reduce((sum, rating) => sum + rating, 0) / ratingsWithValues.length
         : 0
 
       // Cost per conversation
-      const totalCost = conversations.reduce((sum, c) => sum + (c.estimated_cost || 0), 0)
+      const totalCost = conversations.reduce((sum, c) => sum + Number(c.estimated_cost || 0), 0)
       const costPerConversation = totalCost / totalConversations
 
       // AI efficiency score (combination of resolution rate, satisfaction, and cost)
@@ -220,20 +225,17 @@ export class AnalyticsInsightsService {
   // Get customer insights
   static async getCustomerInsights(userId?: string): Promise<CustomerInsights[]> {
     try {
-      let query = supabase
-        .from('ai_conversations')
-        .select(`
-          user_id, satisfaction_rating, intent, created_at, 
-          user_context, status, messages
-        `)
-
-      if (userId) {
-        query = query.eq('user_id', userId)
-      }
-
-      const { data: conversations, error } = await query
-
-      if (error) throw error
+      const conversations = await db.select({
+        user_id: aiConversations.userId,
+        satisfaction_rating: aiConversations.satisfactionRating,
+        intent: aiConversations.intent,
+        created_at: aiConversations.createdAt,
+        user_context: aiConversations.userContext,
+        status: aiConversations.status,
+        messages: aiConversations.messages,
+      })
+        .from(aiConversations)
+        .where(userId ? eq(aiConversations.userId, userId) : undefined)
 
       if (!conversations || conversations.length === 0) {
         return []
@@ -308,38 +310,39 @@ export class AnalyticsInsightsService {
 
       // Active conversations (last 30 minutes)
       const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000)
-      const { count: activeConversations } = await supabase
-        .from('ai_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'active')
-        .gte('updated_at', thirtyMinutesAgo.toISOString())
+      const [{ count: activeConversations }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(aiConversations)
+        .where(and(
+          eq(aiConversations.status, 'active'),
+          gte(aiConversations.updatedAt, thirtyMinutesAgo.toISOString()),
+        ))
 
       // Queue length (pending conversations)
-      const { count: queueLength } = await supabase
-        .from('ai_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'active')
+      const [{ count: queueLength }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(aiConversations)
+        .where(eq(aiConversations.status, 'active'))
 
       // Issues resolved today
-      const { count: issuesResolvedToday } = await supabase
-        .from('ai_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'resolved')
-        .gte('updated_at', today.toISOString())
+      const [{ count: issuesResolvedToday }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(aiConversations)
+        .where(and(
+          eq(aiConversations.status, 'resolved'),
+          gte(aiConversations.updatedAt, today.toISOString()),
+        ))
 
       // Escalations today
-      const { count: escalationsToday } = await supabase
-        .from('ai_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'escalated')
-        .gte('created_at', today.toISOString())
+      const [{ count: escalationsToday }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(aiConversations)
+        .where(and(
+          eq(aiConversations.status, 'escalated'),
+          gte(aiConversations.createdAt, today.toISOString()),
+        ))
 
       // Current satisfaction score (last 24 hours)
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
-      const { data: recentRatings } = await supabase
-        .from('satisfaction_ratings')
-        .select('rating')
-        .gte('created_at', yesterday.toISOString())
+      const recentRatings = await db.select({ rating: satisfactionRatings.rating })
+        .from(satisfactionRatings)
+        .where(gte(satisfactionRatings.createdAt, yesterday.toISOString()))
 
       const currentSatisfactionScore = recentRatings && recentRatings.length > 0
         ? recentRatings.reduce((sum, r) => sum + r.rating, 0) / recentRatings.length

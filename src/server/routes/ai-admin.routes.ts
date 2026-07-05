@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { and, asc, desc, eq, isNull } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { adminRoles, aiConversations, escalationLogs, followUpTasks, profiles, satisfactionRatings } from '../db/schema.js'
 // Apply admin authentication to all routes
 const router = Router()
 
@@ -13,23 +15,27 @@ const requireAdminAuth = async (req: AuthRequest, res: any, next: any) => {
     const userId = req.user!.id
 
     // Check admin_roles table for active admin role
-    const { data: adminRole, error } = await supabase
-      .from('admin_roles')
-      .select('id, role, is_active')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    const [adminRole] = await db.select({
+      id: adminRoles.id,
+      role: adminRoles.role,
+      is_active: adminRoles.isActive,
+    })
+      .from(adminRoles)
+      .where(and(
+        eq(adminRoles.userId, userId),
+        eq(adminRoles.isActive, true),
+        isNull(adminRoles.revokedAt),
+      ))
 
-    if (error || !adminRole) {
-      return res.status(403).json({ 
+    if (!adminRole) {
+      return res.status(403).json({
         error: 'Access denied',
-        message: 'Admin privileges required. You must have an active admin role.' 
+        message: 'Admin privileges required. You must have an active admin role.'
       })
     }
 
     // Add admin role info to request for downstream use
-    req.adminRole = adminRole
+    req.adminRole = adminRole as { id: string; role: string; is_active: boolean }
     next()
   } catch (error) {
     console.error('Admin auth error:', error)
@@ -55,19 +61,24 @@ router.get('/verify-admin', async (req: AuthRequest, res) => {
     const userId = req.user!.id
     
     // Check admin_roles table for active admin role
-    const { data: adminRole, error } = await supabase
-      .from('admin_roles')
-      .select('id, role, granted_at, is_active')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    const [adminRole] = await db.select({
+      id: adminRoles.id,
+      role: adminRoles.role,
+      granted_at: adminRoles.grantedAt,
+      is_active: adminRoles.isActive,
+    })
+      .from(adminRoles)
+      .where(and(
+        eq(adminRoles.userId, userId),
+        eq(adminRoles.isActive, true),
+        isNull(adminRoles.revokedAt),
+      ))
 
-    if (error || !adminRole) {
-      return res.status(403).json({ 
+    if (!adminRole) {
+      return res.status(403).json({
         error: 'Access denied',
         message: 'You do not have admin privileges',
-        isAdmin: false 
+        isAdmin: false
       })
     }
 
@@ -354,28 +365,33 @@ router.get('/supported-languages', requireAuth, async (req: AuthRequest, res) =>
 router.get('/admin/conversations', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { page = 1, limit = 20, status, priority } = req.query
-    
-    let query = supabase
-      .from('ai_conversations')
-      .select(`
-        id, user_id, status, intent, satisfaction_rating, 
-        created_at, updated_at, personality, sentiment_analysis,
-        escalation_level, detected_language
-      `)
-      .order('created_at', { ascending: false })
-      .range((Number(page) - 1) * Number(limit), Number(page) * Number(limit) - 1)
 
+    const conditions = []
     if (status) {
-      query = query.eq('status', status)
+      conditions.push(eq(aiConversations.status, status as string))
     }
-
     if (priority) {
-      query = query.eq('escalation_level', priority)
+      conditions.push(eq(aiConversations.escalationLevel, priority as string))
     }
 
-    const { data: conversations, error } = await query
-
-    if (error) throw error
+    const conversations = await db.select({
+      id: aiConversations.id,
+      user_id: aiConversations.userId,
+      status: aiConversations.status,
+      intent: aiConversations.intent,
+      satisfaction_rating: aiConversations.satisfactionRating,
+      created_at: aiConversations.createdAt,
+      updated_at: aiConversations.updatedAt,
+      personality: aiConversations.personality,
+      sentiment_analysis: aiConversations.sentimentAnalysis,
+      escalation_level: aiConversations.escalationLevel,
+      detected_language: aiConversations.detectedLanguage,
+    })
+      .from(aiConversations)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(aiConversations.createdAt))
+      .limit(Number(limit))
+      .offset((Number(page) - 1) * Number(limit))
 
     res.json({ success: true, conversations, page: Number(page), limit: Number(limit) })
   } catch (error) {
@@ -387,20 +403,54 @@ router.get('/admin/conversations', requireAuth, async (req: AuthRequest, res) =>
 router.get('/admin/conversation/:id', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params
-    
-    const { data: conversation, error } = await supabase
-      .from('ai_conversations')
-      .select(`
-        *, 
-        satisfaction_ratings(rating, feedback, created_at),
-        escalation_logs(priority, escalation_reason, assigned_agent, created_at)
-      `)
-      .eq('id', id)
-      .single()
 
-    if (error) throw error
+    const [conversation] = await db.select({
+      id: aiConversations.id,
+      user_id: aiConversations.userId,
+      session_id: aiConversations.sessionId,
+      messages: aiConversations.messages,
+      status: aiConversations.status,
+      intent: aiConversations.intent,
+      refund_explanation_count: aiConversations.refundExplanationCount,
+      estimated_cost: aiConversations.estimatedCost,
+      token_count: aiConversations.tokenCount,
+      user_context: aiConversations.userContext,
+      created_at: aiConversations.createdAt,
+      updated_at: aiConversations.updatedAt,
+      personality: aiConversations.personality,
+      conversation_state: aiConversations.conversationState,
+      sentiment_analysis: aiConversations.sentimentAnalysis,
+      detected_language: aiConversations.detectedLanguage,
+      escalation_level: aiConversations.escalationLevel,
+      satisfaction_rating: aiConversations.satisfactionRating,
+      proactive_alerts: aiConversations.proactiveAlerts,
+    }).from(aiConversations).where(eq(aiConversations.id, id))
 
-    res.json({ success: true, conversation })
+    if (!conversation) {
+      throw new Error('Conversation not found')
+    }
+
+    const conversationSatisfactionRatings = await db.select({
+      rating: satisfactionRatings.rating,
+      feedback: satisfactionRatings.feedback,
+      created_at: satisfactionRatings.createdAt,
+    }).from(satisfactionRatings).where(eq(satisfactionRatings.conversationId, id))
+
+    const conversationEscalationLogs = await db.select({
+      priority: escalationLogs.priority,
+      escalation_reason: escalationLogs.escalationReason,
+      assigned_agent: escalationLogs.assignedAgent,
+      created_at: escalationLogs.createdAt,
+    }).from(escalationLogs).where(eq(escalationLogs.conversationId, id))
+
+    res.json({
+      success: true,
+      conversation: {
+        ...conversation,
+        satisfaction_ratings: conversationSatisfactionRatings,
+        escalation_logs: conversationEscalationLogs,
+      }
+    })
   } catch (error) {
     logger.error({ error, conversationId: req.params.id }, 'Error getting conversation details')
     res.status(500).json({ error: 'Failed to get conversation details' })
@@ -410,24 +460,44 @@ router.get('/admin/conversation/:id', requireAuth, async (req: AuthRequest, res)
 router.get('/admin/escalations', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { page = 1, limit = 20, priority } = req.query
-    
-    let query = supabase
-      .from('escalation_logs')
-      .select(`
-        *, 
-        ai_conversations(id, intent),
-        profiles(first_name, last_name, email)
-      `)
-      .order('created_at', { ascending: false })
-      .range((Number(page) - 1) * Number(limit), Number(page) * Number(limit) - 1)
 
-    if (priority) {
-      query = query.eq('priority', priority)
-    }
+    const rows = await db.select({
+      id: escalationLogs.id,
+      conversation_id: escalationLogs.conversationId,
+      user_id: escalationLogs.userId,
+      escalation_reason: escalationLogs.escalationReason,
+      priority: escalationLogs.priority,
+      sentiment_score: escalationLogs.sentimentScore,
+      assigned_agent: escalationLogs.assignedAgent,
+      resolved_at: escalationLogs.resolvedAt,
+      created_at: escalationLogs.createdAt,
+      conv_id: aiConversations.id,
+      conv_intent: aiConversations.intent,
+      profile_first_name: profiles.firstName,
+      profile_last_name: profiles.lastName,
+      profile_email: profiles.email,
+    })
+      .from(escalationLogs)
+      .leftJoin(aiConversations, eq(aiConversations.id, escalationLogs.conversationId))
+      .leftJoin(profiles, eq(profiles.id, escalationLogs.userId))
+      .where(priority ? eq(escalationLogs.priority, priority as string) : undefined)
+      .orderBy(desc(escalationLogs.createdAt))
+      .limit(Number(limit))
+      .offset((Number(page) - 1) * Number(limit))
 
-    const { data: escalations, error } = await query
-
-    if (error) throw error
+    const escalations = rows.map(r => ({
+      id: r.id,
+      conversation_id: r.conversation_id,
+      user_id: r.user_id,
+      escalation_reason: r.escalation_reason,
+      priority: r.priority,
+      sentiment_score: r.sentiment_score,
+      assigned_agent: r.assigned_agent,
+      resolved_at: r.resolved_at,
+      created_at: r.created_at,
+      ai_conversations: r.conv_id != null ? { id: r.conv_id, intent: r.conv_intent } : null,
+      profiles: r.profile_email != null ? { first_name: r.profile_first_name, last_name: r.profile_last_name, email: r.profile_email } : null,
+    }))
 
     res.json({ success: true, escalations, page: Number(page), limit: Number(limit) })
   } catch (error) {
@@ -439,24 +509,46 @@ router.get('/admin/escalations', requireAuth, async (req: AuthRequest, res) => {
 router.get('/admin/survey-responses', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { page = 1, limit = 20, rating } = req.query
-    
-    let query = supabase
-      .from('satisfaction_ratings')
-      .select(`
-        *, 
-        ai_conversations(id, intent),
-        profiles(first_name, last_name, email)
-      `)
-      .order('created_at', { ascending: false })
-      .range((Number(page) - 1) * Number(limit), Number(page) * Number(limit) - 1)
 
-    if (rating) {
-      query = query.eq('rating', Number(rating))
-    }
+    const rows = await db.select({
+      id: satisfactionRatings.id,
+      conversation_id: satisfactionRatings.conversationId,
+      user_id: satisfactionRatings.userId,
+      rating: satisfactionRatings.rating,
+      feedback: satisfactionRatings.feedback,
+      category: satisfactionRatings.category,
+      agent_type: satisfactionRatings.agentType,
+      agent_id: satisfactionRatings.agentId,
+      created_at: satisfactionRatings.createdAt,
+      updated_at: satisfactionRatings.updatedAt,
+      conv_id: aiConversations.id,
+      conv_intent: aiConversations.intent,
+      profile_first_name: profiles.firstName,
+      profile_last_name: profiles.lastName,
+      profile_email: profiles.email,
+    })
+      .from(satisfactionRatings)
+      .leftJoin(aiConversations, eq(aiConversations.id, satisfactionRatings.conversationId))
+      .leftJoin(profiles, eq(profiles.id, satisfactionRatings.userId))
+      .where(rating ? eq(satisfactionRatings.rating, Number(rating)) : undefined)
+      .orderBy(desc(satisfactionRatings.createdAt))
+      .limit(Number(limit))
+      .offset((Number(page) - 1) * Number(limit))
 
-    const { data: responses, error } = await query
-
-    if (error) throw error
+    const responses = rows.map(r => ({
+      id: r.id,
+      conversation_id: r.conversation_id,
+      user_id: r.user_id,
+      rating: r.rating,
+      feedback: r.feedback,
+      category: r.category,
+      agent_type: r.agent_type,
+      agent_id: r.agent_id,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      ai_conversations: r.conv_id != null ? { id: r.conv_id, intent: r.conv_intent } : null,
+      profiles: r.profile_email != null ? { first_name: r.profile_first_name, last_name: r.profile_last_name, email: r.profile_email } : null,
+    }))
 
     res.json({ success: true, responses, page: Number(page), limit: Number(limit) })
   } catch (error) {
@@ -468,18 +560,48 @@ router.get('/admin/survey-responses', requireAuth, async (req: AuthRequest, res)
 router.get('/admin/follow-up-tasks', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { status = 'pending' } = req.query
-    
-    const { data: tasks, error } = await supabase
-      .from('follow_up_tasks')
-      .select(`
-        *, 
-        ai_conversations(id, intent),
-        profiles(first_name, last_name, email)
-      `)
-      .eq('status', status)
-      .order('scheduled_for', { ascending: true })
 
-    if (error) throw error
+    const rows = await db.select({
+      id: followUpTasks.id,
+      conversation_id: followUpTasks.conversationId,
+      user_id: followUpTasks.userId,
+      urgency: followUpTasks.urgency,
+      reason: followUpTasks.reason,
+      action_items: followUpTasks.actionItems,
+      scheduled_for: followUpTasks.scheduledFor,
+      completed_at: followUpTasks.completedAt,
+      assigned_to: followUpTasks.assignedTo,
+      status: followUpTasks.status,
+      created_at: followUpTasks.createdAt,
+      updated_at: followUpTasks.updatedAt,
+      conv_id: aiConversations.id,
+      conv_intent: aiConversations.intent,
+      profile_first_name: profiles.firstName,
+      profile_last_name: profiles.lastName,
+      profile_email: profiles.email,
+    })
+      .from(followUpTasks)
+      .leftJoin(aiConversations, eq(aiConversations.id, followUpTasks.conversationId))
+      .leftJoin(profiles, eq(profiles.id, followUpTasks.userId))
+      .where(eq(followUpTasks.status, status as string))
+      .orderBy(asc(followUpTasks.scheduledFor))
+
+    const tasks = rows.map(r => ({
+      id: r.id,
+      conversation_id: r.conversation_id,
+      user_id: r.user_id,
+      urgency: r.urgency,
+      reason: r.reason,
+      action_items: r.action_items,
+      scheduled_for: r.scheduled_for,
+      completed_at: r.completed_at,
+      assigned_to: r.assigned_to,
+      status: r.status,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      ai_conversations: r.conv_id != null ? { id: r.conv_id, intent: r.conv_intent } : null,
+      profiles: r.profile_email != null ? { first_name: r.profile_first_name, last_name: r.profile_last_name, email: r.profile_email } : null,
+    }))
 
     res.json({ success: true, tasks })
   } catch (error) {
@@ -492,21 +614,34 @@ router.put('/admin/follow-up-task/:id', requireAuth, async (req: AuthRequest, re
   try {
     const { id } = req.params
     const { status, assigned_to, notes } = req.body
-    
-    const updates: any = { updated_at: new Date().toISOString() }
-    
+
+    const updates: any = { updatedAt: new Date().toISOString() }
+
     if (status) updates.status = status
-    if (assigned_to) updates.assigned_to = assigned_to
-    if (status === 'completed') updates.completed_at = new Date().toISOString()
+    if (assigned_to) updates.assignedTo = assigned_to
+    if (status === 'completed') updates.completedAt = new Date().toISOString()
 
-    const { data: task, error } = await supabase
-      .from('follow_up_tasks')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single()
+    const [task] = await db.update(followUpTasks)
+      .set(updates)
+      .where(eq(followUpTasks.id, id))
+      .returning({
+        id: followUpTasks.id,
+        conversation_id: followUpTasks.conversationId,
+        user_id: followUpTasks.userId,
+        urgency: followUpTasks.urgency,
+        reason: followUpTasks.reason,
+        action_items: followUpTasks.actionItems,
+        scheduled_for: followUpTasks.scheduledFor,
+        completed_at: followUpTasks.completedAt,
+        assigned_to: followUpTasks.assignedTo,
+        status: followUpTasks.status,
+        created_at: followUpTasks.createdAt,
+        updated_at: followUpTasks.updatedAt,
+      })
 
-    if (error) throw error
+    if (!task) {
+      throw new Error('Follow-up task not found')
+    }
 
     res.json({ success: true, task })
   } catch (error) {

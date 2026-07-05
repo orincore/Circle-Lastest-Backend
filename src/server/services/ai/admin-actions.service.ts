@@ -1,4 +1,6 @@
-import { supabase } from '../../config/supabase.js'
+import { eq, desc } from 'drizzle-orm'
+import { db } from '../../config/db.js'
+import { subscriptions, refunds, profiles } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 import type { AIResponse } from './together-ai.service.js'
 
@@ -13,33 +15,48 @@ export class AdminActionsService {
   // Check user's subscription status
   static async checkSubscriptionStatus(userId: string): Promise<AdminActionResult> {
     try {
-      const { data: subscriptions, error } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .eq('user_id', userId)
-        .order('started_at', { ascending: false })
-
-      if (error) {
+      let subscriptionRows
+      try {
+        subscriptionRows = await db.select({
+          id: subscriptions.id,
+          user_id: subscriptions.userId,
+          plan_type: subscriptions.planType,
+          status: subscriptions.status,
+          started_at: subscriptions.startedAt,
+          expires_at: subscriptions.expiresAt,
+          payment_provider: subscriptions.paymentProvider,
+          external_subscription_id: subscriptions.externalSubscriptionId,
+          price_paid: subscriptions.pricePaid,
+          currency: subscriptions.currency,
+          auto_renew: subscriptions.autoRenew,
+          cancelled_at: subscriptions.cancelledAt,
+          created_at: subscriptions.createdAt,
+          updated_at: subscriptions.updatedAt,
+        })
+          .from(subscriptions)
+          .where(eq(subscriptions.userId, userId))
+          .orderBy(desc(subscriptions.startedAt))
+      } catch (error) {
         return {
           success: false,
           message: 'Failed to retrieve subscription information'
         }
       }
 
-      const activeSubscription = subscriptions?.find(sub => sub.status === 'active')
-      
+      const activeSubscription = subscriptionRows?.find(sub => sub.status === 'active')
+
       if (!activeSubscription) {
         return {
           success: true,
           message: 'No active subscription found. You currently have a free account.',
           data: {
             hasActiveSubscription: false,
-            subscriptions: subscriptions || []
+            subscriptions: subscriptionRows || []
           }
         }
       }
 
-      const startDate = new Date(activeSubscription.started_at)
+      const startDate = new Date(activeSubscription.started_at as string)
       const daysSinceStart = Math.floor((Date.now() - startDate.getTime()) / (1000 * 60 * 60 * 24))
 
       return {
@@ -49,7 +66,7 @@ export class AdminActionsService {
           hasActiveSubscription: true,
           activeSubscription,
           daysSinceStart,
-          subscriptions: subscriptions || []
+          subscriptions: subscriptionRows || []
         }
       }
     } catch (error) {
@@ -65,7 +82,7 @@ export class AdminActionsService {
   static async checkRefundEligibility(userId: string): Promise<AdminActionResult> {
     try {
       const subscriptionResult = await this.checkSubscriptionStatus(userId)
-      
+
       if (!subscriptionResult.success || !subscriptionResult.data?.hasActiveSubscription) {
         return {
           success: false,
@@ -86,7 +103,7 @@ export class AdminActionsService {
 
       return {
         success: true,
-        message: isEligible 
+        message: isEligible
           ? `✅ Refund eligible! Your subscription started ${daysSinceStart} days ago (within 7-day window).`
           : `❌ Refund not eligible. Your subscription started ${daysSinceStart} days ago (outside 7-day window).`,
         data: {
@@ -111,7 +128,7 @@ export class AdminActionsService {
     try {
       // Check eligibility first
       const eligibilityResult = await this.checkRefundEligibility(userId)
-      
+
       if (!eligibilityResult.success || !eligibilityResult.data?.eligible) {
         return {
           success: false,
@@ -122,23 +139,22 @@ export class AdminActionsService {
       const { subscription, refundAmount, currency } = eligibilityResult.data
 
       // Create refund record
-      const { data: refund, error: refundError } = await supabase
-        .from('refunds')
-        .insert({
-          user_id: userId,
-          subscription_id: subscription.id,
+      let refund: any
+      try {
+        const nowIso = new Date().toISOString()
+        const [inserted] = await db.insert(refunds).values({
+          userId: userId,
+          subscriptionId: subscription.id,
           amount: refundAmount,
           currency: currency,
           reason: reason,
           status: 'approved',
-          requested_at: new Date().toISOString(),
-          processed_at: new Date().toISOString()
-          // processed_by removed - field expects UUID, not string
-        })
-        .select()
-        .single()
-
-      if (refundError) {
+          requestedAt: nowIso,
+          processedAt: nowIso,
+          // processedBy removed - field expects UUID, not string
+        }).returning()
+        refund = inserted
+      } catch (refundError) {
         logger.error({ error: refundError, userId }, 'Error creating refund record')
         return {
           success: false,
@@ -147,31 +163,29 @@ export class AdminActionsService {
       }
 
       // Cancel the subscription
-      const { error: cancelError } = await supabase
-        .from('subscriptions')
-        .update({ 
-          status: 'cancelled',
-          cancelled_at: new Date().toISOString()
-          // cancellation_reason field doesn't exist in schema
-        })
-        .eq('id', subscription.id)
-
-      if (cancelError) {
+      try {
+        await db.update(subscriptions)
+          .set({
+            status: 'cancelled',
+            cancelledAt: new Date().toISOString()
+            // cancellation_reason field doesn't exist in schema
+          })
+          .where(eq(subscriptions.id, subscription.id))
+      } catch (cancelError) {
         logger.error({ error: cancelError, userId, subscriptionId: subscription.id }, 'Error cancelling subscription')
       }
 
       // Send refund notification email (if email service is available)
       try {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('email, username')
-          .eq('id', userId)
-          .single()
+        const [profile] = await db.select({
+          email: profiles.email,
+          username: profiles.username,
+        }).from(profiles).where(eq(profiles.id, userId))
 
         if (profile?.email) {
           // Import email service dynamically
           const { default: EmailService } = await import('../../services/emailService.js')
-          
+
           await EmailService.sendRefundRequestConfirmation(
             profile.email,
             profile.username || 'User',
@@ -209,7 +223,7 @@ export class AdminActionsService {
   static async cancelSubscription(userId: string, reason: string = 'User requested cancellation'): Promise<AdminActionResult> {
     try {
       const subscriptionResult = await this.checkSubscriptionStatus(userId)
-      
+
       if (!subscriptionResult.success || !subscriptionResult.data?.hasActiveSubscription) {
         return {
           success: false,
@@ -219,17 +233,16 @@ export class AdminActionsService {
 
       const { activeSubscription } = subscriptionResult.data
 
-      const { error } = await supabase
-        .from('subscriptions')
-        .update({ 
-          status: 'cancelled',
-          cancelled_at: new Date().toISOString()
-          // cancellation_reason field doesn't exist in schema
-          // reason is logged in the service call
-        })
-        .eq('id', activeSubscription.id)
-
-      if (error) {
+      try {
+        await db.update(subscriptions)
+          .set({
+            status: 'cancelled',
+            cancelledAt: new Date().toISOString()
+            // cancellation_reason field doesn't exist in schema
+            // reason is logged in the service call
+          })
+          .where(eq(subscriptions.id, activeSubscription.id))
+      } catch (error) {
         logger.error({ error, userId, subscriptionId: activeSubscription.id }, 'Error cancelling subscription')
         return {
           success: false,
@@ -239,16 +252,15 @@ export class AdminActionsService {
 
       // Send cancellation confirmation email
       try {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('email, username')
-          .eq('id', userId)
-          .single()
+        const [profile] = await db.select({
+          email: profiles.email,
+          username: profiles.username,
+        }).from(profiles).where(eq(profiles.id, userId))
 
         if (profile?.email) {
           // Import email service dynamically
           const { default: EmailService } = await import('../../services/emailService.js')
-          
+
           await EmailService.sendSubscriptionCancellationEmail(
             profile.email,
             profile.username || 'User',
@@ -280,20 +292,28 @@ export class AdminActionsService {
   // Get user's refund history
   static async getRefundHistory(userId: string): Promise<AdminActionResult> {
     try {
-      const { data: refunds, error } = await supabase
-        .from('refunds')
-        .select('*')
-        .eq('user_id', userId)
-        .order('requested_at', { ascending: false })
-
-      if (error) {
+      let refundRows
+      try {
+        refundRows = await db.select({
+          id: refunds.id,
+          amount: refunds.amount,
+          currency: refunds.currency,
+          status: refunds.status,
+          requested_at: refunds.requestedAt,
+          processed_at: refunds.processedAt,
+          reason: refunds.reason,
+        })
+          .from(refunds)
+          .where(eq(refunds.userId, userId))
+          .orderBy(desc(refunds.requestedAt))
+      } catch (error) {
         return {
           success: false,
           message: 'Failed to retrieve refund history'
         }
       }
 
-      if (!refunds || refunds.length === 0) {
+      if (!refundRows || refundRows.length === 0) {
         return {
           success: true,
           message: 'No refund history found.',
@@ -301,7 +321,7 @@ export class AdminActionsService {
         }
       }
 
-      const refundSummary = refunds.map(refund => ({
+      const refundSummary = refundRows.map(refund => ({
         id: refund.id,
         amount: refund.amount,
         currency: refund.currency,
@@ -313,7 +333,7 @@ export class AdminActionsService {
 
       return {
         success: true,
-        message: `Found ${refunds.length} refund(s) in your history.`,
+        message: `Found ${refundRows.length} refund(s) in your history.`,
         data: { refunds: refundSummary }
       }
     } catch (error) {
@@ -328,18 +348,7 @@ export class AdminActionsService {
   // Update user profile information
   static async updateUserProfile(userId: string, updates: any): Promise<AdminActionResult> {
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update(updates)
-        .eq('id', userId)
-
-      if (error) {
-        logger.error({ error, userId, updates }, 'Error updating user profile')
-        return {
-          success: false,
-          message: 'Failed to update profile'
-        }
-      }
+      await db.update(profiles).set(updates).where(eq(profiles.id, userId))
 
       return {
         success: true,
@@ -348,7 +357,7 @@ export class AdminActionsService {
         actionTaken: 'profile_updated'
       }
     } catch (error) {
-      logger.error({ error, userId }, 'Error updating user profile')
+      logger.error({ error, userId, updates }, 'Error updating user profile')
       return {
         success: false,
         message: 'Error updating profile'
@@ -364,11 +373,13 @@ export class AdminActionsService {
         this.getRefundHistory(userId)
       ])
 
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('username, email, created_at, first_name, last_name')
-        .eq('id', userId)
-        .single()
+      const [profile] = await db.select({
+        username: profiles.username,
+        email: profiles.email,
+        created_at: profiles.createdAt,
+        first_name: profiles.firstName,
+        last_name: profiles.lastName,
+      }).from(profiles).where(eq(profiles.id, userId))
 
       const report = {
         user: {

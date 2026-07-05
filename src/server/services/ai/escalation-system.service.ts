@@ -1,4 +1,6 @@
-import { supabase } from '../../config/supabase.js'
+import { eq, sql } from 'drizzle-orm'
+import { db } from '../../config/db.js'
+import { aiConversations, escalationLogs } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 import SentimentAnalysisService, { type SentimentAnalysis } from './sentiment-analysis.service.js'
 
@@ -494,11 +496,10 @@ export class EscalationSystemService {
 
   private static async getPreviousInteractionCount(userId: string): Promise<number> {
     try {
-      const { count } = await supabase
-        .from('ai_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId)
-      
+      const [{ count }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(aiConversations)
+        .where(eq(aiConversations.userId, userId))
+
       return count || 0
     } catch (error) {
       return 0
@@ -516,17 +517,15 @@ export class EscalationSystemService {
     }
   ): Promise<void> {
     try {
-      await supabase
-        .from('escalation_logs')
-        .insert({
-          conversation_id: conversationId,
-          user_id: userId,
-          escalation_reason: escalationData.reason,
-          priority: escalationData.priority,
-          sentiment_score: escalationData.sentimentScore,
-          assigned_agent: escalationData.assignedAgent,
-          created_at: new Date().toISOString()
-        })
+      await db.insert(escalationLogs).values({
+        conversationId: conversationId,
+        userId: userId,
+        escalationReason: escalationData.reason,
+        priority: escalationData.priority,
+        sentimentScore: escalationData.sentimentScore as any,
+        assignedAgent: escalationData.assignedAgent,
+        createdAt: new Date().toISOString(),
+      })
     } catch (error) {
       logger.error({ error, conversationId }, 'Failed to log escalation')
     }
