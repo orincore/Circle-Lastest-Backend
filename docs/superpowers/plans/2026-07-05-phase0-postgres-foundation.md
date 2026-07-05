@@ -17,7 +17,7 @@
 - Project uses TypeScript with `"module": "NodeNext"` — relative imports must include the `.js` extension even though the source files are `.ts` (e.g. `import { env } from './env.js'`), matching the existing codebase pattern.
 - Env vars are validated through a single `zod` schema in `src/server/config/env.ts`; any new env var must be added there or `env.FOO` will be `undefined` even if it's in `.env`.
 - `.env` is git-ignored (verified) — safe to edit directly with real credentials. `.env.example` is committed — use placeholder values there, never real credentials.
-- Working Supabase pooler connection string (region node is `aws-1`, not the stale `aws-0` previously in `.env`): `postgresql://postgres.cwccjihrjmbhyaafwjuf:Orincore7094@aws-1-ap-south-1.pooler.supabase.com:5432/postgres`. Live DB is small: 34MB, 97 tables in `public` schema — dump/restore should take seconds, not minutes.
+- Working Supabase pooler connection string (region node is `aws-1`, not the stale `aws-0` previously in `.env`): `postgresql://postgres.cwccjihrjmbhyaafwjuf:Orincore7094@aws-1-ap-south-1.pooler.supabase.com:5432/postgres`. Live DB is small: 34MB, **82 tables** in `public` schema (verified via `pg_tables`, not `information_schema.tables` which overcounts by including views — an earlier count of 97 using the latter was wrong) — dump/restore should take seconds, not minutes.
 - No live production traffic exists right now (app is fully down) — no downtime constraints anywhere in this plan.
 - Any raw data dump file must never be committed to git (it's a full copy of user data) — the dumps directory is added to `.gitignore` in Task 4.
 
@@ -422,7 +422,7 @@ main().catch((err) => {
 - [ ] **Step 2: Run it**
 
 Run: `npx tsx scripts/db-migration/verify-row-counts.ts`
-Expected: one `OK        <table>: N rows` line per table (97 tables as of this writing), ending with `All 97 tables match.` and exit code 0. If any line starts with `MISMATCH`, stop and re-run Task 4's restore step (do not proceed to Task 6 with a mismatch).
+Expected: one `OK        <table>: N rows` line per table (82 tables as of this writing), ending with `All 82 tables match.` and exit code 0. If any line starts with `MISMATCH`, stop and re-run Task 4's restore step (do not proceed to Task 6 with a mismatch).
 
 - [ ] **Step 3: Commit**
 
@@ -470,7 +470,7 @@ Expected: output ending in something like `[✓] Your schema file is ready ➜ s
 - [ ] **Step 3: Spot-check the generated schema**
 
 Run: `grep -c "pgTable(" src/server/db/schema.ts`
-Expected: a number close to 97 (one `pgTable(` call per table).
+Expected: a number close to 82 (one `pgTable(` call per table).
 
 Run: `grep -o "export const [a-zA-Z_]*" src/server/db/schema.ts | grep -Ei "profiles|messages|chats"`
 Expected: lines confirming `export const profiles`, `export const messages`, `export const chats` (or their generated equivalents) are present — note the exact casing/naming Drizzle chose, since later phase plans must match it exactly.
