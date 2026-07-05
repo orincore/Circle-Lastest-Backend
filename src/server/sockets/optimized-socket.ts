@@ -959,27 +959,27 @@ export async function initOptimizedSocket(server: Server) {
 
       try {
         // Check friendships table for any status (active, pending, accepted)
-        const { data: friendshipData, error: friendshipError } = await supabase
-          .from('friendships')
-          .select('*')
-          .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${targetUserId}),and(user1_id.eq.${targetUserId},user2_id.eq.${currentUserId})`)
-          .in('status', ['active', 'accepted', 'pending'])
+        const [friendshipData] = await db
+          .select({ id: friendships.id, status: friendships.status, senderId: friendships.senderId })
+          .from(friendships)
+          .where(and(
+            or(
+              and(eq(friendships.user1Id, currentUserId), eq(friendships.user2Id, targetUserId)),
+              and(eq(friendships.user1Id, targetUserId), eq(friendships.user2Id, currentUserId)),
+            ),
+            inArray(friendships.status, ['active', 'accepted', 'pending']),
+          ))
           .limit(1)
-          .maybeSingle()
-
-        if (friendshipError && friendshipError.code !== 'PGRST116' && friendshipError.code !== '42P01') {
-          console.warn('Friendships table error:', friendshipError)
-        }
 
         let status = 'none'
-        
+
         if (friendshipData) {
           if (friendshipData.status === 'active' || friendshipData.status === 'accepted') {
             //console.log('✅ Users are friends')
             status = 'friends'
           } else if (friendshipData.status === 'pending') {
             // Check who sent the request
-            if (friendshipData.sender_id === currentUserId) {
+            if (friendshipData.senderId === currentUserId) {
               // Current user sent the request
               //console.log('✅ Current user sent friend request')
               status = 'pending_sent'
@@ -1026,43 +1026,48 @@ export async function initOptimizedSocket(server: Server) {
         // or other pending message-related requests
         
         // Check if there's a pending matchmaking proposal
-        const { data: proposals, error: proposalError } = await supabase
-          .from('matchmaking_proposals')
-          .select('*')
-          .or(`and(a.eq.${senderId},b.eq.${receiverId}),and(a.eq.${receiverId},b.eq.${senderId})`)
-          .eq('status', 'pending')
+        const proposals = await db
+          .select()
+          .from(matchmakingProposals)
+          .where(and(
+            or(
+              and(eq(matchmakingProposals.a, senderId), eq(matchmakingProposals.b, receiverId)),
+              and(eq(matchmakingProposals.a, receiverId), eq(matchmakingProposals.b, senderId)),
+            ),
+            eq(matchmakingProposals.status, 'pending'),
+          ))
 
-        if (proposalError) {
-          console.error('❌ Error finding message proposals:', proposalError)
-          socket.emit('message:request:error', { error: 'Failed to find message request' })
-          return
-        }
-
-        if (proposals && proposals.length > 0) {
+        if (proposals.length > 0) {
           // Cancel the matchmaking proposal
           const proposal = proposals[0]
-          const { error: cancelError } = await supabase
-            .from('matchmaking_proposals')
-            .update({ status: 'cancelled' })
-            .eq('id', proposal.id)
-
-          if (cancelError) {
-            console.error('❌ Error cancelling message proposal:', cancelError)
-            socket.emit('message:request:error', { error: 'Failed to cancel message request' })
-            return
-          }
+          await db
+            .update(matchmakingProposals)
+            .set({ status: 'cancelled' })
+            .where(eq(matchmakingProposals.id, proposal.id))
 
           //console.log(`✅ Message request cancelled`)
 
+          // Payload shape matches the old raw supabase row (snake_case)
+          const proposalPayload = {
+            id: proposal.id,
+            a: proposal.a,
+            b: proposal.b,
+            status: 'cancelled',
+            type: proposal.type,
+            matched_at: proposal.matchedAt,
+            created_at: proposal.createdAt,
+            action_source: proposal.actionSource,
+          }
+
           // Notify receiver that message request was cancelled
           io.to(receiverId).emit('message:request:cancelled', {
-            proposal,
+            proposal: proposalPayload,
             cancelledBy: senderId
           })
 
           // Confirm to sender
           socket.emit('message:request:cancel:confirmed', {
-            proposal,
+            proposal: proposalPayload,
             success: true
           })
         } else {
@@ -1088,28 +1093,46 @@ export async function initOptimizedSocket(server: Server) {
       }
 
       try {
-        // Get pending friend requests for this user
-        const { data: friendRequests, error } = await supabase
-          .from('friend_requests')
-          .select(`
-            *,
-            sender:profiles!sender_id(id, first_name, last_name, profile_photo_url)
-          `)
-          .eq('receiver_id', userId)
-          .eq('status', 'pending')
-          .order('created_at', { ascending: false })
+        // Get pending friend requests for this user.
+        // friend_requests is a VIEW (friend_requests_view) over friendships
+        // where status = 'pending'; join profiles for the sender card.
+        const rows = await db
+          .select({
+            id: friendRequestsView.id,
+            senderId: friendRequestsView.senderId,
+            receiverId: friendRequestsView.receiverId,
+            status: friendRequestsView.status,
+            createdAt: friendRequestsView.createdAt,
+            updatedAt: friendRequestsView.updatedAt,
+            senderProfileId: profiles.id,
+            senderFirstName: profiles.firstName,
+            senderLastName: profiles.lastName,
+            senderProfilePhotoUrl: profiles.profilePhotoUrl,
+          })
+          .from(friendRequestsView)
+          .leftJoin(profiles, eq(profiles.id, friendRequestsView.senderId))
+          .where(and(eq(friendRequestsView.receiverId, userId), eq(friendRequestsView.status, 'pending')))
+          .orderBy(desc(friendRequestsView.createdAt))
 
-        if (error) {
-          console.error('❌ Error fetching notifications:', error)
-          return
-        }
+        const notifications = rows.map(r => ({
+          id: r.id,
+          sender_id: r.senderId,
+          receiver_id: r.receiverId,
+          status: r.status,
+          created_at: r.createdAt,
+          updated_at: r.updatedAt,
+          sender: r.senderProfileId ? {
+            id: r.senderProfileId,
+            first_name: r.senderFirstName,
+            last_name: r.senderLastName,
+            profile_photo_url: r.senderProfilePhotoUrl,
+          } : null,
+        }))
 
-        //console.log(`✅ Found ${friendRequests?.length || 0} notifications for user ${userId}`)
+        //console.log(`✅ Found ${notifications.length} notifications for user ${userId}`)
 
         // Send notifications list to user
-        socket.emit('notifications:list', {
-          notifications: friendRequests || []
-        })
+        socket.emit('notifications:list', { notifications })
 
       } catch (error) {
         console.error('❌ Error getting notifications:', error)
@@ -1181,37 +1204,37 @@ export async function initOptimizedSocket(server: Server) {
         
         if (isBlindDate) {
           // For blind date chats, verify user is part of the match
-          const { data: match } = await supabase
-            .from('blind_date_matches')
-            .select('user_a, user_b')
-            .eq('chat_id', chatId)
-            .in('status', ['active', 'revealed'])
-            .maybeSingle()
-          
-          if (!match || (match.user_a !== userId && match.user_b !== userId)) {
+          const [match] = await db
+            .select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
+            .from(blindDateMatches)
+            .where(and(
+              eq(blindDateMatches.chatId, chatId),
+              inArray(blindDateMatches.status, ['active', 'revealed']),
+            ))
+            .limit(1)
+
+          if (!match || (match.userA !== userId && match.userB !== userId)) {
             socket.emit('chat:clear:error', { error: 'Not authorized to clear this chat' })
             return
           }
           // User is part of the blind date match, allow deletion
         } else {
           // For regular chats, verify user is a member of this chat
-          const { data: membership, error: memberError } = await supabase
-            .from('chat_members')
-            .select('id, user_id, chat_id')
-            .eq('chat_id', chatId)
-            .eq('user_id', userId)
-            .single()
+          const [membership] = await db
+            .select({ userId: chatMembers.userId })
+            .from(chatMembers)
+            .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId)))
+            .limit(1)
 
-          if (memberError || !membership) {
+          if (!membership) {
             // Fallback: Check if user has sent messages in this chat
-            const { data: userMessages } = await supabase
-              .from('messages')
-              .select('id')
-              .eq('chat_id', chatId)
-              .eq('sender_id', userId)
+            const userMessages = await db
+              .select({ id: messages.id })
+              .from(messages)
+              .where(and(eq(messages.chatId, chatId), eq(messages.senderId, userId)))
               .limit(1)
-            
-            if (!userMessages || userMessages.length === 0) {
+
+            if (userMessages.length === 0) {
               socket.emit('chat:clear:error', { error: 'Not authorized to clear this chat' })
               return
             }
@@ -1222,45 +1245,14 @@ export async function initOptimizedSocket(server: Server) {
 
         // Create user-specific chat deletion record instead of deleting messages for everyone
         // This allows the chat to be cleared for the user who initiated it, but remain visible for others
-        
-        // First, check if user already has a deletion record for this chat
-        const { data: existingDeletion } = await supabase
-          .from('chat_deletions')
-          .select('id')
-          .eq('chat_id', chatId)
-          .eq('user_id', userId)
-          .maybeSingle()
-
-        if (existingDeletion) {
-          // Update existing deletion record with new timestamp
-          const { error: updateError } = await supabase
-            .from('chat_deletions')
-            .update({ 
-              deleted_at: new Date().toISOString()
-            })
-            .eq('id', existingDeletion.id)
-
-          if (updateError) {
-            console.error('❌ Error updating chat deletion record:', updateError)
-            socket.emit('chat:clear:error', { error: 'Failed to clear chat' })
-            return
-          }
-        } else {
-          // Create new deletion record for this user
-          const { error: insertError } = await supabase
-            .from('chat_deletions')
-            .insert({
-              chat_id: chatId,
-              user_id: userId,
-              deleted_at: new Date().toISOString()
-            })
-
-          if (insertError) {
-            console.error('❌ Error creating chat deletion record:', insertError)
-            socket.emit('chat:clear:error', { error: 'Failed to clear chat' })
-            return
-          }
-        }
+        // (chat_deletions has unique(chat_id, user_id) — single upsert)
+        await db
+          .insert(chatDeletions)
+          .values({ chatId, userId, deletedAt: new Date().toISOString() })
+          .onConflictDoUpdate({
+            target: [chatDeletions.chatId, chatDeletions.userId],
+            set: { deletedAt: new Date().toISOString() },
+          })
 
         //console.log(`✅ Chat ${chatId} cleared successfully for user ${userId} (user-specific deletion)`)
 
