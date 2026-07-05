@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { PromptMatchingService } from '../services/prompt-matching.service.js'
-import { supabase } from '../config/supabase.js'
+import { eq, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { giverProfiles, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 
 const router = Router()
@@ -37,35 +39,34 @@ router.post('/test-embedding', requireAuth, async (req: AuthRequest, res) => {
  */
 router.get('/available-givers', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { data: givers, error } = await supabase
-      .from('giver_profiles')
-      .select(`
-        user_id,
-        is_available,
-        total_helps_given,
-        average_rating,
-        skills,
-        categories,
-        profiles!inner(username, first_name, about, interests)
-      `)
-      .eq('is_available', true)
-
-    if (error) {
-      throw error
-    }
+    const givers = await db.select({
+      userId: giverProfiles.userId,
+      isAvailable: giverProfiles.isAvailable,
+      totalHelpsGiven: giverProfiles.totalHelpsGiven,
+      averageRating: giverProfiles.averageRating,
+      skills: giverProfiles.skills,
+      categories: giverProfiles.categories,
+      username: profiles.username,
+      firstName: profiles.firstName,
+      about: profiles.about,
+      interests: profiles.interests,
+    })
+      .from(giverProfiles)
+      .innerJoin(profiles, eq(profiles.id, giverProfiles.userId))
+      .where(eq(giverProfiles.isAvailable, true))
 
     res.json({
-      count: givers?.length || 0,
-      givers: givers?.map((g: any) => ({
-        userId: g.user_id,
-        username: g.profiles?.username,
-        firstName: g.profiles?.first_name,
-        about: g.profiles?.about,
-        interests: g.profiles?.interests,
+      count: givers.length,
+      givers: givers.map(g => ({
+        userId: g.userId,
+        username: g.username,
+        firstName: g.firstName,
+        about: g.about,
+        interests: g.interests,
         skills: g.skills,
         categories: g.categories,
-        totalHelps: g.total_helps_given,
-        rating: g.average_rating
+        totalHelps: g.totalHelpsGiven,
+        rating: Number(g.averageRating ?? 0)
       }))
     })
   } catch (error) {
@@ -89,16 +90,15 @@ router.post('/test-match', requireAuth, async (req: AuthRequest, res) => {
     const promptEmbedding = await (PromptMatchingService as any).generateEmbedding(prompt)
     
     // Test the matching function
-    const { data: matches, error } = await supabase.rpc('find_best_giver_match', {
-      p_prompt_embedding: JSON.stringify(promptEmbedding),
-      p_receiver_user_id: receiverUserId || req.user!.id,
-      p_excluded_giver_ids: [],
-      p_limit: 5 // Get top 5 matches for debugging
-    })
-
-    if (error) {
-      throw error
-    }
+    const matchResult: any = await db.execute(sql`
+      select * from find_best_giver_match(
+        ${JSON.stringify(promptEmbedding)}::vector,
+        ${receiverUserId || req.user!.id}::uuid,
+        ${'{}'}::uuid[],
+        5
+      )
+    `)
+    const matches = matchResult.rows
 
     res.json({
       prompt,
@@ -124,14 +124,11 @@ router.post('/refresh-giver-profile/:userId', requireAuth, async (req: AuthReque
     const { userId } = req.params
     
     // Get current profile data
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('about, interests, needs')
-      .eq('id', userId)
-      .single()
+    const [profile] = await db.select({ about: profiles.about, interests: profiles.interests, needs: profiles.needs })
+      .from(profiles).where(eq(profiles.id, userId)).limit(1)
 
-    if (profileError) {
-      throw profileError
+    if (!profile) {
+      throw new Error(`Profile not found for user ${userId}`)
     }
 
     // Update giver profile with fresh embedding

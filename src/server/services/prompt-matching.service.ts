@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js'
+import { and, asc, desc, eq, gt, inArray, ne, notInArray, or, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { blindDateMatches, friendships, giverProfiles, giverRequestAttempts, helpRequests, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 import { TogetherAIService } from './ai/together-ai.service.js'
@@ -58,6 +60,30 @@ export interface GiverMatch {
     gender?: string | null
     profilePhotoUrl?: string | null
     helpTopics?: string[]
+  }
+}
+
+// Interpolating a JS array directly into a sql`` template expands it into a
+// comma-separated parameter list (meant for IN-lists), not a Postgres array
+// literal. Build a real ARRAY[...]::text[] (or NULL::text[] when empty).
+function toPgTextArray(values: string[]) {
+  if (values.length === 0) return sql`NULL::text[]`
+  return sql`ARRAY[${sql.join(values.map(v => sql`${v}`), sql`, `)}]::text[]`
+}
+
+function rowToHelpRequestRow(row: typeof helpRequests.$inferSelect): HelpRequest {
+  return {
+    id: row.id,
+    receiver_user_id: row.receiverUserId,
+    prompt: row.prompt,
+    status: row.status as HelpRequest['status'],
+    matched_giver_id: row.matchedGiverId ?? undefined,
+    chat_room_id: row.chatRoomId ?? undefined,
+    attempts_count: row.attemptsCount ?? 0,
+    declined_giver_ids: row.declinedGiverIds ?? [],
+    created_at: row.createdAt ?? '',
+    expires_at: row.expiresAt ?? '',
+    matched_at: row.matchedAt ?? undefined,
   }
 }
 
@@ -276,14 +302,11 @@ export class PromptMatchingService {
   ): Promise<string> {
     try {
       // Get user profile data
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('about, interests, needs')
-        .eq('id', userId)
-        .single()
+      const [profile] = await db.select({ about: profiles.about, interests: profiles.interests, needs: profiles.needs })
+        .from(profiles).where(eq(profiles.id, userId)).limit(1)
 
-      if (profileError) {
-        throw profileError
+      if (!profile) {
+        throw new Error(`Profile not found for user ${userId}`)
       }
 
       // Combine profile data for embedding
@@ -298,19 +321,21 @@ export class PromptMatchingService {
       // Generate embedding
       const embedding = await this.generateEmbedding(profileText)
 
-      // Call Supabase RPC to update giver profile
-      const { data, error } = await supabase.rpc('update_giver_profile_embedding', {
-        p_user_id: userId,
-        p_embedding: JSON.stringify(embedding), // Pass as JSON string for TEXT parameter
-        p_skills: skills.length > 0 ? skills : null,
-        p_categories: categories.length > 0 ? categories : null
-      })
+      // Call the update_giver_profile_embedding DB function
+      // (a JS array interpolated directly into a sql`` template expands into a
+      // comma-separated parameter list, not a Postgres array literal — build a
+      // real text[] literal with sql.join instead)
+      const result: any = await db.execute(sql`
+        select update_giver_profile_embedding(
+          ${userId}::uuid,
+          ${JSON.stringify(embedding)}::text,
+          ${toPgTextArray(skills)},
+          ${toPgTextArray(categories)}
+        ) as result
+      `)
+      const data = result.rows[0]?.result
 
-      if (error) {
-        throw error
-      }
-
-      logger.info({ 
+      logger.info({
         userId, 
         skillsCount: skills.length, 
         categoriesCount: categories.length,
@@ -331,14 +356,10 @@ export class PromptMatchingService {
    */
   static async toggleGiverAvailability(userId: string, isAvailable: boolean): Promise<boolean> {
     try {
-      const { data, error } = await supabase.rpc('toggle_giver_availability', {
-        p_user_id: userId,
-        p_is_available: isAvailable
-      })
-
-      if (error) {
-        throw error
-      }
+      const result: any = await db.execute(sql`
+        select toggle_giver_availability(${userId}::uuid, ${isAvailable}::boolean) as result
+      `)
+      const data = result.rows[0]?.result
 
       logger.info({ userId, isAvailable }, 'Giver availability toggled')
       return data
@@ -450,15 +471,10 @@ export class PromptMatchingService {
       })
 
       // Create help request
-      const { data: requestId, error: requestError } = await supabase.rpc('create_help_request', {
-        p_receiver_user_id: receiverUserId,
-        p_prompt: prompt,
-        p_prompt_embedding: JSON.stringify(promptEmbedding) // Pass as JSON string for TEXT parameter
-      })
-
-      if (requestError) {
-        throw requestError
-      }
+      const requestResult: any = await db.execute(sql`
+        select create_help_request(${receiverUserId}::uuid, ${prompt}::text, ${JSON.stringify(promptEmbedding)}::text) as result
+      `)
+      const requestId = requestResult.rows[0]?.result
 
       logger.info({ receiverUserId, requestId }, 'Help request created')
 
@@ -539,36 +555,32 @@ export class PromptMatchingService {
   ): Promise<{ requestId: string; status: 'matched' | 'searching'; matchedGiver?: GiverMatch }> {
     try {
       // Get all friend IDs to exclude from matching
-      const { data: friendships, error: friendshipError } = await supabase
-        .from('friendships')
-        .select('user1_id, user2_id')
-        .or(`user1_id.eq.${receiverUserId},user2_id.eq.${receiverUserId}`)
-        .in('status', ['active', 'accepted'])
-
-      if (friendshipError) {
+      let friendIds: string[] = []
+      try {
+        const friendshipRows = await db.select({ user1Id: friendships.user1Id, user2Id: friendships.user2Id })
+          .from(friendships)
+          .where(and(
+            or(eq(friendships.user1Id, receiverUserId), eq(friendships.user2Id, receiverUserId)),
+            inArray(friendships.status, ['active', 'accepted']),
+          ))
+        friendIds = friendshipRows.map(f => f.user1Id === receiverUserId ? f.user2Id : f.user1Id)
+      } catch (friendshipError) {
         logger.error({ error: friendshipError }, 'Error fetching friendships for exclusion')
       }
 
-      // Extract friend user IDs
-      const friendIds = friendships?.map(friendship => 
-        friendship.user1_id === receiverUserId ? friendship.user2_id : friendship.user1_id
-      ) || []
-
       // Get active blind date partners to exclude
-      const { data: blindDates, error: blindDateError } = await supabase
-        .from('blind_date_matches')
-        .select('user1_id, user2_id')
-        .or(`user1_id.eq.${receiverUserId},user2_id.eq.${receiverUserId}`)
-        .in('status', ['active', 'matched'])
-
-      if (blindDateError) {
+      let blindDatePartnerIds: string[] = []
+      try {
+        const blindDateRows = await db.select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
+          .from(blindDateMatches)
+          .where(and(
+            or(eq(blindDateMatches.userA, receiverUserId), eq(blindDateMatches.userB, receiverUserId)),
+            inArray(blindDateMatches.status, ['active', 'matched']),
+          ))
+        blindDatePartnerIds = blindDateRows.map(m => m.userA === receiverUserId ? m.userB : m.userA)
+      } catch (blindDateError) {
         logger.error({ error: blindDateError }, 'Error fetching blind dates for exclusion')
       }
-
-      // Extract blind date partner IDs
-      const blindDatePartnerIds = blindDates?.map(match => 
-        match.user1_id === receiverUserId ? match.user2_id : match.user1_id
-      ) || []
 
       // Combine all excluded IDs: previous attempts, friends, and blind date partners
       const allExcludedIds = [...excludedGiverIds, ...friendIds, ...blindDatePartnerIds]
@@ -581,34 +593,45 @@ export class PromptMatchingService {
       }, 'Excluding friends and blind date partners from giver matching')
 
       // Build query with demographic filters
-      let query = supabase
-        .from('giver_profiles')
-        .select(`
-          user_id,
-          is_available,
-          skills,
-          categories,
-          total_helps_given,
-          average_rating,
-          profile_embedding,
-          profiles!inner(about, interests, needs, gender, age)
-        `)
-        .eq('is_available', true)
-        .not('user_id', 'eq', receiverUserId)
-        .not('user_id', 'in', `(${allExcludedIds.map(id => `"${id}"`).join(',')})`)
-
+      const giverConditions = [eq(giverProfiles.isAvailable, true), ne(giverProfiles.userId, receiverUserId)]
+      if (allExcludedIds.length > 0) {
+        giverConditions.push(notInArray(giverProfiles.userId, allExcludedIds))
+      }
       // Apply gender filter if specified
       if (demographics?.preferredGender) {
-        query = query.eq('profiles.gender', demographics.preferredGender)
+        giverConditions.push(eq(profiles.gender, demographics.preferredGender))
         logger.info({ preferredGender: demographics.preferredGender }, 'Applying gender filter')
       }
 
-      const { data: availableGivers, error: giversError } = await query
-      
-      if (giversError) {
-        throw giversError
-      }
-      
+      const giverRows = await db.select({
+        userId: giverProfiles.userId,
+        isAvailable: giverProfiles.isAvailable,
+        skills: giverProfiles.skills,
+        categories: giverProfiles.categories,
+        totalHelpsGiven: giverProfiles.totalHelpsGiven,
+        averageRating: giverProfiles.averageRating,
+        profileEmbedding: giverProfiles.profileEmbedding,
+        profileAbout: profiles.about,
+        profileInterests: profiles.interests,
+        profileNeeds: profiles.needs,
+        profileGender: profiles.gender,
+        profileAge: profiles.age,
+      })
+        .from(giverProfiles)
+        .innerJoin(profiles, eq(profiles.id, giverProfiles.userId))
+        .where(and(...giverConditions))
+
+      const availableGivers = giverRows.map(r => ({
+        user_id: r.userId,
+        is_available: r.isAvailable,
+        skills: r.skills,
+        categories: r.categories,
+        total_helps_given: r.totalHelpsGiven ?? 0,
+        average_rating: Number(r.averageRating ?? 0),
+        profile_embedding: r.profileEmbedding,
+        profiles: { about: r.profileAbout, interests: r.profileInterests, needs: r.profileNeeds, gender: r.profileGender, age: r.profileAge },
+      }))
+
       let matches: GiverMatch[] = []
       
       // Filter by age if specified
@@ -637,12 +660,9 @@ export class PromptMatchingService {
         // Get the original prompt if not provided
         let helpPrompt = originalPrompt
         if (!helpPrompt) {
-          const { data: helpRequest } = await supabase
-            .from('help_requests')
-            .select('prompt')
-            .eq('id', requestId)
-            .single()
-          helpPrompt = helpRequest?.prompt || ''
+          const [helpRequestRow] = await db.select({ prompt: helpRequests.prompt })
+            .from(helpRequests).where(eq(helpRequests.id, requestId)).limit(1)
+          helpPrompt = helpRequestRow?.prompt || ''
         }
 
         // Prefer Python ML service for selecting the single best Beacon-enabled helper
@@ -703,14 +723,8 @@ export class PromptMatchingService {
           // Fallback to hybrid similarity calculation
           const scoredGivers = await Promise.all(ageFilteredGivers.map(async giver => {
             try {
-              let giverEmbedding: number[]
-              try {
-                giverEmbedding = Array.isArray(giver.profile_embedding) 
-                  ? giver.profile_embedding 
-                  : JSON.parse(giver.profile_embedding)
-              } catch {
-                giverEmbedding = []
-              }
+              // Drizzle's vector column type already returns a parsed number[] (or null)
+              const giverEmbedding: number[] = Array.isArray(giver.profile_embedding) ? giver.profile_embedding : []
               
               // Calculate cosine similarity
               let dotProduct = 0
@@ -808,21 +822,21 @@ export class PromptMatchingService {
         }, 'No matching non-friend giver found')
         
         // Debug: Check if there are any available non-friend givers
-        const { data: debugGivers, error: debugError } = await supabase
-          .from('giver_profiles')
-          .select('user_id, is_available, total_helps_given')
-          .eq('is_available', true)
-          .not('user_id', 'eq', receiverUserId)
-          .not('user_id', 'in', `(${allExcludedIds.map(id => `"${id}"`).join(',')})`)
-        
-        if (debugError) {
-          logger.error({ error: debugError }, 'Error checking available non-friend givers')
-        } else {
-          logger.info({ 
-            availableNonFriendGivers: debugGivers?.length || 0,
+        try {
+          const debugConditions = [eq(giverProfiles.isAvailable, true), ne(giverProfiles.userId, receiverUserId)]
+          if (allExcludedIds.length > 0) {
+            debugConditions.push(notInArray(giverProfiles.userId, allExcludedIds))
+          }
+          const debugGivers = await db.select({ userId: giverProfiles.userId })
+            .from(giverProfiles).where(and(...debugConditions))
+
+          logger.info({
+            availableNonFriendGivers: debugGivers.length,
             excludedFriendsCount: friendIds.length,
             totalExcluded: allExcludedIds.length
           }, 'Available non-friend givers debug info')
+        } catch (debugError) {
+          logger.error({ error: debugError }, 'Error checking available non-friend givers')
         }
         
         // Emit status update to receiver that we're still searching
@@ -841,11 +855,11 @@ export class PromptMatchingService {
 
       // Attach safe Beacon preview (masked) for receiver UI
       try {
-        const { data: giverProfile } = await supabase
-          .from('profiles')
-          .select('first_name, last_name, age, gender, profile_photo_url')
-          .eq('id', bestMatch.giver_user_id)
-          .maybeSingle()
+        const [giverProfileRow] = await db.select({
+          firstName: profiles.firstName, lastName: profiles.lastName, age: profiles.age,
+          gender: profiles.gender, profilePhotoUrl: profiles.profilePhotoUrl,
+        })
+          .from(profiles).where(eq(profiles.id, bestMatch.giver_user_id)).limit(1)
 
         const giverRow = (ageFilteredGivers || []).find((g: any) => g?.user_id === bestMatch.giver_user_id)
         const skills = Array.isArray(giverRow?.skills) ? giverRow.skills : []
@@ -853,10 +867,10 @@ export class PromptMatchingService {
         const helpTopics = Array.from(new Set([...(skills || []), ...(categories || [])])).filter(Boolean)
 
         bestMatch.beaconPreview = {
-          maskedName: maskFullName(giverProfile?.first_name, giverProfile?.last_name),
-          age: giverProfile?.age ?? null,
-          gender: giverProfile?.gender ?? null,
-          profilePhotoUrl: giverProfile?.profile_photo_url ?? null,
+          maskedName: maskFullName(giverProfileRow?.firstName, giverProfileRow?.lastName),
+          age: giverProfileRow?.age ?? null,
+          gender: giverProfileRow?.gender ?? null,
+          profilePhotoUrl: giverProfileRow?.profilePhotoUrl ?? null,
           helpTopics: helpTopics.slice(0, 8)
         }
       } catch (_e) {
@@ -864,33 +878,30 @@ export class PromptMatchingService {
       }
 
       // Create giver request attempt record
-      const { error: attemptError } = await supabase
-        .from('giver_request_attempts')
-        .insert({
-          help_request_id: requestId,
-          giver_user_id: bestMatch.giver_user_id,
+      try {
+        await db.insert(giverRequestAttempts).values({
+          helpRequestId: requestId,
+          giverUserId: bestMatch.giver_user_id,
           status: 'pending'
         })
-
-      if (attemptError) {
+      } catch (attemptError) {
         logger.error({ error: attemptError }, 'Error creating giver request attempt')
       }
 
       // Get receiver profile for notification
-      const { data: receiverProfile } = await supabase
-        .from('profiles')
-        .select('username, first_name, profile_photo_url')
-        .eq('id', receiverUserId)
-        .single()
+      const [receiverProfileRow] = await db.select({
+        username: profiles.username, firstName: profiles.firstName, profilePhotoUrl: profiles.profilePhotoUrl,
+      })
+        .from(profiles).where(eq(profiles.id, receiverUserId)).limit(1)
+      const receiverProfile = receiverProfileRow
+        ? { username: receiverProfileRow.username, first_name: receiverProfileRow.firstName, profile_photo_url: receiverProfileRow.profilePhotoUrl }
+        : undefined
 
       // Get help request details
-      const { data: helpRequest } = await supabase
-        .from('help_requests')
-        .select('prompt')
-        .eq('id', requestId)
-        .single()
+      const [helpRequestRow] = await db.select({ prompt: helpRequests.prompt })
+        .from(helpRequests).where(eq(helpRequests.id, requestId)).limit(1)
 
-      const promptText = helpRequest?.prompt || originalPrompt || ''
+      const promptText = helpRequestRow?.prompt || originalPrompt || ''
       
       // Generate AI summary for the help request
       const summary = await this.generateHelpRequestSummary(promptText)
@@ -1208,14 +1219,13 @@ ${JSON.stringify(giverProfiles, null, 2)}`
       }
 
       // Get all users with their profiles (excluding receiver and excluded users)
-      const { data: allUsers, error: usersError } = await supabase
-        .from('profiles')
-        .select('id, about, interests, needs, first_name, last_name')
-        .not('id', 'eq', receiverUserId)
-        .not('invisible_mode', 'eq', true)
-        .limit(100) // Limit to prevent overwhelming the AI
-
-      if (usersError) {
+      let allUsers: Array<{ id: string; about: string | null; interests: string[] | null; needs: string[] | null }> = []
+      try {
+        allUsers = await db.select({ id: profiles.id, about: profiles.about, interests: profiles.interests, needs: profiles.needs })
+          .from(profiles)
+          .where(and(ne(profiles.id, receiverUserId), ne(profiles.invisibleMode, true)))
+          .limit(100) // Limit to prevent overwhelming the AI
+      } catch (usersError) {
         logger.error({ error: usersError }, 'Error fetching all users')
         return []
       }
@@ -1363,58 +1373,41 @@ ${JSON.stringify(userProfiles, null, 2)}`
   ): Promise<{ success: boolean; chatId?: string; nextGiver?: boolean }> {
     try {
       // Record the response
-      const { error: recordError } = await supabase.rpc('record_giver_response', {
-        p_help_request_id: requestId,
-        p_giver_user_id: giverUserId,
-        p_accepted: accepted
-      })
-
-      if (recordError) {
-        throw recordError
-      }
+      await db.execute(sql`select record_giver_response(${requestId}::uuid, ${giverUserId}::uuid, ${accepted}::boolean)`)
 
       if (accepted) {
         // Create chat room using existing blind date logic
-        const { data: helpRequest } = await supabase
-          .from('help_requests')
-          .select('receiver_user_id')
-          .eq('id', requestId)
-          .single()
+        const [helpRequestRow] = await db.select({ receiverUserId: helpRequests.receiverUserId })
+          .from(helpRequests).where(eq(helpRequests.id, requestId)).limit(1)
 
-        if (!helpRequest) {
+        if (!helpRequestRow) {
           throw new Error('Help request not found')
         }
 
         // Create masked chat room
-        const chatResult = await ensureChatForUsers(helpRequest.receiver_user_id, giverUserId)
+        const chatResult = await ensureChatForUsers(helpRequestRow.receiverUserId, giverUserId)
         const chatId = typeof chatResult === 'string' ? chatResult : chatResult.id
 
         // Update help request with chat ID
-        await supabase
-          .from('help_requests')
-          .update({ 
-            chat_room_id: chatId,
-            status: 'matched'
-          })
-          .eq('id', requestId)
+        await db.update(helpRequests)
+          .set({ chatRoomId: chatId, status: 'matched' })
+          .where(eq(helpRequests.id, requestId))
 
         // Create blind date match record for message masking
-        await supabase
-          .from('blind_date_matches')
-          .insert({
-            user_a: helpRequest.receiver_user_id,
-            user_b: giverUserId,
-            chat_id: chatId,
-            compatibility_score: 0.85, // Default score for help requests
-            status: 'active',
-            reveal_threshold: 30,
-            message_count: 0,
-            user_a_revealed: false,
-            user_b_revealed: false
-          })
+        await db.insert(blindDateMatches).values({
+          userA: helpRequestRow.receiverUserId,
+          userB: giverUserId,
+          chatId,
+          compatibilityScore: '0.85', // Default score for help requests
+          status: 'active',
+          revealThreshold: 30,
+          messageCount: 0,
+          userARevealed: false,
+          userBRevealed: false,
+        })
 
         // Notify receiver that giver accepted
-        emitToUser(helpRequest.receiver_user_id, 'help_request_accepted', {
+        emitToUser(helpRequestRow.receiverUserId, 'help_request_accepted', {
           requestId,
           giverId: giverUserId,
           chatId,
@@ -1424,14 +1417,14 @@ ${JSON.stringify(userProfiles, null, 2)}`
         // Notify giver to navigate to chat
         emitToUser(giverUserId, 'help_request_chat_ready', {
           requestId,
-          receiverId: helpRequest.receiver_user_id,
+          receiverId: helpRequestRow.receiverUserId,
           chatId,
           isBlindConnect: true
         })
 
         // Send push notification to receiver in case app is closed
         await PushNotificationService.sendPushNotification(
-          helpRequest.receiver_user_id,
+          helpRequestRow.receiverUserId,
           {
             title: '🎉 Helper Found!',
             body: 'We found someone to help you! Tap to chat anonymously.',
@@ -1451,23 +1444,24 @@ ${JSON.stringify(userProfiles, null, 2)}`
 
       } else {
         // Giver declined - find next giver
-        const { data: helpRequest } = await supabase
-          .from('help_requests')
-          .select('receiver_user_id, prompt, prompt_embedding, declined_giver_ids')
-          .eq('id', requestId)
-          .single()
+        const [helpRequestRow] = await db.select({
+          receiverUserId: helpRequests.receiverUserId,
+          prompt: helpRequests.prompt,
+          promptEmbedding: helpRequests.promptEmbedding,
+          declinedGiverIds: helpRequests.declinedGiverIds,
+        }).from(helpRequests).where(eq(helpRequests.id, requestId)).limit(1)
 
-        if (!helpRequest) {
+        if (!helpRequestRow) {
           throw new Error('Help request not found')
         }
 
         // Notify receiver that search continues with status update
-        emitToUser(helpRequest.receiver_user_id, 'help_request_declined', {
+        emitToUser(helpRequestRow.receiverUserId, 'help_request_declined', {
           requestId,
           searching: true
         })
 
-        emitToUser(helpRequest.receiver_user_id, 'help_search_status', {
+        emitToUser(helpRequestRow.receiverUserId, 'help_search_status', {
           status: 'searching',
           message: 'Previous helper unavailable. Finding another match...',
           progress: 50,
@@ -1475,20 +1469,20 @@ ${JSON.stringify(userProfiles, null, 2)}`
         })
 
         // Try to find next giver
-        const promptEmbedding = Array.isArray(helpRequest.prompt_embedding) 
-          ? helpRequest.prompt_embedding 
-          : JSON.parse(helpRequest.prompt_embedding as any)
+        const promptEmbedding = Array.isArray(helpRequestRow.promptEmbedding)
+          ? helpRequestRow.promptEmbedding
+          : JSON.parse(helpRequestRow.promptEmbedding as any)
         const nextMatch = await this.findAndNotifyGiver(
           requestId,
-          helpRequest.receiver_user_id,
+          helpRequestRow.receiverUserId,
           promptEmbedding,
-          helpRequest.declined_giver_ids || [],
-          helpRequest.prompt
+          helpRequestRow.declinedGiverIds || [],
+          helpRequestRow.prompt
         )
 
         // Update receiver with new status
         if (nextMatch.status === 'matched') {
-          emitToUser(helpRequest.receiver_user_id, 'help_search_status', {
+          emitToUser(helpRequestRow.receiverUserId, 'help_search_status', {
             status: 'found',
             message: 'Found another helper! Waiting for their response...',
             progress: 80,
@@ -1513,18 +1507,9 @@ ${JSON.stringify(userProfiles, null, 2)}`
    */
   static async cancelHelpRequest(requestId: string, userId: string): Promise<boolean> {
     try {
-      const { error } = await supabase
-        .from('help_requests')
-        .update({ 
-          status: 'cancelled',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', requestId)
-        .eq('receiver_user_id', userId)
-
-      if (error) {
-        throw error
-      }
+      await db.update(helpRequests)
+        .set({ status: 'cancelled', updatedAt: new Date().toISOString() })
+        .where(and(eq(helpRequests.id, requestId), eq(helpRequests.receiverUserId, userId)))
 
       logger.info({ requestId, userId }, 'Help request cancelled')
       return true
@@ -1542,19 +1527,19 @@ ${JSON.stringify(userProfiles, null, 2)}`
   static async processActiveHelpRequests(): Promise<void> {
     try {
       // Get active requests with their prompts
-      const { data: activeRequests, error } = await supabase
-        .from('help_requests')
-        .select('id, receiver_user_id, prompt, prompt_embedding, declined_giver_ids')
-        .eq('status', 'searching')
-        .gt('expires_at', new Date().toISOString())
-        .order('created_at', { ascending: true })
+      const activeRequests = await db.select({
+        id: helpRequests.id,
+        receiverUserId: helpRequests.receiverUserId,
+        prompt: helpRequests.prompt,
+        promptEmbedding: helpRequests.promptEmbedding,
+        declinedGiverIds: helpRequests.declinedGiverIds,
+      })
+        .from(helpRequests)
+        .where(and(eq(helpRequests.status, 'searching'), gt(helpRequests.expiresAt, new Date().toISOString())))
+        .orderBy(asc(helpRequests.createdAt))
         .limit(20)
 
-      if (error) {
-        throw error
-      }
-
-      if (!activeRequests || activeRequests.length === 0) {
+      if (activeRequests.length === 0) {
         return
       }
 
@@ -1564,32 +1549,32 @@ ${JSON.stringify(userProfiles, null, 2)}`
       for (const request of activeRequests) {
         try {
           let promptEmbedding;
-          if (Array.isArray(request.prompt_embedding)) {
-            promptEmbedding = request.prompt_embedding;
-          } else if (typeof request.prompt_embedding === 'string') {
-            promptEmbedding = JSON.parse(request.prompt_embedding as any);
+          if (Array.isArray(request.promptEmbedding)) {
+            promptEmbedding = request.promptEmbedding;
+          } else if (typeof request.promptEmbedding === 'string') {
+            promptEmbedding = JSON.parse(request.promptEmbedding as any);
           } else {
             throw new Error('Invalid prompt embedding format');
           }
-          
+
           // Emit status update to receiver
-          emitToUser(request.receiver_user_id, 'help_search_status', {
+          emitToUser(request.receiverUserId, 'help_search_status', {
             status: 'searching',
             message: 'Still searching for the perfect helper...',
             progress: 40,
             requestId: request.id
           })
-          
+
           const result = await this.findAndNotifyGiver(
             request.id,
-            request.receiver_user_id,
+            request.receiverUserId,
             promptEmbedding,
-            request.declined_giver_ids || [],
+            request.declinedGiverIds || [],
             request.prompt // Include the original prompt for AI matching
           )
 
           if (result.status === 'matched') {
-            emitToUser(request.receiver_user_id, 'help_search_status', {
+            emitToUser(request.receiverUserId, 'help_search_status', {
               status: 'found',
               message: 'Found a helper! Waiting for their response...',
               progress: 80,
@@ -1615,11 +1600,8 @@ ${JSON.stringify(userProfiles, null, 2)}`
    */
   static async expireOldRequests(): Promise<number> {
     try {
-      const { data: expiredCount, error } = await supabase.rpc('expire_old_help_requests')
-
-      if (error) {
-        throw error
-      }
+      const result: any = await db.execute(sql`select expire_old_help_requests() as result`)
+      const expiredCount = result.rows[0]?.result ?? 0
 
       if (expiredCount > 0) {
         logger.info({ expiredCount }, 'Expired old help requests')
@@ -1638,20 +1620,24 @@ ${JSON.stringify(userProfiles, null, 2)}`
    */
   static async getGiverProfile(userId: string): Promise<GiverProfile | null> {
     try {
-      const { data, error } = await supabase
-        .from('giver_profiles')
-        .select('*')
-        .eq('user_id', userId)
-        .single()
+      const [row] = await db.select().from(giverProfiles).where(eq(giverProfiles.userId, userId)).limit(1)
 
-      if (error) {
-        if (error.code === 'PGRST116') {
-          return null // No profile found
-        }
-        throw error
+      if (!row) {
+        return null // No profile found
       }
 
-      return data as GiverProfile
+      return {
+        id: row.id,
+        user_id: row.userId,
+        is_available: row.isAvailable ?? false,
+        skills: row.skills || [],
+        interests: row.interests || [],
+        bio: row.bio || '',
+        categories: row.categories || [],
+        total_helps_given: row.totalHelpsGiven || 0,
+        average_rating: Number(row.averageRating ?? 0),
+        last_active_at: row.lastActiveAt || '',
+      }
 
     } catch (error) {
       logger.error({ error, userId }, 'Error getting giver profile')
@@ -1664,20 +1650,13 @@ ${JSON.stringify(userProfiles, null, 2)}`
    */
   static async getHelpRequestStatus(requestId: string): Promise<HelpRequest | null> {
     try {
-      const { data, error } = await supabase
-        .from('help_requests')
-        .select('*')
-        .eq('id', requestId)
-        .single()
+      const [row] = await db.select().from(helpRequests).where(eq(helpRequests.id, requestId)).limit(1)
 
-      if (error) {
-        if (error.code === 'PGRST116') {
-          return null
-        }
-        throw error
+      if (!row) {
+        return null
       }
 
-      return data as HelpRequest
+      return rowToHelpRequestRow(row)
 
     } catch (error) {
       logger.error({ error, requestId }, 'Error getting help request status')
@@ -1690,20 +1669,12 @@ ${JSON.stringify(userProfiles, null, 2)}`
    */
   static async getUserActiveRequest(userId: string): Promise<HelpRequest | null> {
     try {
-      const { data, error } = await supabase
-        .from('help_requests')
-        .select('*')
-        .eq('receiver_user_id', userId)
-        .eq('status', 'searching')
-        .order('created_at', { ascending: false })
+      const [row] = await db.select().from(helpRequests)
+        .where(and(eq(helpRequests.receiverUserId, userId), eq(helpRequests.status, 'searching')))
+        .orderBy(desc(helpRequests.createdAt))
         .limit(1)
-        .maybeSingle()
 
-      if (error) {
-        throw error
-      }
-
-      return data as HelpRequest | null
+      return row ? rowToHelpRequestRow(row) : null
 
     } catch (error) {
       logger.error({ error, userId }, 'Error getting user active request')

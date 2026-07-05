@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { PromptMatchingService } from '../services/prompt-matching.service.js'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, inArray } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { giverProfiles, giverRequestAttempts, helpRequests, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 
 // Cache for AI-generated summaries to avoid redundant API calls
@@ -115,13 +117,10 @@ router.post('/request', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Check if user is in invisible mode
-    const { data: user } = await supabase
-      .from('profiles')
-      .select('invisible_mode')
-      .eq('id', userId)
-      .single()
-    
-    if (user?.invisible_mode) {
+    const [user] = await db.select({ invisibleMode: profiles.invisibleMode })
+      .from(profiles).where(eq(profiles.id, userId)).limit(1)
+
+    if (user?.invisibleMode) {
       return res.status(403).json({ 
         error: 'Help requests are disabled while in invisible mode. Turn off invisible mode in settings to use this feature.' 
       })
@@ -171,18 +170,22 @@ router.get('/status/:requestId', requireAuth, async (req: AuthRequest, res) => {
     // If matched, fetch giver details with beaconPreview
     if (request.status === 'matched' && request.matched_giver_id) {
       try {
-        const { data: giverProfile } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name, age, gender, profile_photo_url')
-          .eq('id', request.matched_giver_id)
-          .maybeSingle()
+        const [giverProfileRow] = await db.select({
+          id: profiles.id, firstName: profiles.firstName, lastName: profiles.lastName,
+          age: profiles.age, gender: profiles.gender, profilePhotoUrl: profiles.profilePhotoUrl,
+        })
+          .from(profiles).where(eq(profiles.id, request.matched_giver_id)).limit(1)
 
-        if (giverProfile) {
-          const { data: giverData } = await supabase
-            .from('giver_profiles')
-            .select('skills, categories, is_available, total_helps_given, average_rating')
-            .eq('user_id', request.matched_giver_id)
-            .maybeSingle()
+        if (giverProfileRow) {
+          const [giverDataRow] = await db.select({
+            skills: giverProfiles.skills, categories: giverProfiles.categories,
+            isAvailable: giverProfiles.isAvailable, totalHelpsGiven: giverProfiles.totalHelpsGiven,
+            averageRating: giverProfiles.averageRating,
+          })
+            .from(giverProfiles).where(eq(giverProfiles.userId, request.matched_giver_id)).limit(1)
+
+          const giverProfile = { first_name: giverProfileRow.firstName, last_name: giverProfileRow.lastName, age: giverProfileRow.age, gender: giverProfileRow.gender, profile_photo_url: giverProfileRow.profilePhotoUrl }
+          const giverData = giverDataRow ? { skills: giverDataRow.skills, categories: giverDataRow.categories, is_available: giverDataRow.isAvailable, total_helps_given: giverDataRow.totalHelpsGiven, average_rating: Number(giverDataRow.averageRating ?? 0) } : undefined
 
           const skills = Array.isArray(giverData?.skills) ? giverData.skills : []
           const categories = Array.isArray(giverData?.categories) ? giverData.categories : []
@@ -379,50 +382,61 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
     const offset = parseInt(req.query.offset as string) || 0
     const status = req.query.status as string || 'searching'
 
-    // Get help requests that are specifically targeted to this giver
-    const { data: requests, error } = await supabase
-      .from('help_requests')
-      .select(`
-        id,
-        prompt,
-        status,
-        attempts_count,
-        created_at,
-        expires_at,
-        receiver_user_id,
-        profiles!help_requests_receiver_user_id_fkey (
-          id,
-          first_name,
-          last_name,
-          profile_photo_url,
-          age,
-          interests
-        ),
-        giver_request_attempts (
-          giver_user_id,
-          status
-        )
-      `)
-      .eq('status', status)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1)
+    // Get help requests that are specifically targeted to this giver.
+    // (Pagination is applied before the targeted-giver filter below, matching
+    // the original supabase query's behavior exactly — a page can come back
+    // with fewer than `limit` items after filtering.)
+    const requestRows = await db.select({
+      id: helpRequests.id,
+      prompt: helpRequests.prompt,
+      status: helpRequests.status,
+      attemptsCount: helpRequests.attemptsCount,
+      createdAt: helpRequests.createdAt,
+      expiresAt: helpRequests.expiresAt,
+      receiverUserId: helpRequests.receiverUserId,
+      profileId: profiles.id,
+      profileFirstName: profiles.firstName,
+      profileLastName: profiles.lastName,
+      profilePhotoUrl: profiles.profilePhotoUrl,
+      profileAge: profiles.age,
+      profileInterests: profiles.interests,
+    })
+      .from(helpRequests)
+      .leftJoin(profiles, eq(profiles.id, helpRequests.receiverUserId))
+      .where(eq(helpRequests.status, status))
+      .orderBy(desc(helpRequests.createdAt))
+      .limit(limit)
+      .offset(offset)
 
-    if (error) {
-      throw error
+    const requestIds = requestRows.map(r => r.id)
+    const attemptRows = requestIds.length > 0
+      ? await db.select({
+          helpRequestId: giverRequestAttempts.helpRequestId,
+          giverUserId: giverRequestAttempts.giverUserId,
+          status: giverRequestAttempts.status,
+        })
+          .from(giverRequestAttempts)
+          .where(inArray(giverRequestAttempts.helpRequestId, requestIds))
+      : []
+
+    const attemptsByRequest = new Map<string, typeof attemptRows>()
+    for (const a of attemptRows) {
+      if (!attemptsByRequest.has(a.helpRequestId)) attemptsByRequest.set(a.helpRequestId, [])
+      attemptsByRequest.get(a.helpRequestId)!.push(a)
     }
 
     // Filter to only show requests targeted to this user
-    const filteredRequests = requests?.filter((request: any) => {
-      const attempts = request.giver_request_attempts || []
-      return attempts.some((attempt: any) => 
-        attempt.giver_user_id === userId && 
-        ['pending', 'accepted'].includes(attempt.status)
+    const filteredRequests = requestRows.filter(request => {
+      const attempts = attemptsByRequest.get(request.id) || []
+      return attempts.some(attempt =>
+        attempt.giverUserId === userId &&
+        ['pending', 'accepted'].includes(attempt.status || '')
       )
-    }) || []
+    })
 
     // Generate AI summaries for each request (in parallel)
     const transformedRequests = await Promise.all(
-      filteredRequests.map(async (request: any) => {
+      filteredRequests.map(async (request) => {
         // Generate AI summary
         const summary = await generateSummary(request.prompt)
 
@@ -431,28 +445,28 @@ router.get('/requests', requireAuth, async (req: AuthRequest, res) => {
           prompt: request.prompt,
           summary, // AI-generated short summary
           status: request.status,
-          attemptsCount: request.attempts_count,
-          createdAt: request.created_at,
-          expiresAt: request.expires_at,
+          attemptsCount: request.attemptsCount,
+          createdAt: request.createdAt,
+          expiresAt: request.expiresAt,
           user: {
-            id: request.profiles?.id,
-            firstName: request.profiles?.first_name,
-            lastName: request.profiles?.last_name,
-            profilePhotoUrl: request.profiles?.profile_photo_url,
-            age: request.profiles?.age,
-            interests: request.profiles?.interests || []
+            id: request.profileId,
+            firstName: request.profileFirstName,
+            lastName: request.profileLastName,
+            profilePhotoUrl: request.profilePhotoUrl,
+            age: request.profileAge,
+            interests: request.profileInterests || []
           },
-          timeAgo: getTimeAgo(new Date(request.created_at)),
+          timeAgo: getTimeAgo(new Date(request.createdAt!)),
           isTargetedMatch: true
         }
       })
     )
 
-    logger.info({ 
-      userId, 
-      totalRequests: requests?.length || 0,
+    logger.info({
+      userId,
+      totalRequests: requestRows.length,
       filteredCount: transformedRequests.length,
-      status 
+      status
     }, 'Retrieved targeted help requests for giver with AI summaries')
 
     res.json({
@@ -520,13 +534,14 @@ router.post('/giver/respond', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Verify this giver has a pending request
-    const { data: attempt } = await supabase
-      .from('giver_request_attempts')
-      .select('id, status')
-      .eq('help_request_id', requestId)
-      .eq('giver_user_id', userId)
-      .eq('status', 'pending')
-      .single()
+    const [attempt] = await db.select({ id: giverRequestAttempts.id, status: giverRequestAttempts.status })
+      .from(giverRequestAttempts)
+      .where(and(
+        eq(giverRequestAttempts.helpRequestId, requestId),
+        eq(giverRequestAttempts.giverUserId, userId),
+        eq(giverRequestAttempts.status, 'pending'),
+      ))
+      .limit(1)
 
     if (!attempt) {
       return res.status(404).json({ error: 'No pending request found' })
