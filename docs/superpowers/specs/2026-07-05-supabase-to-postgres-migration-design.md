@@ -58,20 +58,26 @@ loss and no dependency on Supabase once complete.
 
 ## Phase 0 — Foundational setup (once, first)
 
-1. Get the Supabase direct (non-pooled) connection string from
-   Settings → Database.
-2. Add a `postgres` service to `docker-compose.yml` locally, matching the
-   Postgres major version Supabase runs, so behavior stays consistent all
-   the way to the VPS.
+1. Get a Supabase connection string from Settings → Database → Connection
+   Pooling. In practice the direct (non-pooled) connection didn't work from
+   this network — Supabase's free tier serves it IPv6-only — so the pooler
+   connection (Supavisor, port 5432, IPv4-reachable) is what's actually used.
+2. Local Postgres, matching the Postgres major version Supabase runs (17), so
+   behavior stays consistent all the way to the VPS. Implemented as native
+   Homebrew `postgresql@17` locally (Docker Desktop's daemon wasn't running on
+   the dev machine) — the VPS still uses Docker, only local dev diverged.
 3. One-time replication: `pg_dump --schema=public --no-owner --no-acl -Fc`
    from Supabase → restore into local Postgres. Only the `public` schema is
    needed — Supabase's internal `auth`/`storage`/`realtime` schemas aren't
-   used by this codebase.
-4. Introspect the restored local DB with `drizzle-kit introspect` for a
-   first-pass schema, then hand-clean it (proper types/relations) as the
-   ongoing source of truth. Add a `db.ts` with a `pg.Pool`-backed Drizzle
-   client alongside (not yet replacing) the existing `supabase` /
-   `supabaseAdmin` clients.
+   used by this codebase's application logic, though a few `public`-schema
+   objects (FKs, RLS policies, column defaults) reference `auth.*` and an
+   `extensions` schema by name — a small prerequisite script creates minimal
+   stubs for those before restoring, documented in
+   `scripts/db-migration/setup-restore-prereqs.sh`.
+4. Introspect the restored local DB with `drizzle-kit pull` (the current
+   drizzle-kit command name — `introspect` was renamed) for a first-pass
+   schema. Add a `db.ts` with a `pg.Pool`-backed Drizzle client alongside (not
+   yet replacing) the existing `supabase` / `supabaseAdmin` clients.
 5. Verify: row counts per table must match exactly between Supabase and the
    local restore before any rewriting starts.
 

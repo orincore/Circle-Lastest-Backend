@@ -17,7 +17,7 @@
 - Project uses TypeScript with `"module": "NodeNext"` — relative imports must include the `.js` extension even though the source files are `.ts` (e.g. `import { env } from './env.js'`), matching the existing codebase pattern.
 - Env vars are validated through a single `zod` schema in `src/server/config/env.ts`; any new env var must be added there or `env.FOO` will be `undefined` even if it's in `.env`.
 - `.env` is git-ignored (verified) — safe to edit directly with real credentials. `.env.example` is committed — use placeholder values there, never real credentials.
-- Working Supabase pooler connection string (region node is `aws-1`, not the stale `aws-0` previously in `.env`): `postgresql://postgres.cwccjihrjmbhyaafwjuf:Orincore7094@aws-1-ap-south-1.pooler.supabase.com:5432/postgres`. Live DB is small: 34MB, **82 tables** in `public` schema (verified via `pg_tables`, not `information_schema.tables` which overcounts by including views — an earlier count of 97 using the latter was wrong) — dump/restore should take seconds, not minutes.
+- Working Supabase pooler connection string (region node is `aws-1`, not the stale `aws-0` previously in `.env`): `postgresql://postgres.cwccjihrjmbhyaafwjuf:***REDACTED***@aws-1-ap-south-1.pooler.supabase.com:5432/postgres (real password lives only in .env, never in this doc)`. Live DB is small: 34MB, **82 tables** in `public` schema (verified via `pg_tables`, not `information_schema.tables` which overcounts by including views — an earlier count of 97 using the latter was wrong) — dump/restore should take seconds, not minutes.
 - No live production traffic exists right now (app is fully down) — no downtime constraints anywhere in this plan.
 - Any raw data dump file must never be committed to git (it's a full copy of user data) — the dumps directory is added to `.gitignore` in Task 4.
 
@@ -166,7 +166,7 @@ In `src/server/config/env.ts`, add these two lines to `envSchema` immediately af
 In `.env`, replace the existing (broken) `DATABASE_URL=postgresql://postgres.cwccjihrjmbhyaafwjuf:...@aws-0-ap-south-1.pooler.supabase.com:5432/postgres` line with these two lines:
 
 ```
-SUPABASE_DATABASE_URL=postgresql://postgres.cwccjihrjmbhyaafwjuf:Orincore7094@aws-1-ap-south-1.pooler.supabase.com:5432/postgres
+SUPABASE_DATABASE_URL=postgresql://postgres.cwccjihrjmbhyaafwjuf:***REDACTED***@aws-1-ap-south-1.pooler.supabase.com:5432/postgres (real password lives only in .env, never in this doc)
 DATABASE_URL=postgresql://circle:circle_dev_password@localhost:5433/circle
 ```
 
@@ -520,4 +520,6 @@ git commit -m "feat: introspect Supabase schema with drizzle-kit and verify end-
 
 ## Phase 0 exit criteria
 
-All five tasks committed, `verify-row-counts.ts` shows zero mismatches, and `check-schema-query.ts` returns real data through Drizzle. At this point `src/server/db/schema.ts` is the frozen interface the next plan (Task batch 1: **Auth & profiles**, per the design spec's migration order) will import from to start rewriting `supabase.from(...)` calls into Drizzle queries.
+All six tasks committed, `verify-row-counts.ts` shows zero mismatches, and `check-schema-query.ts` returns real data through Drizzle. At this point `src/server/db/schema.ts` is the frozen interface the next plan (Task batch 1: **Auth & profiles**, per the design spec's migration order) will import from to start rewriting `supabase.from(...)` calls into Drizzle queries.
+
+**Important note for whoever writes the next plan (Batch 1: Auth & profiles) or re-runs introspection:** `src/server/db/schema.ts` is drizzle-kit's *generated* output, but Task 6 required one hand-patch on top of it — a `pgSchema("auth")` + `usersInAuth` stub table (documented inline in the file, near the top) to satisfy a dangling cross-schema foreign key (`explore_interactions` → Supabase's `auth.users`, which `drizzle-kit pull` cannot see since it only introspects `public`). **If `drizzle-kit pull` is ever re-run, this patch will be silently overwritten** and the app will fail at Drizzle-client-construction time with `ReferenceError: usersInAuth is not defined`. Before re-running introspection: re-apply the same patch (see the comment block in the current `schema.ts` for the exact code, or the matching comment in `drizzle.config.ts`), and re-check whether `explore_interactions` still has 0 rows on the Supabase source — the empty `auth.users` stub only works because that table currently has no data to violate the FK.
