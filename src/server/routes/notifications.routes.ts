@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { AuthRequest, requireAuth } from '../middleware/auth.js';
 import { NotificationService } from '../services/notificationService.js';
 import { supabase } from '../config/supabase.js';
+import { cache, cacheKeys, NOTIFICATIONS_TTL, invalidateNotificationsCache } from '../services/cache.js';
 
 const router = Router();
 
@@ -114,9 +115,16 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id;
     const limit = parseInt(req.query.limit as string) || 50;
 
+    // Serve from cache when available; invalidated on any notification write.
+    const cacheKey = cacheKeys.notificationList(userId, limit);
+    const cached = await cache.getJSON(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
     const notifications = await NotificationService.getUserNotifications(userId, limit);
-    
-    res.json({
+
+    const payload = {
       success: true,
       notifications: notifications.map(notification => ({
         id: notification.id,
@@ -132,7 +140,10 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           avatar: notification.sender.profile_photo_url
         } : null
       }))
-    });
+    };
+
+    await cache.setJSON(cacheKey, payload, NOTIFICATIONS_TTL);
+    res.json(payload);
   } catch (error) {
     console.error('❌ Error fetching notifications:', error);
     res.status(500).json({ 
@@ -148,12 +159,17 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 router.get('/unread-count', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
+
+    const cacheKey = cacheKeys.notificationUnread(userId);
+    const cached = await cache.getJSON<{ success: boolean; count: number }>(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
     const count = await NotificationService.getUnreadCount(userId);
-    
-    res.json({
-      success: true,
-      count
-    });
+    const payload = { success: true, count };
+    await cache.setJSON(cacheKey, payload, NOTIFICATIONS_TTL);
+    res.json(payload);
   } catch (error) {
     console.error('❌ Error fetching unread count:', error);
     res.status(500).json({ 
@@ -239,6 +255,9 @@ router.patch('/mark-all-read', requireAuth, async (req: AuthRequest, res) => {
     if (error) {
       throw error;
     }
+
+    // This route updates the DB directly (not via the service), so invalidate here.
+    await invalidateNotificationsCache(userId);
 
     res.json({
       success: true,

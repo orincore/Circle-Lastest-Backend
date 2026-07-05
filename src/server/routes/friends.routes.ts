@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { requireAuth, AuthRequest } from '../middleware/auth.js'
 import { supabase } from '../config/supabase.js'
+import { invalidateProfileCache } from '../services/cache.js'
 
 const router = Router()
 
@@ -204,6 +205,10 @@ router.post('/accept/:requestId', requireAuth, async (req: AuthRequest, res) => 
     if (friendshipError && friendshipError.code !== '23505') { // Ignore duplicate key error
       throw friendshipError
     }
+
+    // Friend count changed for both users → refresh their cached profile views.
+    await invalidateProfileCache(request.sender_id)
+    await invalidateProfileCache(request.receiver_id)
 
     // Create a chat between the two users so they can message each other
     try {
@@ -514,6 +519,10 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
 
     if (error) throw error
 
+    // Friend count changed for both users → refresh their cached profile views.
+    await invalidateProfileCache(userId)
+    await invalidateProfileCache(friendId)
+
     //console.log(`✅ Successfully unfriended: ${userId} and ${friendId}`)
     res.json({ success: true })
   } catch (error) {
@@ -562,6 +571,10 @@ router.post('/block/:userId', requireAuth, async (req: AuthRequest, res) => {
         throw insertError
       }
     }
+
+    // Blocking removes any friendship between the two → refresh both profiles.
+    await invalidateProfileCache(blockerId)
+    await invalidateProfileCache(blockedUserId)
 
     res.json({ success: true })
   } catch (error) {
@@ -1045,15 +1058,6 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       return res.status(404).json({ error: 'User profile not found' })
     }
     
-    console.log('✅ Found user profile:', profile)
-    console.log('✅ Profile keys:', Object.keys(profile))
-    console.log('✅ Profile values check:')
-    console.log('  - first_name:', profile.first_name)
-    console.log('  - last_name:', profile.last_name) 
-    console.log('  - username:', profile.username)
-    console.log('  - about:', profile.about)
-    console.log('  - age:', profile.age)
-    
     // Get user statistics
     let stats = { friends: 0, chats: 0, messages: 0 };
     
@@ -1113,9 +1117,6 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       email_verified: profile.email_verified || false,
       stats: stats
     };
-    
-    console.log('📤 Sending response:', responseData);
-    console.log('📤 Response keys:', Object.keys(responseData));
     
     res.json(responseData);
     

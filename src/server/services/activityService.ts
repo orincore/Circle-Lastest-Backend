@@ -33,6 +33,14 @@ const ACTIVITY_TYPES = {
 
 // Note: Nearby user notifications (for non-friends within 3km with 5-day cooldown)
 // are handled by the /api/location/check-nearby endpoint in location.routes.ts
+
+// Live-feed location-updated activities used to fire on every profile save,
+// even when the city string hadn't changed or the user had just been broadcast
+// a minute earlier — spamming every other online user with "X is in <city>"
+// notifications. trackLocationUpdated() below checks the activity_feed table
+// (persisted, not in-memory) and skips when the location is unchanged or
+// we're still within the minimum gap between broadcasts.
+const LOCATION_BROADCAST_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 3 hours
 // Friends do NOT receive location-based notifications
 
 // Store activities in memory for quick access (last 100 activities)
@@ -425,8 +433,33 @@ export async function trackLocationUpdated(user: any, location: string): Promise
     logger.info({ userId: user.id }, 'Skipping location updated activity - user in invisible mode')
     return
   }
-  
+
   try {
+    // Look up this user's last broadcast location_updated activity directly
+    // from the activity_feed table (already written by createActivity below)
+    // instead of in-memory state — an in-memory Map resets on every server
+    // restart/deploy and is per-instance under horizontal scaling, so it
+    // couldn't reliably suppress a duplicate broadcast across those cases.
+    const { data: lastActivity, error: lookupError } = await supabase
+      .from('activity_feed')
+      .select('data, timestamp')
+      .eq('user_id', user.id)
+      .eq('type', ACTIVITY_TYPES.LOCATION_UPDATED)
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (lookupError) {
+      logger.warn({ error: lookupError, userId: user.id }, 'Failed to look up last location broadcast, proceeding anyway')
+    } else if (lastActivity) {
+      const sameLocation = (lastActivity.data as any)?.location === location
+      const withinCooldown = Date.now() - new Date(lastActivity.timestamp).getTime() < LOCATION_BROADCAST_COOLDOWN_MS
+      if (sameLocation || withinCooldown) {
+        logger.debug({ userId: user.id, sameLocation, withinCooldown }, 'Skipping location updated activity - unchanged or within cooldown')
+        return
+      }
+    }
+
     await createActivity({
       type: ACTIVITY_TYPES.LOCATION_UPDATED,
       data: {

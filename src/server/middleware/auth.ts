@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express'
 import { StatusCodes } from 'http-status-codes'
-import { verifyJwt } from '../utils/jwt.js'
+import { verifyJwt, signJwt, shouldRenewToken } from '../utils/jwt.js'
 import { logger } from '../config/logger.js'
 
 export interface AuthRequest extends Request {
@@ -15,40 +15,51 @@ const failedAttempts = new Map<string, { count: number; resetTime: number }>()
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const ip = req.ip || req.socket.remoteAddress || 'unknown'
   
+  // Gates a REJECTION, not the request itself — a device presenting a
+  // currently-valid token must never be collateral-blocked by a past burst
+  // of failures from itself (e.g. many screens firing in parallel right as
+  // its old token expired). Only invoked right before a 401/format error
+  // would otherwise be returned, so brute-forcing with bad tokens still
+  // gets locked out, but a good token always gets through.
+  const isRateLimited = () => {
+    const attempts = failedAttempts.get(ip)
+    return !!attempts && attempts.count >= 20 && Date.now() < attempts.resetTime
+  }
+
   try {
     //console.log('🔐 Auth middleware - Path:', req.path, 'Method:', req.method)
-    
-    // Check for rate limiting on failed attempts
-    const attempts = failedAttempts.get(ip)
-    if (attempts && attempts.count >= 10 && Date.now() < attempts.resetTime) {
-      logger.warn(`Too many failed auth attempts from IP: ${ip}`)
-      return res.status(StatusCodes.TOO_MANY_REQUESTS).json({ 
-        error: 'Too many failed authentication attempts. Please try again later.' 
-      })
-    }
 
     const header = req.headers.authorization || ''
     //console.log('🔐 Auth header present:', !!header, 'Starts with Bearer:', header.startsWith('Bearer '))
-    
-    // Validate authorization header format
+
+    // Validate authorization header format.
+    // A missing/empty credential is NOT a brute-force signal — it's just an
+    // unauthenticated request (e.g. logged-out client, or a screen that fired
+    // before the token hydrated). Do NOT record a failed attempt for these,
+    // otherwise a not-logged-in client bans its own IP within a few requests.
     if (!header.startsWith('Bearer ')) {
       //console.log('❌ Auth failed: Invalid header format')
-      recordFailedAttempt(ip)
-      return res.status(StatusCodes.UNAUTHORIZED).json({ 
-        error: 'Invalid authorization header format. Expected: Bearer <token>' 
+      return res.status(StatusCodes.UNAUTHORIZED).json({
+        error: 'Invalid authorization header format. Expected: Bearer <token>'
       })
     }
 
-    const token = header.slice(7)
-    
-    // Validate token is not empty
-    if (!token || token.length === 0) {
-      recordFailedAttempt(ip)
+    const token = header.slice(7).trim()
+
+    // Validate token is not empty or a stringified placeholder. Clients that
+    // build the header as `Bearer ${token}` with an undefined/null token send
+    // "Bearer undefined"/"Bearer null"; treat those as missing credentials
+    // (no brute-force penalty) rather than as forged tokens.
+    if (!token || token.length === 0 || token === 'undefined' || token === 'null') {
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Missing Bearer token' })
     }
 
     // Validate token length (JWT tokens are typically 100-500 characters)
     if (token.length > 1000) {
+      if (isRateLimited()) {
+        logger.warn(`Too many failed auth attempts from IP: ${ip}`)
+        return res.status(StatusCodes.TOO_MANY_REQUESTS).json({ error: 'Too many failed authentication attempts. Please try again later.' })
+      }
       recordFailedAttempt(ip)
       logger.warn(`Suspiciously long token from IP: ${ip}`)
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid token format' })
@@ -56,30 +67,32 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
 
     const payload = verifyJwt<{ sub: string; email: string; username: string }>(token)
     //console.log('🔐 JWT payload:', payload ? 'Valid' : 'Invalid', payload?.sub ? `User: ${payload.sub}` : '')
-    
-    if (!payload || !payload.sub) {
+
+    if (!payload || !payload.sub || typeof payload.sub !== 'string' || payload.sub.length === 0) {
       //console.log('❌ Auth failed: Invalid token or missing sub')
+      if (isRateLimited()) {
+        logger.warn(`Too many failed auth attempts from IP: ${ip}`)
+        return res.status(StatusCodes.TOO_MANY_REQUESTS).json({ error: 'Too many failed authentication attempts. Please try again later.' })
+      }
       recordFailedAttempt(ip)
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid token' })
-    }
-
-    // Validate payload structure
-    if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
-      //console.log('❌ Auth failed: Invalid payload structure')
-      recordFailedAttempt(ip)
-      return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid token payload' })
     }
 
     // Clear failed attempts on successful auth
     failedAttempts.delete(ip)
 
-    req.user = { 
-      id: payload.sub, 
-      email: payload.email || '', 
-      username: payload.username || '' 
+    req.user = {
+      id: payload.sub,
+      email: payload.email || '',
+      username: payload.username || ''
     }
     req.token = token
-    
+
+    if (shouldRenewToken(token)) {
+      const renewed = signJwt({ sub: payload.sub, email: payload.email || '', username: payload.username || '' })
+      res.setHeader('X-Renewed-Token', renewed)
+    }
+
     //console.log('✅ Auth successful - User ID:', payload.sub)
     return next()
   } catch (e) {

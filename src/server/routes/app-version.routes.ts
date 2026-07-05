@@ -5,6 +5,34 @@ import type { AuthRequest } from '../middleware/auth.js'
 
 const router = Router()
 
+type Platform = 'android' | 'ios'
+
+const BASELINE_VERSION_CONFIG: Record<Platform, {
+  min_version: string
+  latest_version: string
+  force_update: boolean
+  update_message: string
+  optional_update_message: string
+  store_url: string
+}> = {
+  android: {
+    min_version: '2.0.0',
+    latest_version: '2.0.1',
+    force_update: false,
+    update_message: 'Circle 2.x is required for the best experience. Please update to continue.',
+    optional_update_message: 'New update available with major improvements!',
+    store_url: 'https://play.google.com/store/apps/details?id=com.orincore.Circle'
+  },
+  ios: {
+    min_version: '2.0.0',
+    latest_version: '2.0.1',
+    force_update: false,
+    update_message: 'Circle 2.x is required for the best experience. Please update to continue.',
+    optional_update_message: 'New update available with major improvements!',
+    store_url: 'https://apps.apple.com/app/circle/id000000000'
+  }
+}
+
 /**
  * Compare two semantic version strings
  * Returns: -1 if v1 < v2, 0 if equal, 1 if v1 > v2
@@ -32,6 +60,7 @@ function compareVersions(v1: string, v2: string): number {
 router.get('/check', async (req, res) => {
   try {
     const { version, platform = 'android' } = req.query
+    const normalizedPlatform = (String(platform).toLowerCase() === 'ios' ? 'ios' : 'android') as Platform
 
     if (!version || typeof version !== 'string') {
       return res.status(400).json({ error: 'Version parameter is required' })
@@ -41,27 +70,36 @@ router.get('/check', async (req, res) => {
     const { data: config, error } = await supabase
       .from('app_version_config')
       .select('*')
-      .eq('platform', platform)
+      .eq('platform', normalizedPlatform)
       .single()
 
     if (error || !config) {
-      // No config found, app is up to date (default behavior)
+      // No config found, fall back to baseline defaults so new major versions are recognised
+      const baseline = BASELINE_VERSION_CONFIG[normalizedPlatform]
+      const needsUpdate = compareVersions(version, baseline.min_version) < 0
+      const hasNewerVersion = compareVersions(version, baseline.latest_version) < 0
+
       return res.json({
-        updateRequired: false,
-        forceUpdate: false,
+        updateRequired: needsUpdate,
+        forceUpdate: needsUpdate && baseline.force_update,
         currentVersion: version,
-        latestVersion: version,
-        minVersion: version,
-        message: null,
-        storeUrl: platform === 'android' 
-          ? 'https://play.google.com/store/apps/details?id=com.orincore.Circle'
-          : 'https://apps.apple.com/app/circle/id000000000'
+        latestVersion: baseline.latest_version,
+        minVersion: baseline.min_version,
+        message: needsUpdate ? baseline.update_message : (hasNewerVersion ? baseline.optional_update_message : null),
+        storeUrl: baseline.store_url,
+        hasOptionalUpdate: hasNewerVersion && !needsUpdate
       })
     }
 
-    const minVersion = config.min_version || '1.0.0'
-    const latestVersion = config.latest_version || version
-    const forceUpdate = config.force_update || false
+    const baseline = BASELINE_VERSION_CONFIG[normalizedPlatform]
+    const mergedConfig = {
+      ...baseline,
+      ...config
+    }
+
+    const minVersion = mergedConfig.min_version || baseline.min_version
+    const latestVersion = mergedConfig.latest_version || baseline.latest_version
+    const forceUpdate = mergedConfig.force_update ?? baseline.force_update
     
     // Check if current version is below minimum
     const needsUpdate = compareVersions(version, minVersion) < 0
@@ -76,11 +114,9 @@ router.get('/check', async (req, res) => {
       latestVersion: latestVersion,
       minVersion: minVersion,
       message: needsUpdate 
-        ? (config.update_message || 'A new version of Circle is available. Please update to continue.')
-        : (hasNewerVersion ? (config.optional_update_message || 'A new version is available!') : null),
-      storeUrl: config.store_url || (platform === 'android' 
-        ? 'https://play.google.com/store/apps/details?id=com.orincore.Circle'
-        : 'https://apps.apple.com/app/circle/id000000000'),
+        ? (mergedConfig.update_message || baseline.update_message)
+        : (hasNewerVersion ? (mergedConfig.optional_update_message || baseline.optional_update_message) : null),
+      storeUrl: mergedConfig.store_url || baseline.store_url,
       hasOptionalUpdate: hasNewerVersion && !needsUpdate
     })
   } catch (error) {
@@ -115,33 +151,20 @@ router.get('/config', requireAuth, requireAdmin, async (req: AuthRequest, res) =
     }
 
     // Return configs or defaults
-    const defaultConfigs = {
-      android: {
-        platform: 'android',
-        min_version: '1.0.0',
-        latest_version: '1.0.0',
-        force_update: false,
-        update_message: 'A new version of Circle is available. Please update to continue.',
-        optional_update_message: 'A new version is available with new features!',
-        store_url: 'https://play.google.com/store/apps/details?id=com.orincore.Circle'
-      },
-      ios: {
-        platform: 'ios',
-        min_version: '1.0.0',
-        latest_version: '1.0.0',
-        force_update: false,
-        update_message: 'A new version of Circle is available. Please update to continue.',
-        optional_update_message: 'A new version is available with new features!',
-        store_url: 'https://apps.apple.com/app/circle/id000000000'
-      }
+    const baselineConfigs = {
+      android: { platform: 'android', ...BASELINE_VERSION_CONFIG.android },
+      ios: { platform: 'ios', ...BASELINE_VERSION_CONFIG.ios }
     }
 
     // Merge with existing configs
-    const result: Record<string, typeof defaultConfigs.android> = { ...defaultConfigs }
+    const result: Record<string, typeof baselineConfigs.android> = { ...baselineConfigs }
     if (configs) {
-      configs.forEach((config: typeof defaultConfigs.android) => {
+      configs.forEach((config: typeof baselineConfigs.android) => {
         if (config.platform === 'android' || config.platform === 'ios') {
-          result[config.platform] = config
+          result[config.platform] = {
+            ...baselineConfigs[config.platform],
+            ...config
+          }
         }
       })
     }
@@ -182,16 +205,16 @@ router.put('/config', requireAuth, requireAdmin, async (req: AuthRequest, res) =
       return res.status(400).json({ error: 'Invalid latest_version format. Use semantic versioning (e.g., 1.0.0)' })
     }
 
+    const baseline = BASELINE_VERSION_CONFIG[platform as Platform]
+
     const configData = {
       platform,
-      min_version: min_version || '1.0.0',
-      latest_version: latest_version || min_version || '1.0.0',
-      force_update: force_update ?? false,
-      update_message: update_message || 'A new version of Circle is available. Please update to continue.',
-      optional_update_message: optional_update_message || 'A new version is available with new features!',
-      store_url: store_url || (platform === 'android' 
-        ? 'https://play.google.com/store/apps/details?id=com.orincore.Circle'
-        : 'https://apps.apple.com/app/circle/id000000000'),
+      min_version: min_version || baseline.min_version,
+      latest_version: latest_version || min_version || baseline.latest_version,
+      force_update: force_update ?? baseline.force_update,
+      update_message: update_message || baseline.update_message,
+      optional_update_message: optional_update_message || baseline.optional_update_message,
+      store_url: store_url || baseline.store_url,
       updated_at: new Date().toISOString(),
       updated_by: req.user!.id
     }

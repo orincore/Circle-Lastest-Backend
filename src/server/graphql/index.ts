@@ -3,7 +3,7 @@ import { expressMiddleware } from '@apollo/server/express4'
 import { typeDefs } from './schema.js'
 import { resolvers } from './resolvers.js'
 import express, { type Express } from 'express'
-import { verifyJwt } from '../utils/jwt.js'
+import { verifyJwt, signJwt, shouldRenewToken } from '../utils/jwt.js'
 
 export async function setupGraphQL(app: Express) {
   try {
@@ -11,14 +11,18 @@ export async function setupGraphQL(app: Express) {
     await server.start()
 
     app.use('/graphql', express.json(), expressMiddleware(server, {
-      context: async ({ req }) => {
+      context: async ({ req, res }) => {
         const header = req.headers.authorization || ''
         const token = header.startsWith('Bearer ') ? header.slice(7) : undefined
         if (!token) return { user: null }
-        
+
         try {
           const payload = verifyJwt<{ sub: string; email: string; username: string }>(token)
           const user = payload ? { id: payload.sub, email: payload.email, username: payload.username } : null
+          if (user && shouldRenewToken(token)) {
+            const renewed = signJwt({ sub: user.id, email: user.email || '', username: user.username || '' })
+            res.setHeader('X-Renewed-Token', renewed)
+          }
           return { user }
         } catch (error) {
           return { user: null }

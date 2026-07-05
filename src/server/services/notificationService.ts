@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js';
 import { emitToUser } from '../sockets/index.js';
+import { invalidateNotificationsCache } from './cache.js';
 
 export interface NotificationData {
   recipient_id: string;
@@ -113,6 +114,9 @@ export class NotificationService {
 
       //console.log('✅ Notification inserted successfully:', JSON.stringify(notification, null, 2));
 
+      // New notification for the recipient — drop their cached list + count.
+      await invalidateNotificationsCache(notificationData.recipient_id);
+
       // Emit real-time notification to user
       try {
         emitToUser(notificationData.recipient_id, 'notification:new', {
@@ -190,6 +194,7 @@ export class NotificationService {
         return false;
       }
 
+      await invalidateNotificationsCache(userId);
       return true;
     } catch (error) {
       console.error('❌ Failed to mark notification as read:', error);
@@ -212,6 +217,8 @@ export class NotificationService {
         console.error('❌ Error deleting notification:', error);
         return false;
       }
+
+      await invalidateNotificationsCache(userId);
 
       // Emit real-time notification deletion
       emitToUser(userId, 'notification:deleted', { notificationId });
@@ -250,6 +257,9 @@ export class NotificationService {
         console.error('❌ Error deleting friend request notifications:', error1 || error2);
         return false;
       }
+
+      await invalidateNotificationsCache(userId1);
+      await invalidateNotificationsCache(userId2);
 
       // Emit real-time notification deletion to both users
       emitToUser(userId1, 'notification:friend_request_removed', { otherUserId: userId2 });
@@ -403,6 +413,9 @@ export class NotificationService {
         console.error('❌ Error creating new user notifications:', error);
         return;
       }
+
+      // Invalidate each recipient's notification cache.
+      await Promise.all(potentialMatchIds.map(userId => invalidateNotificationsCache(userId)));
 
       // Emit real-time notifications
       potentialMatchIds.forEach(userId => {

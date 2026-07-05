@@ -31,32 +31,65 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
       }
     }
 
-    // Optionally load message counts (non-deleted, post-clear)
+    // Optionally load UNREAD counts (messages from others without a read
+    // receipt by this user). Previously this counted ALL messages in the chat,
+    // which made every badge wrong — so the client had it disabled and badges
+    // were 0 on launch until a realtime event arrived.
     let countsMap = new Map<string, number>()
     if (includeCounts && chatIds.length > 0) {
-      // For simplicity (and to avoid heavy queries), compute per chat sequentially
-      // Optimizations can batch via RPC if needed later
       for (const chatId of chatIds) {
-        // Check user-specific clear date
-        const { data: deletion } = await supabase
-          .from('chat_deletions')
-          .select('deleted_at')
-          .eq('chat_id', chatId)
-          .eq('user_id', userId)
-          .maybeSingle()
+        try {
+          // Prefer the same RPC the socket layer uses (single source of truth).
+          const { data: rpcCount, error: rpcError } = await supabase.rpc('get_unread_count', {
+            p_chat_id: chatId,
+            p_user_id: userId,
+          })
 
-        let q = supabase
-          .from('messages')
-          .select('*', { count: 'exact', head: true })
-          .eq('chat_id', chatId)
-          .eq('is_deleted', false)
+          if (!rpcError && typeof rpcCount === 'number') {
+            countsMap.set(chatId, rpcCount)
+            continue
+          }
 
-        if (deletion?.deleted_at) {
-          q = q.gt('created_at', deletion.deleted_at)
+          // Fallback: count messages from others (post-clear, not deleted) that
+          // this user has no 'read' receipt for.
+          const { data: deletion } = await supabase
+            .from('chat_deletions')
+            .select('deleted_at')
+            .eq('chat_id', chatId)
+            .eq('user_id', userId)
+            .maybeSingle()
+
+          let q = supabase
+            .from('messages')
+            .select('id')
+            .eq('chat_id', chatId)
+            .eq('is_deleted', false)
+            .neq('sender_id', userId)
+
+          if (deletion?.deleted_at) {
+            q = q.gt('created_at', deletion.deleted_at)
+          }
+
+          const { data: msgs } = await q
+          const ids = (msgs || []).map(m => m.id)
+          if (ids.length === 0) {
+            countsMap.set(chatId, 0)
+            continue
+          }
+
+          const { data: reads } = await supabase
+            .from('message_receipts')
+            .select('message_id')
+            .eq('status', 'read')
+            .eq('user_id', userId)
+            .in('message_id', ids)
+
+          const readSet = new Set((reads || []).map(r => r.message_id))
+          countsMap.set(chatId, ids.filter(id => !readSet.has(id)).length)
+        } catch (countError) {
+          console.error('chat-list unread count error for chat', chatId, countError)
+          countsMap.set(chatId, 0)
         }
-
-        const { count } = await q
-        countsMap.set(chatId, count ?? 0)
       }
     }
 

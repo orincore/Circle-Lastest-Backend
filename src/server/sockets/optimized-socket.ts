@@ -4,7 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter'
 import { logger } from '../config/logger.js'
 import { verifyJwt } from '../utils/jwt.js'
 import { setTyping, getTyping } from '../services/chat.js'
-import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction } from '../repos/chat.repo.js'
+import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction, invalidateChatCaches, consumeViewOnceMessage } from '../repos/chat.repo.js'
 import { supabase } from '../config/supabase.js'
 import { getStatus } from '../services/matchmaking-optimized.js'
 import { NotificationService } from '../services/notificationService.js'
@@ -71,6 +71,96 @@ async function emitUnreadCountUpdate(chatId: string, userId: string) {
     
   } catch (error) {
     console.error('Error calculating/emitting unread count:', error)
+  }
+}
+
+// When a user (re)connects, mark every message they received while offline as
+// DELIVERED and notify each sender, so the sender's ticks upgrade from single
+// (sent) to double-grey (delivered) the moment the recipient comes online —
+// WhatsApp behaviour. Idempotent: messages already delivered/read are skipped.
+async function flushPendingDeliveries(userId: string) {
+  try {
+    const { data: memberships } = await supabase
+      .from('chat_members')
+      .select('chat_id')
+      .eq('user_id', userId)
+    const chatIds = (memberships || []).map(m => m.chat_id)
+    if (chatIds.length === 0) return
+
+    // Recent messages from OTHERS across the user's chats.
+    const { data: msgs } = await supabase
+      .from('messages')
+      .select('id, sender_id, chat_id')
+      .in('chat_id', chatIds)
+      .neq('sender_id', userId)
+      .eq('is_deleted', false)
+      .order('created_at', { ascending: false })
+      .limit(500)
+    if (!msgs || msgs.length === 0) return
+
+    const msgIds = msgs.map(m => m.id)
+
+    // Skip any that already have a delivered/read receipt by this user.
+    const { data: receipts } = await supabase
+      .from('message_receipts')
+      .select('message_id')
+      .eq('user_id', userId)
+      .in('status', ['delivered', 'read'])
+      .in('message_id', msgIds)
+    const alreadyDone = new Set((receipts || []).map(r => r.message_id))
+
+    const pending = msgs.filter(m => !alreadyDone.has(m.id))
+    if (pending.length === 0) return
+
+    for (const m of pending) {
+      try {
+        await insertReceipt(m.id, userId, 'delivered')
+        // chatId is required so the conversation screen's receipt handler
+        // (which filters by chatId) actually applies the update.
+        emitToUser(m.sender_id, 'chat:message:delivery_receipt', {
+          messageId: m.id,
+          userId,
+          status: 'delivered',
+          chatId: m.chat_id,
+        })
+      } catch (e) {
+        logger.error({ error: e, messageId: m.id, userId }, 'Failed to flush delivery for message')
+      }
+    }
+    logger.info({ userId, delivered: pending.length }, 'Flushed pending deliveries on connect')
+  } catch (error) {
+    logger.error({ error, userId }, 'flushPendingDeliveries failed')
+  }
+}
+
+// Tell a user's chat partners that the user just came online / went offline.
+// Presence is per-chat (`chat:presence` carries chatId) so each partner's open
+// conversation can reflect it. "Online" = the user has >=1 live socket.
+async function broadcastPresenceToPartners(userId: string, isOnline: boolean) {
+  try {
+    const { data: memberships } = await supabase
+      .from('chat_members')
+      .select('chat_id')
+      .eq('user_id', userId)
+    const chatIds = (memberships || []).map(m => m.chat_id)
+    if (chatIds.length === 0) return
+
+    const { data: others } = await supabase
+      .from('chat_members')
+      .select('chat_id, user_id')
+      .in('chat_id', chatIds)
+      .neq('user_id', userId)
+
+    for (const o of (others || [])) {
+      emitToUser(o.user_id, 'chat:presence', {
+        chatId: o.chat_id,
+        userId,           // who this presence is about
+        isOnline,
+        online: isOnline, // legacy field
+      })
+    }
+  } catch (error) {
+    logger.error({ error, userId }, 'Failed to broadcast presence to partners')
   }
 }
 
@@ -278,21 +368,7 @@ export function emitToUser(userId: string, event: string, payload: any) {
       return
     }
     
-    const room = ioRef.sockets.adapter.rooms.get(userId)
-    const connectedSockets = room ? room.size : 0
-    
-    logger.info({ 
-      userId, 
-      event, 
-      connectedSockets,
-      payloadKeys: Object.keys(payload || {})
-    }, '📡 Emitting to user')
-    
     ioRef.to(userId).emit(event, payload)
-    
-    if (connectedSockets === 0) {
-      logger.warn({ userId, event }, '⚠️ No connected sockets for user - event may not be received')
-    }
   } catch (error) {
     logger.error({ error, userId, event }, 'Failed to emit to user')
   }
@@ -465,12 +541,10 @@ export async function initOptimizedSocket(server: Server) {
     const prev = roomCounts.get(room) || 0
     const next = Math.max(0, prev + delta)
     roomCounts.set(room, next)
-    const chatId = room.startsWith('chat:') ? room.slice(5) : undefined
-    if (chatId) {
-      // Emit both `online` and `isOnline` for backward/forward compatibility with clients
-      const isOnline = next > 1
-      io.to(room).emit('chat:presence', { chatId, online: isOnline, isOnline })
-    }
+    // NOTE: presence is no longer derived from room socket counts (that counted
+    // your own socket and stale memberships, so it showed "online" whenever you
+    // had the chat open). Real presence is broadcast per-user on connect/
+    // disconnect via broadcastPresenceToPartners and answered on chat:join.
   }
 
   function bumpActive(io: IOServer, room: string, delta: number) {
@@ -482,6 +556,38 @@ export async function initOptimizedSocket(server: Server) {
       const isActive = next > 0
       io.to(room).emit('chat:presence:active', { chatId, isActive })
     }
+  }
+
+  // Whether `userId` currently has this specific chat screen open on ANY of
+  // their connected devices (tracked per-socket via chat:active/chat:inactive
+  // — see those handlers below). activeCounts is a per-room aggregate that
+  // can't tell the two participants apart (the sender's own socket keeps a
+  // 1-on-1 chat's count >= 1 while they're mid-conversation), so push-
+  // notification gating needs to check the RECIPIENT's own sockets directly.
+  function isUserActiveInChat(io: IOServer, userId: string, chatId: string): boolean {
+    const room = io.sockets.adapter.rooms.get(userId)
+    if (!room) return false
+    for (const socketId of room) {
+      const sock = io.sockets.sockets.get(socketId)
+      const activeChats = (sock?.data as any)?.activeChats
+      if (activeChats instanceof Set && activeChats.has(chatId)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  // Push notification body text. Media messages have empty `text`, so the
+  // old `msg.text || 'New message'` fallback showed a generic, unhelpful
+  // "New message" for every photo/video instead of describing what it is —
+  // and for view-once media it must never reveal any real content anyway.
+  function describeMessageForNotification(msg: { text?: string; mediaType?: string; isViewOnce?: boolean }): string {
+    if (msg.isViewOnce) {
+      return msg.mediaType === 'video' ? '🔒 View once video' : '🔒 View once photo'
+    }
+    if (msg.mediaType === 'video') return '🎥 Video'
+    if (msg.mediaType === 'image') return '📷 Photo'
+    return msg.text || 'New message'
   }
 
   io.on('connection', (socket) => {
@@ -516,6 +622,18 @@ export async function initOptimizedSocket(server: Server) {
         
         // Check for pending matchmaking proposals when user connects
         checkPendingProposals(user.id)
+
+        // Mark messages received while offline as delivered and notify senders
+        // so their ticks upgrade sent -> delivered immediately on (re)connect.
+        flushPendingDeliveries(user.id).catch(err =>
+          logger.error({ error: err, userId: user.id }, 'Failed to flush pending deliveries on connect')
+        )
+
+        // Announce online presence to chat partners on the user's FIRST live
+        // connection (connectionCounts was already incremented in auth mw).
+        if ((connectionCounts.get(user.id) || 0) === 1) {
+          broadcastPresenceToPartners(user.id, true).catch(() => {})
+        }
       } catch (error) {
         logger.error({ error, userId: user.id }, 'Failed to join user room')
       }
@@ -734,6 +852,73 @@ export async function initOptimizedSocket(server: Server) {
         }
       } catch (error) {
         logger.error({ error, messageId, userId }, 'Failed to mark message as read')
+      }
+    })
+
+    // Consume a view-once message: the ONLY path that ever hands out the real
+    // media URL. Atomic (consumeViewOnceMessage guards on view_once_viewed_at
+    // IS NULL), restricted to the recipient (not the sender — the sender
+    // already has the original file on their own device, and letting them
+    // "view" it here would risk burning the recipient's one-and-only view),
+    // and best-effort deletes the S3 object afterward so a captured URL can't
+    // be reused even out-of-band.
+    socket.on('chat:message:viewed', async (
+      { chatId, messageId }: { chatId: string; messageId: string },
+      callback?: (response: { error?: string; mediaUrl?: string; mediaType?: string }) => void
+    ) => {
+      resetTimeout()
+      const userId: string | undefined = user?.id
+      const respond = typeof callback === 'function' ? callback : () => {}
+
+      if (!userId || !chatId || !messageId) {
+        respond({ error: 'invalid_request' })
+        return
+      }
+
+      try {
+        const result = await consumeViewOnceMessage(messageId, chatId, userId)
+        if (!result.ok) {
+          respond({ error: result.reason })
+          return
+        }
+        if (!result.mediaUrl) {
+          respond({ error: 'not_found' })
+          return
+        }
+
+        respond({ mediaUrl: result.mediaUrl, mediaType: result.mediaType || undefined })
+
+        // Let the sender's other devices know it's been opened (e.g. to flip
+        // their own bubble to "Opened"), without ever sending them the URL.
+        io.to(result.senderId).emit('chat:message:view_once_consumed', { chatId, messageId })
+
+        // Delete the S3 object so the URL eventually 404s even if captured —
+        // but NOT immediately. The real one-time-view guarantee is already
+        // the atomic view_once_viewed_at update above (no one can ever be
+        // handed this URL again); this deletion is defense-in-depth on top
+        // of that. Deleting it right away raced the client's own image
+        // fetch: the ack still has to cross the network, trigger a
+        // re-render, mount the image component, and THEN start its own HTTP
+        // request for the bytes — which reliably lost the race against this
+        // single S3 API call, so the recipient saw a blank/404'd image every
+        // time. A short grace period gives that fetch time to complete.
+        const mediaUrl = result.mediaUrl
+        setTimeout(() => {
+          void (async () => {
+            try {
+              const keyIndex = mediaUrl.indexOf('chat-media/')
+              if (keyIndex !== -1) {
+                const { S3Service } = await import('../../services/s3Service.js')
+                await S3Service.deleteFile(mediaUrl.slice(keyIndex))
+              }
+            } catch (deleteError) {
+              logger.error({ error: deleteError, messageId }, 'Failed to delete view-once media from S3')
+            }
+          })()
+        }, 60_000)
+      } catch (error) {
+        logger.error({ error, messageId, userId }, 'Failed to consume view-once message')
+        respond({ error: 'server_error' })
       }
     })
 
@@ -1098,8 +1283,11 @@ export async function initOptimizedSocket(server: Server) {
 
         //console.log(`✅ Chat ${chatId} cleared successfully for user ${userId} (user-specific deletion)`)
 
+        // Clearing changes this user's inbox and message history — drop caches.
+        await invalidateChatCaches(chatId)
+
         // Notify only the user who cleared the chat
-        socket.emit('chat:clear:success', { 
+        socket.emit('chat:clear:success', {
           chatId,
           message: 'Chat cleared successfully'
         })
@@ -1153,13 +1341,15 @@ export async function initOptimizedSocket(server: Server) {
           }
 
           return {
-            id: r.id, 
-            chatId: r.chat_id, 
-            senderId: r.sender_id, 
+            id: r.id,
+            chatId: r.chat_id,
+            senderId: r.sender_id,
             text: r.text,
-            mediaUrl: r.media_url,
+            mediaUrl: r.media_url, // already stripped by getChatMessages for view-once
             mediaType: r.media_type,
             thumbnail: r.thumbnail,
+            isViewOnce: (r as any).is_view_once || false,
+            viewOnceViewed: !!(r as any).view_once_viewed_at,
             reply_to_id: r.reply_to_id, // Include reply reference
             createdAt: new Date(r.created_at).getTime(),
             updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined,
@@ -1179,8 +1369,27 @@ export async function initOptimizedSocket(server: Server) {
       } catch (error) {
         logger.error({ error, chatId }, 'Failed to send chat history')
       }
-      
+
       bumpRoom(io, room, 1)
+
+      // Tell the opener whether the OTHER member is currently online, so the
+      // header shows the correct status immediately on open (not just after the
+      // other user next connects/disconnects).
+      try {
+        const members = await getCachedChatMembers(chatId)
+        const otherId = (members || []).find(id => id !== userId)
+        if (otherId) {
+          const otherOnline = (connectionCounts.get(otherId) || 0) > 0
+          socket.emit('chat:presence', {
+            chatId,
+            userId: otherId,
+            isOnline: otherOnline,
+            online: otherOnline,
+          })
+        }
+      } catch (presenceError) {
+        logger.error({ error: presenceError, chatId }, 'Failed to send initial presence on join')
+      }
     })
 
     // Chat: leave room
@@ -1231,27 +1440,38 @@ export async function initOptimizedSocket(server: Server) {
     })
 
     // Chat: send message with enhanced rate limiting and validation
-    socket.on('chat:message', async ({ 
-      chatId, 
-      text, 
-      mediaUrl, 
-      mediaType, 
+    socket.on('chat:message', async ({
+      chatId,
+      text,
+      mediaUrl,
+      mediaType,
       thumbnail,
       replyToId,
-      tempId
-    }: { 
-      chatId: string; 
+      tempId,
+      isViewOnce
+    }: {
+      chatId: string;
       text: string;
       mediaUrl?: string;
       mediaType?: string;
       thumbnail?: string;
       replyToId?: string;
       tempId?: string;
+      isViewOnce?: boolean;
     }) => {
       resetTimeout()
       const userId: string | undefined = user?.id
-      // Allow message if either text or media is provided
-      if (!chatId || !userId || (!text?.trim() && !mediaUrl)) return
+      // Don't silently drop. A missing userId means the socket connected without
+      // a valid token — tell the client so it can prompt a re-login instead of
+      // the message just vanishing.
+      if (!userId) {
+        socket.emit('chat:message:error', { error: 'Your session has expired. Please sign in again.', reason: 'unauthenticated' })
+        return
+      }
+      if (!chatId || (!text?.trim() && !mediaUrl)) {
+        socket.emit('chat:message:error', { error: 'Message could not be sent.', reason: 'invalid_request' })
+        return
+      }
       
       // Stricter rate limiting for messages
       if (!(await checkEventRateLimit(userId, 'chat:message'))) {
@@ -1269,11 +1489,17 @@ export async function initOptimizedSocket(server: Server) {
       try {
         // Get chat members using cache for faster lookup
         const memberIds = await getCachedChatMembers(chatId)
-        
-        if (!memberIds || memberIds.length !== 2) return // Only handle 1:1 chats for now
-        
+
+        if (!memberIds || memberIds.length !== 2) {
+          socket.emit('chat:message:error', { error: 'This conversation is unavailable.', reason: 'invalid_chat' })
+          return // Only handle 1:1 chats for now
+        }
+
         const otherUserId = memberIds.find(id => id !== userId)
-        if (!otherUserId) return
+        if (!otherUserId) {
+          socket.emit('chat:message:error', { error: 'This conversation is unavailable.', reason: 'invalid_chat' })
+          return
+        }
         
         // Check if either user has blocked the other (cached)
         const blocked = await isBlocked(userId, otherUserId)
@@ -1349,22 +1575,24 @@ export async function initOptimizedSocket(server: Server) {
         // Regular chats (not blind date) bypass all filtering - proceed directly
         
         const row = await insertMessage(
-          chatId, 
-          userId, 
-          text?.trim() || '', 
-          mediaUrl, 
-          mediaType, 
+          chatId,
+          userId,
+          text?.trim() || '',
+          mediaUrl,
+          mediaType,
           thumbnail,
-          replyToId
+          replyToId,
+          isViewOnce
         )
-        const msg = { 
-          id: row.id, 
-          chatId: row.chat_id, 
-          senderId: row.sender_id, 
+        const msg = {
+          id: row.id,
+          chatId: row.chat_id,
+          senderId: row.sender_id,
           text: row.text,
-          mediaUrl: row.media_url,
+          mediaUrl: row.media_url, // already stripped by insertMessage for view-once
           mediaType: row.media_type,
           thumbnail: row.thumbnail,
+          isViewOnce: row.is_view_once || false,
           reply_to_id: row.reply_to_id,
           createdAt: new Date(row.created_at).getTime(),
           tempId // Include tempId for optimistic update matching
@@ -1432,29 +1660,59 @@ export async function initOptimizedSocket(server: Server) {
                 try {
                   // Always send socket event to user's personal room
                   // This ensures chat list updates in real-time
-                  io.to(memberId).emit('chat:message:background', { 
-                    message: { 
-                      ...msg, 
+                  io.to(memberId).emit('chat:message:background', {
+                    message: {
+                      ...msg,
                       senderName,
                       senderAvatar,
                       isBlindDateChat
-                    } 
+                    }
                   })
-                  
+
+                  // Server-authoritative DELIVERED: if the recipient has a live
+                  // socket connection, the message has reached their device.
+                  // Record the receipt and tell the sender so the tick goes from
+                  // single (sent) to double-grey (delivered) without relying on
+                  // the client to round-trip a delivery event.
+                  if ((connectionCounts.get(memberId) || 0) > 0) {
+                    try {
+                      await insertReceipt(msg.id, memberId, 'delivered')
+                      io.to(userId).emit('chat:message:delivery_receipt', {
+                        messageId: msg.id,
+                        userId: memberId,
+                        status: 'delivered',
+                        chatId,
+                      })
+                    } catch (deliveryError) {
+                      logger.error({ error: deliveryError, messageId: msg.id, memberId }, 'Failed to auto-mark delivered')
+                    }
+                  }
+
+                  // Keep the recipient's unread badge accurate from a single
+                  // source of truth (the server), so chat-list counts don't drift.
+                  emitUnreadCountUpdate(chatId, memberId).catch((unreadError) => {
+                    logger.error({ error: unreadError, chatId, memberId }, 'Failed to emit unread count on new message')
+                  })
+
                   // Send push notification asynchronously (don't await to avoid blocking)
-                  import('../services/pushNotificationService.js').then(({ PushNotificationService }) => {
-                    PushNotificationService.sendMessageNotification(
-                      memberId,
-                      senderName, // Already masked for blind date
-                      msg.text || 'New message',
-                      chatId,
-                      msg.id
-                    ).catch(pushError => {
-                      logger.error({ error: pushError, recipientId: memberId }, 'Failed to send push notification')
+                  // — but only if the recipient doesn't already have this chat
+                  // open on some device; otherwise they'd get a redundant push
+                  // for a message they're already looking at in real time.
+                  if (!isUserActiveInChat(io, memberId, chatId)) {
+                    import('../services/pushNotificationService.js').then(({ PushNotificationService }) => {
+                      PushNotificationService.sendMessageNotification(
+                        memberId,
+                        senderName, // Already masked for blind date
+                        describeMessageForNotification(msg),
+                        chatId,
+                        msg.id
+                      ).catch(pushError => {
+                        logger.error({ error: pushError, recipientId: memberId }, 'Failed to send push notification')
+                      })
+                    }).catch(err => {
+                      logger.error({ error: err }, 'Failed to import push notification service')
                     })
-                  }).catch(err => {
-                    logger.error({ error: err }, 'Failed to import push notification service')
-                  })
+                  }
                 } catch (error) {
                   logger.error({ error, recipientId: memberId }, 'Error processing message delivery')
                 }
@@ -1593,10 +1851,14 @@ export async function initOptimizedSocket(server: Server) {
           //console.log('✅ Direct SQL: All messages marked as read efficiently')
         }
         
+        // Unread count for this user changed — drop their inbox cache so the
+        // chat list reflects zero unread immediately.
+        await invalidateChatCaches(chatId)
+
         // Emit minimal events for real-time updates
         io.to(`chat:${chatId}`).emit('chat:all-read', { chatId, by: userId })
         socket.emit('chat:mark-all-read:confirmed', { chatId, success: true })
-        
+
       } catch (error) {
         console.error('❌ Error in chat:mark-all-read:', error)
         socket.emit('chat:mark-all-read:confirmed', { chatId, success: false })
@@ -1877,7 +2139,13 @@ export async function initOptimizedSocket(server: Server) {
       }
       
       untrackConnection(userId)
-      
+
+      // If this was the user's LAST live connection, tell chat partners they're
+      // offline. (untrackConnection already decremented/removed the count.)
+      if (userId && (connectionCounts.get(userId) || 0) === 0) {
+        broadcastPresenceToPartners(userId, false).catch(() => {})
+      }
+
       // Clean up any stale matchmaking state for disconnected user
       if (userId) {
         // Import matchmaking service dynamically to avoid circular imports

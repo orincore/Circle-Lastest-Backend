@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { requireAuth, AuthRequest } from '../middleware/auth.js'
 import { supabase } from '../config/supabase.js'
 import { getCachedOrFetch, generateCacheKey } from '../services/explore-cache.js'
+import { cache, cacheKeys, PROFILE_TTL } from '../services/cache.js'
 
 const router = Router()
 
@@ -508,6 +509,27 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'User ID is required' })
     }
 
+    // Block check first — it's viewer-specific (depends on currentUserId), so it
+    // must run on every request and can't be part of the shared cached payload.
+    const { data: blocks } = await supabase
+      .from('blocks')
+      .select('blocker_id, blocked_id')
+      .or(`and(blocker_id.eq.${currentUserId},blocked_id.eq.${userId}),and(blocker_id.eq.${userId},blocked_id.eq.${currentUserId})`)
+
+    const isBlocked = blocks && blocks.length > 0
+
+    if (isBlocked) {
+      return res.status(403).json({ error: 'User profile not accessible' })
+    }
+
+    // The profile payload below (profile fields + stats) depends only on the
+    // target user, not the viewer, so it can be cached and shared across viewers.
+    const cacheKey = cacheKeys.profileView(userId)
+    const cachedUser = await cache.getJSON(cacheKey)
+    if (cachedUser) {
+      return res.json({ user: cachedUser })
+    }
+
     // Get user profile
     const { data: userProfile, error } = await supabase
       .from('profiles')
@@ -545,7 +567,7 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       })
       return res.status(404).json({ error: 'User not found' })
     }
-    
+
     if (!userProfile) {
       //console.log('No user profile found for userId:', userId)
       return res.status(404).json({ error: 'User not found' })
@@ -554,20 +576,6 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
     // Check if user is suspended or deleted
     if (userProfile.deleted_at || userProfile.is_suspended) {
       return res.status(404).json({ error: 'User not found' })
-    }
-
-
-
-    // Check if user is blocked
-    const { data: blocks } = await supabase
-      .from('blocks')
-      .select('blocker_id, blocked_id')
-      .or(`and(blocker_id.eq.${currentUserId},blocked_id.eq.${userId}),and(blocker_id.eq.${userId},blocked_id.eq.${currentUserId})`)
-
-    const isBlocked = blocks && blocks.length > 0
-
-    if (isBlocked) {
-      return res.status(403).json({ error: 'User profile not accessible' })
     }
 
     // Get user stats
@@ -626,6 +634,9 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
         messagesReceived: messagesReceived
       }
     }
+
+    // Cache the viewer-independent payload (invalidated on profile/friend changes).
+    await cache.setJSON(cacheKey, userData, PROFILE_TTL.view)
 
     //console.log('Returning user data:', userData)
     res.json({ user: userData })

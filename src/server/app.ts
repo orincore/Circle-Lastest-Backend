@@ -161,7 +161,7 @@ app.use(cors({
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token'],
-  exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining'],
+  exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-Renewed-Token'],
   maxAge: 600, // 10 minutes
 }))
 
@@ -233,7 +233,7 @@ app.use(rateLimit({
   max: 500, // Increased from 200 to 500
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many failed authentication attempts. Please try again later.' },
+  message: { error: 'Too many requests. Please slow down and try again shortly.' },
   skip: (req) => {
     // Skip health checks and certain API endpoints that are called frequently
     return req.path === '/health' || 

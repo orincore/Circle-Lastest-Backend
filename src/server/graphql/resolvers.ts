@@ -2,6 +2,7 @@ import type { Profile } from '../repos/profiles.repo.js'
 import { findById, updateLocation, updatePreferences, findNearbyUsers, findUsersInArea } from '../repos/profiles.repo.js'
 import { supabase } from '../config/supabase.js'
 import { trackLocationUpdated, trackInterestUpdated } from '../services/activityService.js'
+import { cache, cacheKeys, invalidateProfileCache, PROFILE_TTL } from '../services/cache.js'
 
 function toUser(u: Profile | null) {
   if (!u) return null
@@ -75,8 +76,13 @@ export const resolvers = {
     health: () => 'ok',
     me: async (_: any, __: any, ctx: any) => {
       if (!ctx?.user?.id) return null
+      const key = cacheKeys.profileSelf(ctx.user.id)
+      const cached = await cache.getJSON(key)
+      if (cached) return cached
       const profile = await findById(ctx.user.id)
-      return toUser(profile)
+      const user = toUser(profile)
+      if (user) await cache.setJSON(key, user, PROFILE_TTL.self)
+      return user
     },
     nearbyUsers: async (_: any, { latitude, longitude, radiusKm, limit }: any, ctx: any) => {
       if (!ctx?.user?.id) throw new Error('Unauthorized')
@@ -158,7 +164,11 @@ export const resolvers = {
           console.error('❌ Failed to track interests update activity:', error)
         }
       }
-      
+
+      // Profile details changed → drop every cached view of this profile so the
+      // user's own page and how others see them reload fresh.
+      await invalidateProfileCache(ctx.user.id, (data as Profile)?.username)
+
       return toUser(data as Profile)
     },
     updateLocation: async (_: any, { input }: any, ctx: any) => {
@@ -180,7 +190,9 @@ export const resolvers = {
       } catch (error) {
         console.error('❌ Failed to track location update activity:', error)
       }
-      
+
+      await invalidateProfileCache(ctx.user.id, updatedProfile?.username)
+
       return toUser(updatedProfile)
     },
     updatePreferences: async (_: any, { input }: any, ctx: any) => {
@@ -193,7 +205,9 @@ export const resolvers = {
         friendshipLocationPriority: input.friendshipLocationPriority,
         relationshipDistanceFlexible: input.relationshipDistanceFlexible
       })
-      
+
+      await invalidateProfileCache(ctx.user.id, updatedProfile?.username)
+
       return toUser(updatedProfile)
     }
   }

@@ -13,6 +13,7 @@ import {
   toggleReaction,
   removeReaction,
   getMessageReactions,
+  invalidateChatCaches,
   getChatMuteSetting,
   setChatMuteSetting,
   isChatMuted,
@@ -147,6 +148,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
   const mediaUrl = req.body?.mediaUrl
   const mediaType = req.body?.mediaType
   const thumbnail = req.body?.thumbnail
+  const isViewOnce = req.body?.isViewOnce === true
   const userId = req.user!.id
   
   // Require either text or media
@@ -232,7 +234,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     }
     // Regular chats (not blind date) bypass all filtering - proceed directly
     
-    const msg = await insertMessage(chatId, userId, text, mediaUrl, mediaType, thumbnail)
+    const msg = await insertMessage(chatId, userId, text, mediaUrl, mediaType, thumbnail, undefined, isViewOnce)
     
     // Emit real-time message to other user for chat list updates
     try {
@@ -449,6 +451,9 @@ router.delete('/:chatId', requireAuth, async (req: AuthRequest, res) => {
         return res.status(500).json({ error: 'Failed to clear chat' })
       }
     }
+
+    // Clearing changes this user's inbox + message history — drop caches.
+    await invalidateChatCaches(chatId)
 
     // Optionally notify only this user (frontends may listen to chat:list:changed)
     try { emitToUser(userId, 'chat:list:changed', { chatId }) } catch {}

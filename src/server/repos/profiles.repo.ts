@@ -167,7 +167,6 @@ export async function findNearbyUsers({
   
   if (error) {
     // Fallback to basic query if RPC function doesn't exist
-    console.warn('RPC function not found, using fallback query')
     const { data: fallbackData, error: fallbackError } = await supabase
       .from(TABLE)
       .select('*')
