@@ -681,20 +681,18 @@ export async function initOptimizedSocket(server: Server) {
 
       try {
         // Get message to find chat ID
-        const { data: message, error } = await supabase
-          .from('messages')
-          .select('chat_id, sender_id')
-          .eq('id', messageId)
-          .single()
+        const [message] = await db
+          .select({ chatId: messages.chatId, senderId: messages.senderId })
+          .from(messages)
+          .where(eq(messages.id, messageId))
+          .limit(1)
 
-        if (error || !message) {
-          //console.log('❌ Message not found or error:', error)
+        if (!message) {
           return
         }
 
         // Don't mark own messages as delivered
-        if (message.sender_id === userId) {
-          //console.log('❌ User trying to mark own message as delivered')
+        if (message.senderId === userId) {
           return
         }
 
@@ -708,14 +706,14 @@ export async function initOptimizedSocket(server: Server) {
           return
         }
 
-        //console.log(`✅ Delivery receipt added, notifying sender ${message.sender_id}`)
+        //console.log(`✅ Delivery receipt added, notifying sender ${message.senderId}`)
 
         // Notify sender
-        io.to(message.sender_id).emit('chat:message:delivery_receipt', {
+        io.to(message.senderId).emit('chat:message:delivery_receipt', {
           messageId,
           userId,
           status: 'delivered',
-          chatId: message.chat_id
+          chatId: message.chatId
         })
       } catch (error) {
         logger.error({ error, messageId, userId }, 'Failed to mark message as delivered')
@@ -781,20 +779,18 @@ export async function initOptimizedSocket(server: Server) {
 
       try {
         // Get message to find chat ID
-        const { data: message, error } = await supabase
-          .from('messages')
-          .select('chat_id, sender_id')
-          .eq('id', messageId)
-          .single()
+        const [message] = await db
+          .select({ chatId: messages.chatId, senderId: messages.senderId })
+          .from(messages)
+          .where(eq(messages.id, messageId))
+          .limit(1)
 
-        if (error || !message) {
-          //console.log('❌ Message not found or error:', error)
+        if (!message) {
           return
         }
 
         // Don't mark own messages as read
-        if (message.sender_id === userId) {
-          //console.log('❌ User trying to mark own message as read')
+        if (message.senderId === userId) {
           return
         }
 
@@ -808,40 +804,34 @@ export async function initOptimizedSocket(server: Server) {
           return
         }
 
-        //console.log(`✅ Read receipt added, notifying sender ${message.sender_id}`)
+        //console.log(`✅ Read receipt added, notifying sender ${message.senderId}`)
 
         // Notify sender
-        io.to(message.sender_id).emit('chat:message:read_receipt', {
+        io.to(message.senderId).emit('chat:message:read_receipt', {
           messageId,
           userId,
           status: 'read',
-          chatId: message.chat_id
+          chatId: message.chatId
         })
 
         // Also emit to chat room for real-time updates
-        io.to(`chat:${message.chat_id}`).emit('chat:read', {
-          chatId: message.chat_id,
+        io.to(`chat:${message.chatId}`).emit('chat:read', {
+          chatId: message.chatId,
           messageId,
           by: userId
         })
-        
+
         // Emit unread count update to the user who read the message
         try {
-          await emitUnreadCountUpdate(message.chat_id, userId)
-          
+          await emitUnreadCountUpdate(message.chatId, userId)
+
           // Also get all chat members and emit unread count updates to all of them
           // This ensures the chat list updates for all users when messages are read
-          const { data: members } = await supabase
-            .from('chat_members')
-            .select('user_id')
-            .eq('chat_id', message.chat_id)
-          
-          if (members) {
-            for (const member of members) {
-              if (member.user_id !== userId) {
-                // Emit unread count update to other chat members as well
-                await emitUnreadCountUpdate(message.chat_id, member.user_id)
-              }
+          const memberIds = await fetchChatMemberIds(message.chatId)
+          for (const memberId of memberIds) {
+            if (memberId !== userId) {
+              // Emit unread count update to other chat members as well
+              await emitUnreadCountUpdate(message.chatId, memberId)
             }
           }
         } catch (error) {
@@ -1770,17 +1760,11 @@ export async function initOptimizedSocket(server: Server) {
       
       // Also send to all chat members individually (for chat list unread count updates)
       try {
-        const { data: members } = await supabase
-          .from('chat_members')
-          .select('user_id')
-          .eq('chat_id', chatId)
-        
-        if (members) {
-          members.forEach((member: { user_id: string }) => {
-            io.to(member.user_id).emit('chat:read', { chatId, messageId, by: userId })
-          })
+        const memberIds = await fetchChatMemberIds(chatId)
+        for (const memberId of memberIds) {
+          io.to(memberId).emit('chat:read', { chatId, messageId, by: userId })
         }
-        
+
         // Emit updated unread count to the user who read the message
         await emitUnreadCountUpdate(chatId, userId)
       } catch (error) {
@@ -1799,55 +1783,51 @@ export async function initOptimizedSocket(server: Server) {
       }
       
       try {
-        // Ultra-efficient: Use a single SQL query to mark all messages as read
-        // This avoids fetching messages first, then inserting receipts
-        const { error: directInsertError } = await supabase.rpc('mark_chat_messages_read', {
-          p_chat_id: chatId,
-          p_user_id: userId
-        })
-        
-        if (directInsertError) {
-          //console.log('🔄 Direct SQL failed, using fallback batch method...')
-          
-          // Fallback: Get only unread messages to minimize operations
-          const { data: unreadMessages, error: messagesError } = await supabase
-            .from('messages')
-            .select('id')
-            .eq('chat_id', chatId)
-            .not('id', 'in', `(
-              SELECT message_id FROM message_receipts 
-              WHERE user_id = '${userId}' AND status = 'read'
-            )`)
-            .order('created_at', { ascending: false })
-            .limit(50) // Reduced limit for efficiency
-          
-          if (messagesError || !unreadMessages?.length) {
+        // Ultra-efficient: one SQL call marks the whole chat read.
+        // mark_chat_messages_read(p_chat_id uuid, p_user_id uuid) returns integer
+        // exists in the database (verified in pg_proc).
+        let rpcFailed = false
+        try {
+          await db.execute(sql`select mark_chat_messages_read(${chatId}::uuid, ${userId}::uuid)`)
+        } catch (rpcError) {
+          logger.warn({ error: rpcError, chatId, userId }, 'mark_chat_messages_read failed, using fallback')
+          rpcFailed = true
+        }
+
+        if (rpcFailed) {
+          // Fallback: mark only unread messages, batched
+          const unreadMessages = await db
+            .select({ id: messages.id })
+            .from(messages)
+            .where(and(
+              eq(messages.chatId, chatId),
+              notInArray(
+                messages.id,
+                db.select({ messageId: messageReceipts.messageId })
+                  .from(messageReceipts)
+                  .where(and(eq(messageReceipts.userId, userId), eq(messageReceipts.status, 'read')))
+              ),
+            ))
+            .orderBy(desc(messages.createdAt))
+            .limit(50)
+
+          if (!unreadMessages.length) {
             socket.emit('chat:mark-all-read:confirmed', { chatId, success: true, markedCount: 0 })
             return
           }
-          
-          // Batch upsert only unread messages
-          const receiptsToInsert = unreadMessages.map(msg => ({
-            message_id: msg.id,
-            user_id: userId,
-            status: 'read' as const
-          }))
-          
-          const { error: batchError } = await supabase
-            .from('message_receipts')
-            .upsert(receiptsToInsert, { onConflict: 'message_id,user_id,status' })
-          
-          if (batchError) {
-            console.error('❌ Batch fallback failed:', batchError)
-            socket.emit('chat:mark-all-read:confirmed', { chatId, success: false })
-            return
-          }
-          
-          //console.log(`✅ Fallback: Marked ${unreadMessages.length} unread messages`)
-        } else {
-          //console.log('✅ Direct SQL: All messages marked as read efficiently')
+
+          await db
+            .insert(messageReceipts)
+            .values(unreadMessages.map(msg => ({
+              messageId: msg.id,
+              userId,
+              status: 'read' as const,
+            })))
+            .onConflictDoNothing({
+              target: [messageReceipts.messageId, messageReceipts.userId, messageReceipts.status],
+            })
         }
-        
+
         // Unread count for this user changed — drop their inbox cache so the
         // chat list reflects zero unread immediately.
         await invalidateChatCaches(chatId)
