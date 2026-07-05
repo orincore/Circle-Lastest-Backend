@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { requireAuth, AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { blocks, chatMembers, friendships, messages, profiles } from '../db/schema.js'
 import { invalidateProfileCache } from '../services/cache.js'
 
 const router = Router()
@@ -17,37 +19,34 @@ router.get('/status/:userId', requireAuth, async (req: AuthRequest, res) => {
 
     // Check if they are already friends in the friendships table
     // Accept both 'active' and 'accepted' status
-    const { data: friendshipData, error: friendshipError } = await supabase
-      .from('friendships')
-      .select('*')
-      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
-      .in('status', ['active', 'accepted'])
-      .maybeSingle()
+    const [friendshipData] = await db.select().from(friendships)
+      .where(and(
+        or(
+          and(eq(friendships.user1Id, currentUserId), eq(friendships.user2Id, userId)),
+          and(eq(friendships.user1Id, userId), eq(friendships.user2Id, currentUserId)),
+        ),
+        inArray(friendships.status, ['active', 'accepted']),
+      ))
+      .limit(1)
 
-    //console.log(`🔍 Checking friendship between ${currentUserId} and ${userId}:`, friendshipData);
-
-    if (friendshipError && friendshipError.code !== 'PGRST116' && friendshipError.code !== '42P01') {
-      console.error('Error checking friendship:', friendshipError);
-    } else if (friendshipData) {
-      //console.log(`✅ Found active friendship, returning friends status`);
+    if (friendshipData) {
       return res.json({ status: 'friends' })
     }
 
     // Check for pending friend requests in friendships table
-    const { data: pendingRequest, error: requestError } = await supabase
-      .from('friendships')
-      .select('status, sender_id')
-      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
-      .eq('status', 'pending')
-      .maybeSingle()
-
-    if (requestError && requestError.code !== 'PGRST116') {
-      console.warn('Error checking pending requests:', requestError)
-    }
+    const [pendingRequest] = await db.select({ status: friendships.status, senderId: friendships.senderId }).from(friendships)
+      .where(and(
+        or(
+          and(eq(friendships.user1Id, currentUserId), eq(friendships.user2Id, userId)),
+          and(eq(friendships.user1Id, userId), eq(friendships.user2Id, currentUserId)),
+        ),
+        eq(friendships.status, 'pending'),
+      ))
+      .limit(1)
 
     if (pendingRequest) {
       // Return 'pending_sent' or 'pending_received' based on who sent it
-      const status = pendingRequest.sender_id === currentUserId ? 'pending_sent' : 'pending_received'
+      const status = pendingRequest.senderId === currentUserId ? 'pending_sent' : 'pending_received'
       return res.json({ status })
     }
 
@@ -58,277 +57,56 @@ router.get('/status/:userId', requireAuth, async (req: AuthRequest, res) => {
   }
 })
 
-// Send friend request
-router.post('/request', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const { receiverId, message } = req.body
-    const senderId = req.user!.id
-
-    //console.log('Sending friend request:', { senderId, receiverId, message })
-
-    if (!receiverId) {
-      return res.status(400).json({ error: 'Receiver ID is required' })
-    }
-
-    if (receiverId === senderId) {
-      return res.status(400).json({ error: 'Cannot send friend request to yourself' })
-    }
-
-    // Check if either user has blocked the other
-    const { data: blockCheck, error: blockError } = await supabase
-      .from('blocks')
-      .select('blocker_id, blocked_id')
-      .or(`and(blocker_id.eq.${senderId},blocked_id.eq.${receiverId}),and(blocker_id.eq.${receiverId},blocked_id.eq.${senderId})`)
-      .maybeSingle()
-
-    if (blockError && blockError.code !== 'PGRST116' && blockError.code !== '42P01') {
-      throw blockError
-    }
-
-    if (blockCheck) {
-      const isBlockedByOther = blockCheck.blocker_id === receiverId
-      const hasBlockedOther = blockCheck.blocker_id === senderId
-      
-      if (isBlockedByOther) {
-        return res.status(403).json({ error: 'You cannot send a friend request to this user' })
-      } else if (hasBlockedOther) {
-        return res.status(403).json({ error: 'You have blocked this user. Unblock them first to send a friend request.' })
-      }
-    }
-
-    // Check if they are already friends (manual query)
-    const smallerId = senderId < receiverId ? senderId : receiverId
-    const largerId = senderId > receiverId ? senderId : receiverId
-    
-    const { data: friendshipData, error: friendshipError } = await supabase
-      .from('friendships')
-      .select('*')
-      .eq('user1_id', smallerId)
-      .eq('user2_id', largerId)
-      .maybeSingle()
-
-    if (friendshipError && friendshipError.code !== 'PGRST116') throw friendshipError
-
-    if (friendshipData) {
-      return res.status(400).json({ error: 'Users are already friends' })
-    }
-
-    // Check if request already exists
-    const { data: existingRequest, error: existingError } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
-      .single()
-
-    if (existingError && existingError.code !== 'PGRST116') throw existingError
-
-    if (existingRequest) {
-      return res.status(400).json({ error: 'Friend request already exists' })
-    }
-
-    // Create friend request
-    //console.log('Creating friend request in database...')
-    const { data: request, error: requestError } = await supabase
-      .from('friend_requests')
-      .insert({
-        sender_id: senderId,
-        receiver_id: receiverId,
-        message: message || null,
-        status: 'pending'
-      })
-      .select('*')
-      .single()
-
-    if (requestError) {
-      console.error('Friend request creation error:', requestError)
-      if (requestError.code === '42P01') {
-        return res.status(500).json({ error: 'Friend requests table does not exist. Please run the database schema first.' })
-      }
-      throw requestError
-    }
-
-    //console.log('Friend request created successfully:', request)
-    
-    // Also log all requests to see what's in the database
-    const { data: allRequestsAfter } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .order('created_at', { ascending: false })
-    
-    //console.log('All requests after creation:', allRequestsAfter)
-    res.json({ request })
-  } catch (error) {
-    console.error('Send friend request error:', error)
-    res.status(500).json({ error: 'Failed to send friend request' })
-  }
-})
-
-// Accept friend request
-router.post('/accept/:requestId', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const { requestId } = req.params
-    const userId = req.user!.id
-
-    // Get the friend request
-    const { data: request, error: requestError } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .eq('id', requestId)
-      .eq('receiver_id', userId)
-      .eq('status', 'pending')
-      .single()
-
-    if (requestError) {
-      return res.status(400).json({ error: 'Friend request not found' })
-    }
-
-    // Update request status
-    const { error: updateError } = await supabase
-      .from('friend_requests')
-      .update({ status: 'accepted' })
-      .eq('id', requestId)
-
-    if (updateError) throw updateError
-
-    // Create friendship
-    const smallerId = request.sender_id < request.receiver_id ? request.sender_id : request.receiver_id
-    const largerId = request.sender_id > request.receiver_id ? request.sender_id : request.receiver_id
-
-    const { error: friendshipError } = await supabase
-      .from('friendships')
-      .insert({
-        user1_id: smallerId,
-        user2_id: largerId,
-        status: 'active'
-      })
-
-    if (friendshipError && friendshipError.code !== '23505') { // Ignore duplicate key error
-      throw friendshipError
-    }
-
-    // Friend count changed for both users → refresh their cached profile views.
-    await invalidateProfileCache(request.sender_id)
-    await invalidateProfileCache(request.receiver_id)
-
-    // Create a chat between the two users so they can message each other
-    try {
-      // First check if a chat already exists
-      const { data: existingMembers } = await supabase
-        .from('chat_members')
-        .select('chat_id')
-        .in('user_id', [request.sender_id, request.receiver_id])
-
-      let sharedChatId = null
-      if (existingMembers && existingMembers.length > 0) {
-        const chatCounts = existingMembers.reduce((acc, member) => {
-          acc[member.chat_id] = (acc[member.chat_id] || 0) + 1
-          return acc
-        }, {} as Record<string, number>)
-
-        sharedChatId = Object.keys(chatCounts).find(chatId => chatCounts[chatId] === 2)
-      }
-
-      // Create new chat if none exists
-      if (!sharedChatId) {
-        const { data: newChat, error: chatError } = await supabase
-          .from('chats')
-          .insert({})
-          .select('*')
-          .single()
-
-        if (!chatError && newChat) {
-          // Add both users as members
-          await supabase
-            .from('chat_members')
-            .insert([
-              { chat_id: newChat.id, user_id: request.sender_id },
-              { chat_id: newChat.id, user_id: request.receiver_id }
-            ])
-          
-          sharedChatId = newChat.id
-        }
-      }
-
-      res.json({ success: true, chatId: sharedChatId })
-    } catch (chatError) {
-      console.error('Failed to create chat after friend acceptance:', chatError)
-      // Still return success for the friend request, even if chat creation failed
-      res.json({ success: true })
-    }
-  } catch (error) {
-    console.error('Accept friend request error:', error)
-    res.status(500).json({ error: 'Failed to accept friend request' })
-  }
-})
-
-// Reject friend request
-router.post('/reject/:requestId', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const { requestId } = req.params
-    const userId = req.user!.id
-
-    // Delete the friend request instead of marking as rejected
-    const { error } = await supabase
-      .from('friend_requests')
-      .delete()
-      .eq('id', requestId)
-      .eq('receiver_id', userId)
-
-    if (error) throw error
-
-    res.json({ success: true })
-  } catch (error) {
-    console.error('Reject friend request error:', error)
-    res.status(500).json({ error: 'Failed to reject friend request' })
-  }
-})
-
 // Get pending friend requests
 router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    //console.log('Getting pending requests for user:', userId)
 
     // Query friendships table for pending requests where user is the receiver
-    const { data: friendships, error } = await supabase
-      .from('friendships')
-      .select('*')
-      .eq('status', 'pending')
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      console.error('Friend requests query error:', error)
-      return res.status(500).json({ error: 'Failed to get pending requests' })
-    }
+    const friendshipRows = await db.select().from(friendships)
+      .where(and(
+        eq(friendships.status, 'pending'),
+        or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId)),
+      ))
+      .orderBy(desc(friendships.createdAt))
 
     // Filter to only show requests where current user is the receiver (not the sender)
-    const requests = friendships?.filter(f => f.sender_id !== userId) || []
-
-    //console.log('Found requests:', requests?.length || 0)
+    const requests = friendshipRows.filter(f => f.senderId !== userId)
 
     // If we have requests, get sender information from profiles
-    if (requests && requests.length > 0) {
-      const senderIds = requests.map(r => r.sender_id)
-      
-      // Get sender profiles - exclude suspended/deleted accounts
-      const { data: profiles, error: profilesErr } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, username, profile_photo_url, instagram_username')
-        .in('id', senderIds)
-        .is('deleted_at', null)
-        .or('is_suspended.is.null,is_suspended.eq.false')
+    if (requests.length > 0) {
+      const senderIds = requests.map(r => r.senderId!)
 
-      if (profilesErr) {
+      // Get sender profiles - exclude suspended/deleted accounts
+      let profileRows: Array<{
+        id: string; firstName: string | null; lastName: string | null; username: string | null
+        profilePhotoUrl: string | null; instagramUsername: string | null
+      }> = []
+      try {
+        profileRows = await db.select({
+          id: profiles.id,
+          firstName: profiles.firstName,
+          lastName: profiles.lastName,
+          username: profiles.username,
+          profilePhotoUrl: profiles.profilePhotoUrl,
+          instagramUsername: profiles.instagramUsername,
+        })
+          .from(profiles)
+          .where(and(
+            inArray(profiles.id, senderIds),
+            isNull(profiles.deletedAt),
+            or(isNull(profiles.isSuspended), eq(profiles.isSuspended, false)),
+          ))
+      } catch (profilesErr) {
         console.error('Failed to get sender profiles:', profilesErr)
         // Return requests with basic sender info
         const requestsWithFallback = requests.map(request => ({
           id: request.id,
-          sender_id: request.sender_id,
+          sender_id: request.senderId,
           status: request.status,
-          created_at: request.created_at,
+          created_at: request.createdAt,
           sender: {
-            id: request.sender_id,
+            id: request.senderId,
             name: 'Unknown User',
             profile_photo_url: null
           }
@@ -338,24 +116,24 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
 
       // Combine requests with sender information
       const requestsWithSenders = requests.map(request => {
-        const senderProfile = profiles?.find(p => p.id === request.sender_id)
-        const senderName = senderProfile 
-          ? `${senderProfile.first_name || ''} ${senderProfile.last_name || ''}`.trim() || senderProfile.username || 'User'
+        const senderProfile = profileRows.find(p => p.id === request.senderId)
+        const senderName = senderProfile
+          ? `${senderProfile.firstName || ''} ${senderProfile.lastName || ''}`.trim() || senderProfile.username || 'User'
           : 'Unknown User'
-        
+
         return {
           id: request.id,
-          sender_id: request.sender_id,
+          sender_id: request.senderId,
           status: request.status,
-          created_at: request.created_at,
+          created_at: request.createdAt,
           sender: {
-            id: request.sender_id,
+            id: request.senderId,
             name: senderName,
-            first_name: senderProfile?.first_name || null,
-            last_name: senderProfile?.last_name || null,
+            first_name: senderProfile?.firstName || null,
+            last_name: senderProfile?.lastName || null,
             username: senderProfile?.username || null,
-            profile_photo_url: senderProfile?.profile_photo_url || null,
-            instagram_username: senderProfile?.instagram_username || null
+            profile_photo_url: senderProfile?.profilePhotoUrl || null,
+            instagram_username: senderProfile?.instagramUsername || null
           }
         }
       })
@@ -374,128 +152,120 @@ router.get('/requests/pending', requireAuth, async (req: AuthRequest, res) => {
 router.get('/list', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
-    //console.log('Getting friends list for user:', userId)
 
     // First get the friendships without joins
     // Accept both 'active' and 'accepted' status
-    const { data: friendships, error } = await supabase
-      .from('friendships')
-      .select('*')
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .in('status', ['active', 'accepted'])
-      .order('created_at', { ascending: false })
+    const friendshipRows = await db.select().from(friendships)
+      .where(and(
+        or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId)),
+        inArray(friendships.status, ['active', 'accepted']),
+      ))
+      .orderBy(desc(friendships.createdAt))
 
-    if (error) {
-      console.error('Error fetching friendships:', error)
-      throw error
-    }
-
-    //console.log('Found friendships:', friendships?.length || 0)
-
-    if (!friendships || friendships.length === 0) {
+    if (friendshipRows.length === 0) {
       return res.json({ friends: [] })
     }
 
     // Get the friend user IDs
-    const friendUserIds = friendships.map((friendship: any) => {
-      return friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
-    })
-
-    //console.log('Friend user IDs:', friendUserIds)
+    const friendUserIds = friendshipRows.map(f => f.user1Id === userId ? f.user2Id : f.user1Id)
 
     // Get friend profiles separately - exclude suspended/deleted accounts
-    const { data: profiles, error: profilesError } = await supabase
-      .from('profiles')
-      .select('id, first_name, last_name, email, profile_photo_url, instagram_username')
-      .in('id', friendUserIds)
-      .is('deleted_at', null)
-      .or('is_suspended.is.null,is_suspended.eq.false')
-
-    if (profilesError) {
+    let profileRows: Array<{
+      id: string; firstName: string | null; lastName: string | null; email: string | null
+      profilePhotoUrl: string | null; instagramUsername: string | null
+    }> = []
+    try {
+      profileRows = await db.select({
+        id: profiles.id,
+        firstName: profiles.firstName,
+        lastName: profiles.lastName,
+        email: profiles.email,
+        profilePhotoUrl: profiles.profilePhotoUrl,
+        instagramUsername: profiles.instagramUsername,
+      })
+        .from(profiles)
+        .where(and(
+          inArray(profiles.id, friendUserIds),
+          isNull(profiles.deletedAt),
+          or(isNull(profiles.isSuspended), eq(profiles.isSuspended, false)),
+        ))
+    } catch (profilesError) {
       console.error('Error fetching friend profiles:', profilesError)
       // Return friendships with basic info if profiles query fails
-      const friends = friendships.map((friendship: any) => {
-        const friendId = friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
+      const friends = friendshipRows.map(friendship => {
+        const friendId = friendship.user1Id === userId ? friendship.user2Id : friendship.user1Id
         return {
           id: friendId,
           name: `User ${friendId.slice(0, 8)}`,
           profile_photo_url: null,
-          created_at: friendship.created_at
+          created_at: friendship.createdAt
         }
       })
       return res.json({ friends })
     }
 
-    //console.log('Found profiles:', profiles?.length || 0)
-
     // Get chat IDs for each friendship using chat_members junction table
     // First, get all chat_ids where the current user is a member
-    const { data: userChatMembers, error: userChatsError } = await supabase
-      .from('chat_members')
-      .select('chat_id')
-      .eq('user_id', userId)
-
-    if (userChatsError) {
+    let userChatIds: string[] = []
+    try {
+      const userChatMemberships = await db.select({ chatId: chatMembers.chatId }).from(chatMembers).where(eq(chatMembers.userId, userId))
+      userChatIds = userChatMemberships.map(m => m.chatId)
+    } catch (userChatsError) {
       console.error('Error fetching user chats:', userChatsError)
     }
 
-    const userChatIds = userChatMembers?.map(m => m.chat_id) || []
-
     // Get all members of those chats to find which friend is in each chat
-    const { data: allChatMembers, error: membersError } = await supabase
-      .from('chat_members')
-      .select('chat_id, user_id')
-      .in('chat_id', userChatIds)
-
-    if (membersError) {
+    let allChatMembers: Array<{ chatId: string; userId: string }> = []
+    try {
+      if (userChatIds.length > 0) {
+        allChatMembers = await db.select({ chatId: chatMembers.chatId, userId: chatMembers.userId })
+          .from(chatMembers)
+          .where(inArray(chatMembers.chatId, userChatIds))
+      }
+    } catch (membersError) {
       console.error('Error fetching chat members:', membersError)
     }
 
     // Create a map of friendId -> chatId for 1:1 chats
     const friendChatMap = new Map<string, string>()
-    if (allChatMembers) {
-      // Group members by chat_id
-      const chatMembersMap = new Map<string, string[]>()
-      allChatMembers.forEach(member => {
-        if (!chatMembersMap.has(member.chat_id)) {
-          chatMembersMap.set(member.chat_id, [])
-        }
-        chatMembersMap.get(member.chat_id)!.push(member.user_id)
-      })
+    // Group members by chat_id
+    const chatMembersMap = new Map<string, string[]>()
+    allChatMembers.forEach(member => {
+      if (!chatMembersMap.has(member.chatId)) {
+        chatMembersMap.set(member.chatId, [])
+      }
+      chatMembersMap.get(member.chatId)!.push(member.userId)
+    })
 
-      // Find 1:1 chats (exactly 2 members)
-      chatMembersMap.forEach((members, chatId) => {
-        if (members.length === 2) {
-          const otherUserId = members.find(id => id !== userId)
-          if (otherUserId && friendUserIds.includes(otherUserId)) {
-            friendChatMap.set(otherUserId, chatId)
-          }
+    // Find 1:1 chats (exactly 2 members)
+    chatMembersMap.forEach((members, chatId) => {
+      if (members.length === 2) {
+        const otherUserId = members.find(id => id !== userId)
+        if (otherUserId && friendUserIds.includes(otherUserId)) {
+          friendChatMap.set(otherUserId, chatId)
         }
-      })
-    }
-
-    //console.log('Found chats:', friendChatMap.size)
+      }
+    })
 
     // Combine friendships with profile data and chat IDs
-    const friends = friendships.map((friendship: any) => {
-      const friendId = friendship.user1_id === userId ? friendship.user2_id : friendship.user1_id
-      const profile = profiles?.find((p: any) => p.id === friendId)
-      
+    const friends = friendshipRows.map(friendship => {
+      const friendId = friendship.user1Id === userId ? friendship.user2Id : friendship.user1Id
+      const profile = profileRows.find(p => p.id === friendId)
+
       // Get the chat ID from the map
       const chatId = friendChatMap.get(friendId) || null
-      
+
       return {
         id: friendId,
-        name: profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown User' : `User ${friendId.slice(0, 8)}`,
-        profile_photo_url: profile?.profile_photo_url || null,
+        name: profile ? `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || 'Unknown User' : `User ${friendId.slice(0, 8)}`,
+        profile_photo_url: profile?.profilePhotoUrl || null,
         email: profile?.email || null,
-        username: profile?.instagram_username || null,
-        created_at: friendship.created_at,
+        username: profile?.instagramUsername || null,
+        created_at: friendship.createdAt,
         chat_id: chatId // Include chat ID if exists
       }
     })
 
-    //console.log('Returning friends with chat IDs:', friends)
     res.json({ friends })
   } catch (error) {
     console.error('Get friends list error:', error)
@@ -511,19 +281,20 @@ router.delete('/:friendId', requireAuth, async (req: AuthRequest, res) => {
 
     // Mark friendship as inactive instead of deleting
     // Accept both 'active' and 'accepted' status
-    const { error } = await supabase
-      .from('friendships')
-      .update({ status: 'inactive', updated_at: new Date().toISOString() })
-      .or(`and(user1_id.eq.${userId},user2_id.eq.${friendId}),and(user1_id.eq.${friendId},user2_id.eq.${userId})`)
-      .in('status', ['active', 'accepted'])
-
-    if (error) throw error
+    await db.update(friendships)
+      .set({ status: 'inactive', updatedAt: new Date().toISOString() })
+      .where(and(
+        or(
+          and(eq(friendships.user1Id, userId), eq(friendships.user2Id, friendId)),
+          and(eq(friendships.user1Id, friendId), eq(friendships.user2Id, userId)),
+        ),
+        inArray(friendships.status, ['active', 'accepted']),
+      ))
 
     // Friend count changed for both users → refresh their cached profile views.
     await invalidateProfileCache(userId)
     await invalidateProfileCache(friendId)
 
-    //console.log(`✅ Successfully unfriended: ${userId} and ${friendId}`)
     res.json({ success: true })
   } catch (error) {
     console.error('Remove friend error:', error)
@@ -546,30 +317,15 @@ router.post('/block/:userId', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Cannot block yourself' })
     }
 
-    //console.log('Blocking user:', { blockerId, blockedUserId, reason })
-
     // Use the database function to block user and handle cleanup
-    const { data: success, error } = await supabase
-      .rpc('block_user', {
-        blocker_user_id: blockerId,
-        blocked_user_id: blockedUserId,
-        block_reason: reason || null
-      })
-
-    if (error) {
+    try {
+      await db.execute(sql`select block_user(${blockerId}::uuid, ${blockedUserId}::uuid, ${reason || null}::text)`)
+    } catch (error) {
       console.error('Block user error:', error)
       // Fallback to manual blocking if function doesn't exist
-      const { error: insertError } = await supabase
-        .from('blocks')
-        .insert({
-          blocker_id: blockerId,
-          blocked_id: blockedUserId,
-          reason: reason || null
-        })
-      
-      if (insertError && insertError.code !== '23505') { // Ignore duplicate
-        throw insertError
-      }
+      await db.insert(blocks)
+        .values({ blockerId, blockedId: blockedUserId, reason: reason || null })
+        .onConflictDoNothing({ target: [blocks.blockerId, blocks.blockedId] }) // Ignore duplicate
     }
 
     // Blocking removes any friendship between the two → refresh both profiles.
@@ -589,25 +345,13 @@ router.delete('/block/:userId', requireAuth, async (req: AuthRequest, res) => {
     const { userId: blockedUserId } = req.params
     const blockerId = req.user!.id
 
-    //console.log('Unblocking user:', { blockerId, blockedUserId })
-
     // Use the database function to unblock user
-    const { data: success, error } = await supabase
-      .rpc('unblock_user', {
-        blocker_user_id: blockerId,
-        blocked_user_id: blockedUserId
-      })
-
-    if (error) {
+    try {
+      await db.execute(sql`select unblock_user(${blockerId}::uuid, ${blockedUserId}::uuid)`)
+    } catch (error) {
       console.error('Unblock user error:', error)
       // Fallback to manual unblocking
-      const { error: deleteError } = await supabase
-        .from('blocks')
-        .delete()
-        .eq('blocker_id', blockerId)
-        .eq('blocked_id', blockedUserId)
-      
-      if (deleteError) throw deleteError
+      await db.delete(blocks).where(and(eq(blocks.blockerId, blockerId), eq(blocks.blockedId, blockedUserId)))
     }
 
     res.json({ success: true })
@@ -628,28 +372,18 @@ router.get('/block-status/:userId', requireAuth, async (req: AuthRequest, res) =
     }
 
     // Check if current user has blocked the other user
-    const { data: isBlocked, error: blockedError } = await supabase
-      .from('blocks')
-      .select('id')
-      .eq('blocker_id', currentUserId)
-      .eq('blocked_id', userId)
-      .maybeSingle()
-
-    if (blockedError && blockedError.code !== 'PGRST116') throw blockedError
+    const [isBlockedRow] = await db.select({ id: blocks.id }).from(blocks)
+      .where(and(eq(blocks.blockerId, currentUserId), eq(blocks.blockedId, userId)))
+      .limit(1)
 
     // Check if current user is blocked by the other user
-    const { data: isBlockedBy, error: blockedByError } = await supabase
-      .from('blocks')
-      .select('id')
-      .eq('blocker_id', userId)
-      .eq('blocked_id', currentUserId)
-      .maybeSingle()
+    const [isBlockedByRow] = await db.select({ id: blocks.id }).from(blocks)
+      .where(and(eq(blocks.blockerId, userId), eq(blocks.blockedId, currentUserId)))
+      .limit(1)
 
-    if (blockedByError && blockedByError.code !== 'PGRST116') throw blockedByError
-
-    res.json({ 
-      isBlocked: !!isBlocked,
-      isBlockedBy: !!isBlockedBy
+    res.json({
+      isBlocked: !!isBlockedRow,
+      isBlockedBy: !!isBlockedByRow
     })
   } catch (error) {
     console.error('Check block status error:', error)
@@ -662,20 +396,24 @@ router.get('/blocked', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
 
-    const { data: blockedUsers, error } = await supabase
-      .from('blocks')
-      .select(`
-        id,
-        blocked_id,
-        reason,
-        created_at
-      `)
-      .eq('blocker_id', userId)
-      .order('created_at', { ascending: false })
+    const rows = await db.select({
+      id: blocks.id,
+      blockedId: blocks.blockedId,
+      reason: blocks.reason,
+      createdAt: blocks.createdAt,
+    })
+      .from(blocks)
+      .where(eq(blocks.blockerId, userId))
+      .orderBy(desc(blocks.createdAt))
 
-    if (error) throw error
+    const blockedUsers = rows.map(r => ({
+      id: r.id,
+      blocked_id: r.blockedId,
+      reason: r.reason,
+      created_at: r.createdAt,
+    }))
 
-    res.json({ blockedUsers: blockedUsers || [] })
+    res.json({ blockedUsers })
   } catch (error) {
     console.error('Get blocked users error:', error)
     res.status(500).json({ error: 'Failed to get blocked users' })
@@ -693,22 +431,18 @@ router.get('/can-message/:userId', requireAuth, async (req: AuthRequest, res) =>
     }
 
     // Check if either user has blocked the other
-    const { data: blockCheck, error: blockError } = await supabase
-      .from('blocks')
-      .select('blocker_id, blocked_id')
-      .or(`and(blocker_id.eq.${currentUserId},blocked_id.eq.${userId}),and(blocker_id.eq.${userId},blocked_id.eq.${currentUserId})`)
-      .maybeSingle()
-
-    if (blockError && blockError.code !== 'PGRST116' && blockError.code !== '42P01') {
-      throw blockError
-    }
+    const [blockCheck] = await db.select({ blockerId: blocks.blockerId, blockedId: blocks.blockedId }).from(blocks)
+      .where(or(
+        and(eq(blocks.blockerId, currentUserId), eq(blocks.blockedId, userId)),
+        and(eq(blocks.blockerId, userId), eq(blocks.blockedId, currentUserId)),
+      ))
+      .limit(1)
 
     if (blockCheck) {
-      const isBlockedByOther = blockCheck.blocker_id === userId
-      const hasBlockedOther = blockCheck.blocker_id === currentUserId
-      
-      return res.json({ 
-        canMessage: false, 
+      const isBlockedByOther = blockCheck.blockerId === userId
+
+      return res.json({
+        canMessage: false,
         reason: isBlockedByOther ? 'blocked_by_user' : 'user_blocked',
         blocked: true
       })
@@ -717,44 +451,32 @@ router.get('/can-message/:userId', requireAuth, async (req: AuthRequest, res) =>
     // Check if they are friends (manual query)
     const smallerId = currentUserId < userId ? currentUserId : userId
     const largerId = currentUserId > userId ? currentUserId : userId
-    
-    const { data: friendshipData, error: friendshipError } = await supabase
-      .from('friendships')
-      .select('*')
-      .eq('user1_id', smallerId)
-      .eq('user2_id', largerId)
-      .maybeSingle()
 
-    if (friendshipError && friendshipError.code !== 'PGRST116' && friendshipError.code !== '42P01') {
-      // 42P01 = table does not exist, PGRST116 = no rows found
-      throw friendshipError
-    }
+    const [friendshipData] = await db.select({ id: friendships.id }).from(friendships)
+      .where(and(eq(friendships.user1Id, smallerId), eq(friendships.user2Id, largerId)))
+      .limit(1)
 
     if (friendshipData) {
       return res.json({ canMessage: true, reason: 'friends' })
     }
 
     // Check if there's an existing chat between these users
-    const { data: chatMembers, error: chatError } = await supabase
-      .from('chat_members')
-      .select('chat_id')
-      .in('user_id', [currentUserId, userId])
-
-    if (chatError) throw chatError
+    const chatMemberRows = await db.select({ chatId: chatMembers.chatId, userId: chatMembers.userId }).from(chatMembers)
+      .where(inArray(chatMembers.userId, [currentUserId, userId]))
 
     // Find chats where both users are members
-    if (chatMembers && chatMembers.length > 0) {
-      const chatCounts = chatMembers.reduce((acc, member) => {
-        acc[member.chat_id] = (acc[member.chat_id] || 0) + 1
+    if (chatMemberRows.length > 0) {
+      const chatCounts = chatMemberRows.reduce((acc, member) => {
+        acc[member.chatId] = (acc[member.chatId] || 0) + 1
         return acc
       }, {} as Record<string, number>)
 
       // Find chat where both users are members (count = 2)
       const sharedChatId = Object.keys(chatCounts).find(chatId => chatCounts[chatId] === 2)
-      
+
       if (sharedChatId) {
-        return res.json({ 
-          canMessage: true, 
+        return res.json({
+          canMessage: true,
           reason: 'existing_chat',
           chatId: sharedChatId
         })
@@ -774,352 +496,102 @@ router.get('/test', (req, res) => {
   res.json({ message: 'Friends API is working!', timestamp: new Date().toISOString() })
 })
 
-// Simple endpoint to create a friend request for specific user (no auth for testing)
-router.post('/debug/create-request-for-user', async (req, res) => {
-  try {
-    const { receiverId, senderName } = req.body
-    
-    if (!receiverId) {
-      return res.status(400).json({ error: 'receiverId is required' })
-    }
-    
-    const testSenderId = '22222222-2222-2222-2222-222222222222' // Different test sender
-    
-    //console.log('Creating friend request for specific user:', receiverId)
-    
-    const { data: request, error } = await supabase
-      .from('friend_requests')
-      .insert({
-        sender_id: testSenderId,
-        receiver_id: receiverId,
-        message: `Hi! I'm ${senderName || 'TestUser'} and I'd like to connect with you.`,
-        status: 'pending'
-      })
-      .select('*')
-      .single()
-
-    if (error) {
-      console.error('Request creation error:', error)
-      return res.status(500).json({ error: error.message })
-    }
-
-    //console.log('Friend request created successfully:', request)
-    res.json({ success: true, request })
-  } catch (error: any) {
-    console.error('Create request error:', error)
-    res.status(500).json({ error: error?.message || 'Failed to create request' })
-  }
-})
-
-// Test endpoint to create a friend request for current user (for testing)
-router.post('/debug/create-test-request', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const receiverId = req.user!.id
-    const testSenderId = '11111111-1111-1111-1111-111111111111' // Fake sender ID for testing
-    
-    //console.log('Creating test request for user:', receiverId)
-    
-    // First check if a test request already exists
-    const { data: existingTest } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .eq('sender_id', testSenderId)
-      .eq('receiver_id', receiverId)
-      .single()
-    
-    if (existingTest) {
-      return res.json({ success: true, message: 'Test request already exists', request: existingTest })
-    }
-    
-    const { data: request, error } = await supabase
-      .from('friend_requests')
-      .insert({
-        sender_id: testSenderId,
-        receiver_id: receiverId,
-        message: 'This is a test friend request for debugging purposes. You can accept or reject this to test the functionality.',
-        status: 'pending'
-      })
-      .select('*')
-      .single()
-
-    if (error) {
-      console.error('Test request creation error:', error)
-      return res.status(500).json({ error: error.message })
-    }
-
-    //console.log('Test request created successfully:', request)
-    
-    // Verify it was created by querying all requests for this user
-    const { data: userRequests } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .eq('receiver_id', receiverId)
-    
-    //console.log('All requests for user after test creation:', userRequests)
-
-    res.json({ success: true, request, totalUserRequests: userRequests?.length || 0 })
-  } catch (error: any) {
-    console.error('Create test request error:', error)
-    res.status(500).json({ error: error?.message || 'Failed to create test request' })
-  }
-})
-
-// Debug endpoint to show ALL friend requests (for debugging)
-router.get('/debug/all-requests', async (req, res) => {
-  try {
-    // Get ALL friend requests in the database
-    const { data: allRequests, error } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      return res.json({ 
-        error: error.message,
-        code: error.code,
-        tableExists: false 
-      })
-    }
-
-    res.json({
-      tableExists: true,
-      totalRequests: allRequests?.length || 0,
-      allRequests: allRequests || []
-    })
-  } catch (error: any) {
-    res.json({ error: error?.message || 'Unknown error', tableExists: false })
-  }
-})
-
-// Debug endpoint to check friend requests table
-router.get('/debug/requests', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const userId = req.user!.id
-    
-    // Check if friend_requests table exists and get all data
-    const { data: allRequests, error: allError } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .limit(10)
-
-    if (allError) {
-      return res.json({ 
-        error: allError.message,
-        code: allError.code,
-        tableExists: false 
-      })
-    }
-
-    // Get requests for this user specifically
-    const { data: userRequests, error: userError } = await supabase
-      .from('friend_requests')
-      .select('*')
-      .eq('receiver_id', userId)
-
-    // Test user table access
-    let userTableInfo: { available: boolean; tableName: string | null; error: string | null } = { 
-      available: false, 
-      tableName: null, 
-      error: null 
-    }
-    
-    // Try users table
-    const { data: testUsers, error: testUsersError } = await supabase
-      .from('users')
-      .select('id, name, email')
-      .limit(1)
-    
-    if (!testUsersError) {
-      userTableInfo = { available: true, tableName: 'users', error: null }
-    } else {
-      // Try profiles table with different column combinations
-      const { data: testProfiles, error: testProfilesError } = await supabase
-        .from('profiles')
-        .select('id, username, email, full_name, display_name')
-        .limit(1)
-      
-      if (!testProfilesError) {
-        userTableInfo = { available: true, tableName: 'profiles', error: null }
-      } else {
-        userTableInfo = { available: false, tableName: null, error: testProfilesError.message }
-      }
-    }
-
-    res.json({
-      tableExists: true,
-      totalRequests: allRequests?.length || 0,
-      userRequests: userRequests?.length || 0,
-      allRequests: allRequests || [],
-      userSpecificRequests: userRequests || [],
-      userId,
-      userTableInfo
-    })
-  } catch (error: any) {
-    res.json({ error: error?.message || 'Unknown error', tableExists: false })
-  }
-});
-
-// Check pending friend request status between current user and another user
-router.get('/pending-status/:userId', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const { userId } = req.params
-    const currentUserId = req.user!.id
-    
-    // Check for pending friend requests in both directions
-    const { data: sentRequest } = await supabase
-      .from('friend_requests')
-      .select('id')
-      .eq('sender_id', currentUserId)
-      .eq('receiver_id', userId)
-      .eq('status', 'pending')
-      .limit(1)
-      .maybeSingle()
-    
-    if (sentRequest) {
-      return res.json({
-        hasPendingRequest: true,
-        direction: 'sent',
-        requestId: sentRequest.id
-      })
-    }
-    
-    const { data: receivedRequest } = await supabase
-      .from('friend_requests')
-      .select('id')
-      .eq('sender_id', userId)
-      .eq('receiver_id', currentUserId)
-      .eq('status', 'pending')
-      .limit(1)
-      .maybeSingle()
-    
-    if (receivedRequest) {
-      return res.json({
-        hasPendingRequest: true,
-        direction: 'received',
-        requestId: receivedRequest.id
-      })
-    }
-    
-    res.json({
-      hasPendingRequest: false,
-      direction: null,
-      requestId: null
-    })
-    
-  } catch (error) {
-    console.error('Check pending friend request error:', error)
-    res.status(500).json({ error: 'Failed to check pending requests' })
-  }
-})
-
 // Get user profile by ID
 router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { userId } = req.params
-    
-    //console.log('🔍 Fetching profile for user:', userId)
-    
+
     // Get complete user profile from profiles table
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select(`
-        id,
-        first_name,
-        last_name,
-        username,
-        email,
-        profile_photo_url,
-        instagram_username,
-        age,
-        gender,
-        about,
-        interests,
-        needs,
-        created_at,
-        verification_status,
-        email_verified,
-        location_address,
-        location_city,
-        location_country,
-        phone_number,
-        is_suspended,
-        deleted_at
-      `)
-      .eq('id', userId)
-      .single()
-    
-    if (error) {
-      console.error('❌ Error fetching user profile:', error)
+    const [profile] = await db.select({
+      id: profiles.id,
+      firstName: profiles.firstName,
+      lastName: profiles.lastName,
+      username: profiles.username,
+      email: profiles.email,
+      profilePhotoUrl: profiles.profilePhotoUrl,
+      instagramUsername: profiles.instagramUsername,
+      age: profiles.age,
+      gender: profiles.gender,
+      about: profiles.about,
+      interests: profiles.interests,
+      needs: profiles.needs,
+      createdAt: profiles.createdAt,
+      verificationStatus: profiles.verificationStatus,
+      emailVerified: profiles.emailVerified,
+      locationAddress: profiles.locationAddress,
+      locationCity: profiles.locationCity,
+      locationCountry: profiles.locationCountry,
+      phoneNumber: profiles.phoneNumber,
+      isSuspended: profiles.isSuspended,
+      deletedAt: profiles.deletedAt,
+    }).from(profiles).where(eq(profiles.id, userId)).limit(1)
+
+    if (!profile) {
       return res.status(404).json({ error: 'User profile not found' })
     }
-    
+
     // Check if user is suspended or deleted - treat as not found
-    if (profile.deleted_at || profile.is_suspended) {
+    if (profile.deletedAt || profile.isSuspended) {
       return res.status(404).json({ error: 'User profile not found' })
     }
-    
+
     // Get user statistics
     let stats = { friends: 0, chats: 0, messages: 0 };
-    
+
     try {
       // Count friends
-      const { count: friendsCount } = await supabase
-        .from('friendships')
-        .select('*', { count: 'exact', head: true })
-        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-        .eq('status', 'accepted')
-      
+      const [friendsCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(friendships)
+        .where(and(
+          or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId)),
+          eq(friendships.status, 'accepted'),
+        ))
+
       // Count chats (where user is a member)
-      const { count: chatsCount } = await supabase
-        .from('chat_members')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId)
-      
+      const [chatsCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(chatMembers)
+        .where(eq(chatMembers.userId, userId))
+
       // Count messages sent by user
-      const { count: messagesCount } = await supabase
-        .from('messages')
-        .select('*', { count: 'exact', head: true })
-        .eq('sender_id', userId)
-        .eq('is_deleted', false)
-      
+      const [messagesCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(messages)
+        .where(and(eq(messages.senderId, userId), eq(messages.isDeleted, false)))
+
       stats = {
-        friends: friendsCount || 0,
-        chats: chatsCount || 0,
-        messages: messagesCount || 0
+        friends: friendsCountRow?.count || 0,
+        chats: chatsCountRow?.count || 0,
+        messages: messagesCountRow?.count || 0
       }
     } catch (statsError) {
       console.error('Error fetching user stats:', statsError)
       // Keep default stats if error
     }
-    
+
     // Return complete profile data with stats and proper null handling
     const responseData = {
       id: profile.id,
-      firstName: profile.first_name || null,
-      lastName: profile.last_name || null,
-      name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'Unknown User',
+      firstName: profile.firstName || null,
+      lastName: profile.lastName || null,
+      name: `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || 'Unknown User',
       username: profile.username || null,
       email: profile.email || null,
-      profilePhotoUrl: profile.profile_photo_url || null,
-      instagramUsername: profile.instagram_username || null,
+      profilePhotoUrl: profile.profilePhotoUrl || null,
+      instagramUsername: profile.instagramUsername || null,
       age: profile.age || null,
       gender: profile.gender || null,
       about: profile.about || null,
       interests: profile.interests || [],
       needs: profile.needs || [],
-      location: profile.location_address || profile.location_city || profile.location_country || null,
-      locationAddress: profile.location_address || null,
-      locationCity: profile.location_city || null,
-      locationCountry: profile.location_country || null,
-      phone: profile.phone_number || null,
-      joinedDate: profile.created_at || null,
-      verification_status: profile.verification_status || 'unverified',
-      email_verified: profile.email_verified || false,
+      location: profile.locationAddress || profile.locationCity || profile.locationCountry || null,
+      locationAddress: profile.locationAddress || null,
+      locationCity: profile.locationCity || null,
+      locationCountry: profile.locationCountry || null,
+      phone: profile.phoneNumber || null,
+      joinedDate: profile.createdAt || null,
+      verification_status: profile.verificationStatus || 'unverified',
+      email_verified: profile.emailVerified || false,
       stats: stats
     };
-    
+
     res.json(responseData);
-    
+
   } catch (error) {
     console.error('Error in user profile endpoint:', error)
     res.status(500).json({ error: 'Failed to fetch user profile' })
