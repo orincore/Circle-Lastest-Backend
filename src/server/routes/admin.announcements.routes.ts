@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { requireAuth, AuthRequest } from '../middleware/auth.js'
 import { requireAdmin, AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, or, isNull, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { announcements, profiles } from '../db/schema.js'
 import { NotificationService } from '../services/notificationService.js'
 
 const router = Router()
@@ -12,20 +14,46 @@ router.get('/', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
     const { active, placement, limit = '100' } = req.query as any
     const lim = Math.min(parseInt(limit || '100'), 500)
 
-    let query = supabase
-      .from('announcements')
-      .select('*')
-      .order('priority', { ascending: false })
-      .order('published_at', { ascending: false, nullsFirst: false })
-      .order('created_at', { ascending: false })
+    const conditions = []
+    if (active === 'true') conditions.push(eq(announcements.isActive, true))
+    if (placement) {
+      conditions.push(
+        or(
+          isNull(announcements.placements),
+          sql`${announcements.placements} @> ARRAY[${placement}]::text[]`
+        )
+      )
+    }
+
+    const rows = await db.select()
+      .from(announcements)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(announcements.priority), desc(announcements.publishedAt), desc(announcements.createdAt))
       .limit(lim)
 
-    if (active === 'true') query = query.eq('is_active', true)
-    if (placement) query = query.or(`placements.is.null,placements.cs.{${placement}}`)
+    const data = rows.map(r => ({
+      id: r.id,
+      title: r.title,
+      message: r.message,
+      image_url: r.imageUrl,
+      link_url: r.linkUrl,
+      buttons: r.buttons,
+      placements: r.placements,
+      audience: r.audience,
+      countries: r.countries,
+      min_app_version: r.minAppVersion,
+      priority: r.priority,
+      starts_at: r.startsAt,
+      ends_at: r.endsAt,
+      is_active: r.isActive,
+      send_push_on_publish: r.sendPushOnPublish,
+      created_by: r.createdBy,
+      created_at: r.createdAt,
+      updated_at: r.updatedAt,
+      published_at: r.publishedAt,
+    }))
 
-    const { data, error } = await query
-    if (error) return res.status(500).json({ error: 'Failed to list announcements' })
-    return res.json({ announcements: data || [] })
+    return res.json({ announcements: data })
   } catch (e) {
     return res.status(500).json({ error: 'Failed to list announcements' })
   }
@@ -58,30 +86,48 @@ router.post('/', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
     const insert = {
       title: title || null,
       message,
-      image_url: imageUrl || null,
-      link_url: linkUrl || null,
+      imageUrl: imageUrl || null,
+      linkUrl: linkUrl || null,
       buttons: Array.isArray(buttons) ? buttons : null,
       placements: Array.isArray(placements) ? placements : null,
       audience: audience || 'all',
       countries: Array.isArray(countries) ? countries : null,
-      min_app_version: minAppVersion || null,
+      minAppVersion: minAppVersion || null,
       priority: Number.isFinite(priority) ? priority : 0,
-      starts_at: startsAt || null,
-      ends_at: endsAt || null,
-      is_active: !!isActive,
-      send_push_on_publish: !!sendPushOnPublish,
-      created_by: req.user!.id,
+      startsAt: startsAt || null,
+      endsAt: endsAt || null,
+      isActive: !!isActive,
+      sendPushOnPublish: !!sendPushOnPublish,
+      createdBy: req.user!.id,
     }
 
-    const { data, error } = await supabase
-      .from('announcements')
-      .insert(insert)
-      .select('*')
-      .single()
+    const [row] = await db.insert(announcements).values(insert).returning()
 
-    if (error) {
-      console.error('Create announcement error:', error)
+    if (!row) {
+      console.error('Create announcement error: no row returned')
       return res.status(500).json({ error: 'Failed to create announcement' })
+    }
+
+    const data = {
+      id: row.id,
+      title: row.title,
+      message: row.message,
+      image_url: row.imageUrl,
+      link_url: row.linkUrl,
+      buttons: row.buttons,
+      placements: row.placements,
+      audience: row.audience,
+      countries: row.countries,
+      min_app_version: row.minAppVersion,
+      priority: row.priority,
+      starts_at: row.startsAt,
+      ends_at: row.endsAt,
+      is_active: row.isActive,
+      send_push_on_publish: row.sendPushOnPublish,
+      created_by: row.createdBy,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+      published_at: row.publishedAt,
     }
 
     await logAdminAction(req.user!.id, 'announcement_create', 'announcements', data.id, insert)
@@ -102,31 +148,48 @@ router.put('/:id', requireAuth, requireAdmin, async (req: AdminRequest, res) => 
     const update: any = {
       title: 'title' in payload ? payload.title : undefined,
       message: 'message' in payload ? payload.message : undefined,
-      image_url: 'imageUrl' in payload ? payload.imageUrl : undefined,
-      link_url: 'linkUrl' in payload ? payload.linkUrl : undefined,
+      imageUrl: 'imageUrl' in payload ? payload.imageUrl : undefined,
+      linkUrl: 'linkUrl' in payload ? payload.linkUrl : undefined,
       buttons: 'buttons' in payload ? (Array.isArray(payload.buttons) ? payload.buttons : null) : undefined,
       placements: 'placements' in payload ? (Array.isArray(payload.placements) ? payload.placements : null) : undefined,
       audience: 'audience' in payload ? payload.audience : undefined,
       countries: 'countries' in payload ? (Array.isArray(payload.countries) ? payload.countries : null) : undefined,
-      min_app_version: 'minAppVersion' in payload ? payload.minAppVersion : undefined,
+      minAppVersion: 'minAppVersion' in payload ? payload.minAppVersion : undefined,
       priority: 'priority' in payload ? payload.priority : undefined,
-      starts_at: 'startsAt' in payload ? payload.startsAt : undefined,
-      ends_at: 'endsAt' in payload ? payload.endsAt : undefined,
-      is_active: 'isActive' in payload ? !!payload.isActive : undefined,
-      send_push_on_publish: 'sendPushOnPublish' in payload ? !!payload.sendPushOnPublish : undefined,
-      updated_at: new Date().toISOString(),
+      startsAt: 'startsAt' in payload ? payload.startsAt : undefined,
+      endsAt: 'endsAt' in payload ? payload.endsAt : undefined,
+      isActive: 'isActive' in payload ? !!payload.isActive : undefined,
+      sendPushOnPublish: 'sendPushOnPublish' in payload ? !!payload.sendPushOnPublish : undefined,
+      updatedAt: new Date().toISOString(),
     }
 
-    const { data, error } = await supabase
-      .from('announcements')
-      .update(update)
-      .eq('id', id)
-      .select('*')
-      .single()
+    const [row] = await db.update(announcements).set(update).where(eq(announcements.id, id)).returning()
 
-    if (error) {
-      console.error('Update announcement error:', error)
+    if (!row) {
+      console.error('Update announcement error: not found')
       return res.status(500).json({ error: 'Failed to update announcement' })
+    }
+
+    const data = {
+      id: row.id,
+      title: row.title,
+      message: row.message,
+      image_url: row.imageUrl,
+      link_url: row.linkUrl,
+      buttons: row.buttons,
+      placements: row.placements,
+      audience: row.audience,
+      countries: row.countries,
+      min_app_version: row.minAppVersion,
+      priority: row.priority,
+      starts_at: row.startsAt,
+      ends_at: row.endsAt,
+      is_active: row.isActive,
+      send_push_on_publish: row.sendPushOnPublish,
+      created_by: row.createdBy,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+      published_at: row.publishedAt,
     }
 
     await logAdminAction(req.user!.id, 'announcement_update', 'announcements', id, update)
@@ -144,45 +207,35 @@ router.patch('/:id/publish', requireAuth, requireAdmin, async (req: AdminRequest
     const { id } = req.params
     const { sendPush } = req.body || {}
 
-    const { data: announcement, error: fetchErr } = await supabase
-      .from('announcements')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle()
+    const [announcement] = await db.select().from(announcements).where(eq(announcements.id, id)).limit(1)
 
-    if (fetchErr || !announcement) {
+    if (!announcement) {
       return res.status(404).json({ error: 'Announcement not found' })
     }
 
-    const { data: updated, error } = await supabase
-      .from('announcements')
-      .update({ is_active: true, published_at: new Date().toISOString() })
-      .eq('id', id)
-      .select('*')
-      .single()
+    const [updated] = await db.update(announcements).set({
+      isActive: true,
+      publishedAt: new Date().toISOString(),
+    }).where(eq(announcements.id, id)).returning()
 
-    if (error) {
-      console.error('Publish announcement error:', error)
+    if (!updated) {
+      console.error('Publish announcement error: update failed')
       return res.status(500).json({ error: 'Failed to publish announcement' })
     }
 
     await logAdminAction(req.user!.id, 'announcement_publish', 'announcements', id, { sendPush })
 
     // Optionally push notify audience
-    if (sendPush || announcement.send_push_on_publish) {
+    if (sendPush || announcement.sendPushOnPublish) {
       // Minimal audience selection: send to last 5k active users to avoid heavy broadcast
-      const { data: users } = await supabase
-        .from('profiles')
-        .select('id')
-        .order('last_seen', { ascending: false })
-        .limit(5000)
+      const users = await db.select({ id: profiles.id }).from(profiles).orderBy(desc(profiles.lastSeen)).limit(5000)
 
       const title = announcement.title || 'Announcement'
       const message = announcement.message
       const dataPayload: Record<string, any> = {
         action: 'announcement',
         announcement_id: announcement.id,
-        link_url: announcement.link_url || undefined,
+        link_url: announcement.linkUrl || undefined,
         placements: announcement.placements || undefined,
       }
 
@@ -201,7 +254,29 @@ router.patch('/:id/publish', requireAuth, requireAdmin, async (req: AdminRequest
       }
     }
 
-    return res.json({ announcement: updated, published: true })
+    const updatedData = {
+      id: updated.id,
+      title: updated.title,
+      message: updated.message,
+      image_url: updated.imageUrl,
+      link_url: updated.linkUrl,
+      buttons: updated.buttons,
+      placements: updated.placements,
+      audience: updated.audience,
+      countries: updated.countries,
+      min_app_version: updated.minAppVersion,
+      priority: updated.priority,
+      starts_at: updated.startsAt,
+      ends_at: updated.endsAt,
+      is_active: updated.isActive,
+      send_push_on_publish: updated.sendPushOnPublish,
+      created_by: updated.createdBy,
+      created_at: updated.createdAt,
+      updated_at: updated.updatedAt,
+      published_at: updated.publishedAt,
+    }
+
+    return res.json({ announcement: updatedData, published: true })
   } catch (e) {
     console.error('admin announcements publish error:', e)
     return res.status(500).json({ error: 'Failed to publish announcement' })
@@ -213,15 +288,7 @@ router.delete('/:id', requireAuth, requireAdmin, async (req: AdminRequest, res) 
   try {
     const { id } = req.params
 
-    const { error } = await supabase
-      .from('announcements')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      console.error('Delete announcement error:', error)
-      return res.status(500).json({ error: 'Failed to delete announcement' })
-    }
+    await db.delete(announcements).where(eq(announcements.id, id))
 
     await logAdminAction(req.user!.id, 'announcement_delete', 'announcements', id, {})
 

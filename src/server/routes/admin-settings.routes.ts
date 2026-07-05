@@ -1,9 +1,36 @@
 import { Router } from 'express'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
 import type { AuthRequest } from '../middleware/auth.js'
+import { eq, isNull, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { systemSettings, profiles, chats, messages, userReports, userActivityEvents } from '../db/schema.js'
+import { logger } from '../config/logger.js'
 
 const router = Router()
+
+function mapSettingsRow(row: typeof systemSettings.$inferSelect) {
+  return {
+    key: row.key,
+    value: row.value,
+    description: row.description,
+    category: row.category,
+    updated_by: row.updatedBy,
+    updated_at: row.updatedAt,
+    auto_moderation: row.autoModeration,
+    profanity_filter: row.profanityFilter,
+    image_moderation: row.imageModeration,
+    require_email_verification: row.requireEmailVerification,
+    maintenance_mode: row.maintenanceMode,
+    registration_enabled: row.registrationEnabled,
+    matchmaking_enabled: row.matchmakingEnabled,
+    chat_enabled: row.chatEnabled,
+    max_file_size: row.maxFileSize,
+    max_messages_per_day: row.maxMessagesPerDay,
+    max_friends_per_user: row.maxFriendsPerUser,
+    session_timeout: row.sessionTimeout,
+    max_login_attempts: row.maxLoginAttempts,
+  }
+}
 
 /**
  * Get system settings
@@ -12,12 +39,9 @@ const router = Router()
 router.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   try {
     // Get settings from database
-    const { data: settings } = await supabase
-      .from('system_settings')
-      .select('*')
-      .single()
+    const [settingsRow] = await db.select().from(systemSettings).limit(1)
 
-    if (!settings) {
+    if (!settingsRow) {
       // Return default settings if none exist
       const defaultSettings = {
         maintenanceMode: false,
@@ -34,11 +58,11 @@ router.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
         profanityFilter: true,
         imageModeration: true,
       }
-      
+
       return res.json(defaultSettings)
     }
 
-    return res.json(settings)
+    return res.json(mapSettingsRow(settingsRow))
   } catch (error) {
     console.error('Get settings error:', error)
     return res.status(500).json({ error: 'Failed to fetch settings' })
@@ -84,71 +108,51 @@ router.put('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     }
 
     const settingsData = {
-      maintenance_mode: maintenanceMode,
-      registration_enabled: registrationEnabled,
-      matchmaking_enabled: matchmakingEnabled,
-      chat_enabled: chatEnabled,
-      max_file_size: maxFileSize,
-      max_messages_per_day: maxMessagesPerDay,
-      max_friends_per_user: maxFriendsPerUser,
-      session_timeout: sessionTimeout,
-      max_login_attempts: maxLoginAttempts,
-      require_email_verification: requireEmailVerification,
-      auto_moderation: autoModeration,
-      profanity_filter: profanityFilter,
-      image_moderation: imageModeration,
-      updated_at: new Date().toISOString(),
-      updated_by: req.user!.id,
+      maintenanceMode,
+      registrationEnabled,
+      matchmakingEnabled,
+      chatEnabled,
+      maxFileSize,
+      maxMessagesPerDay,
+      maxFriendsPerUser,
+      sessionTimeout,
+      maxLoginAttempts,
+      requireEmailVerification,
+      autoModeration,
+      profanityFilter,
+      imageModeration,
+      updatedAt: new Date().toISOString(),
+      updatedBy: req.user!.id,
     }
 
-    // Check if settings exist
-    const { data: existingSettings } = await supabase
-      .from('system_settings')
-      .select('id')
-      .single()
+    // Upsert into the singleton settings row (key defaults to 'default')
+    const [row] = await db.insert(systemSettings).values({
+      key: 'default',
+      ...settingsData,
+    }).onConflictDoUpdate({
+      target: systemSettings.key,
+      set: settingsData,
+    }).returning()
 
-    let result
-    if (existingSettings) {
-      // Update existing settings
-      const { data, error } = await supabase
-        .from('system_settings')
-        .update(settingsData)
-        .eq('id', existingSettings.id)
-        .select()
-        .single()
-      
-      result = { data, error }
-    } else {
-      // Insert new settings
-      const { data, error } = await supabase
-        .from('system_settings')
-        .insert(settingsData)
-        .select()
-        .single()
-      
-      result = { data, error }
-    }
-
-    if (result.error) {
-      console.error('Settings update error:', result.error)
+    if (!row) {
+      console.error('Settings update error: no row returned')
       return res.status(500).json({ error: 'Failed to update settings' })
     }
 
     // Log admin action
-    await supabase
-      .from('admin_logs')
-      .insert({
-        admin_id: req.user!.id,
-        action: 'update_system_settings',
-        target_type: 'system',
-        details: { settings: settingsData },
-        created_at: new Date().toISOString(),
-      })
+    try {
+      await db.execute(sql`
+        insert into admin_logs (admin_id, action, target_type, details, created_at)
+        values (${req.user!.id}::uuid, 'update_system_settings', 'system', ${JSON.stringify({ settings: settingsData })}::jsonb, ${new Date().toISOString()})
+      `)
+    } catch (err) {
+      logger.warn({ error: err }, 'Could not write to admin_logs table')
+    }
 
-    return res.json({ 
-      success: true, 
-      settings: result.data,
-      message: 'Settings updated successfully' 
+    return res.json({
+      success: true,
+      settings: mapSettingsRow(row),
+      message: 'Settings updated successfully'
     })
   } catch (error) {
     console.error('Update settings error:', error)
@@ -164,24 +168,23 @@ router.post('/clear-cache', requireAuth, requireAdmin, async (req: AuthRequest, 
   try {
     // In a real implementation, you would clear Redis cache, CDN cache, etc.
     // For now, we'll simulate cache clearing
-    
+
     // Log the action
-    await supabase
-      .from('admin_logs')
-      .insert({
-        admin_id: req.user!.id,
-        action: 'clear_system_cache',
-        target_type: 'system',
-        details: { timestamp: new Date().toISOString() },
-        created_at: new Date().toISOString(),
-      })
+    try {
+      await db.execute(sql`
+        insert into admin_logs (admin_id, action, target_type, details, created_at)
+        values (${req.user!.id}::uuid, 'clear_system_cache', 'system', ${JSON.stringify({ timestamp: new Date().toISOString() })}::jsonb, ${new Date().toISOString()})
+      `)
+    } catch (err) {
+      logger.warn({ error: err }, 'Could not write to admin_logs table')
+    }
 
     // Simulate cache clearing delay
     await new Promise(resolve => setTimeout(resolve, 1000))
 
-    return res.json({ 
-      success: true, 
-      message: 'System cache cleared successfully' 
+    return res.json({
+      success: true,
+      message: 'System cache cleared successfully'
     })
   } catch (error) {
     console.error('Clear cache error:', error)
@@ -202,12 +205,9 @@ router.post('/reset-statistics', requireAuth, requireAdmin, async (req: AuthRequ
     }
 
     // Reset analytics statistics (be careful with this!)
-    const { error: analyticsError } = await supabase
-      .from('user_activity_events')
-      .delete()
-      .neq('id', '00000000-0000-0000-0000-000000000000') // Delete all except impossible ID
-
-    if (analyticsError) {
+    try {
+      await db.delete(userActivityEvents)
+    } catch (analyticsError) {
       console.error('Reset analytics error:', analyticsError)
       return res.status(500).json({ error: 'Failed to reset analytics data' })
     }
@@ -216,22 +216,18 @@ router.post('/reset-statistics', requireAuth, requireAdmin, async (req: AuthRequ
     // Be very careful with this operation!
 
     // Log the action
-    await supabase
-      .from('admin_logs')
-      .insert({
-        admin_id: req.user!.id,
-        action: 'reset_statistics',
-        target_type: 'system',
-        details: { 
-          timestamp: new Date().toISOString(),
-          warning: 'All statistics data was reset'
-        },
-        created_at: new Date().toISOString(),
-      })
+    try {
+      await db.execute(sql`
+        insert into admin_logs (admin_id, action, target_type, details, created_at)
+        values (${req.user!.id}::uuid, 'reset_statistics', 'system', ${JSON.stringify({ timestamp: new Date().toISOString(), warning: 'All statistics data was reset' })}::jsonb, ${new Date().toISOString()})
+      `)
+    } catch (err) {
+      logger.warn({ error: err }, 'Could not write to admin_logs table')
+    }
 
-    return res.json({ 
-      success: true, 
-      message: 'Statistics reset successfully. This action cannot be undone.' 
+    return res.json({
+      success: true,
+      message: 'Statistics reset successfully. This action cannot be undone.'
     })
   } catch (error) {
     console.error('Reset statistics error:', error)
@@ -246,29 +242,13 @@ router.post('/reset-statistics', requireAuth, requireAdmin, async (req: AuthRequ
 router.get('/status', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   try {
     // Get various system metrics
-    const { count: totalUsers } = await supabase
-      .from('profiles')
-      .select('*', { count: 'exact', head: true })
-      .is('deleted_at', null)
-
-    const { count: activeChats } = await supabase
-      .from('chats')
-      .select('*', { count: 'exact', head: true })
-
-    const { count: totalMessages } = await supabase
-      .from('messages')
-      .select('*', { count: 'exact', head: true })
-
-    const { count: pendingReports } = await supabase
-      .from('user_reports')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'pending')
+    const [{ count: totalUsers }] = await db.select({ count: sql<number>`count(*)::int` }).from(profiles).where(isNull(profiles.deletedAt))
+    const [{ count: activeChats }] = await db.select({ count: sql<number>`count(*)::int` }).from(chats)
+    const [{ count: totalMessages }] = await db.select({ count: sql<number>`count(*)::int` }).from(messages)
+    const [{ count: pendingReports }] = await db.select({ count: sql<number>`count(*)::int` }).from(userReports).where(eq(userReports.status, 'pending'))
 
     // Get current settings
-    const { data: settings } = await supabase
-      .from('system_settings')
-      .select('*')
-      .single()
+    const [settingsRow] = await db.select().from(systemSettings).limit(1)
 
     return res.json({
       systemHealth: {
@@ -283,7 +263,7 @@ router.get('/status', requireAuth, requireAdmin, async (req: AuthRequest, res) =
         totalMessages: totalMessages || 0,
         pendingReports: pendingReports || 0,
       },
-      settings: settings || {},
+      settings: settingsRow ? mapSettingsRow(settingsRow) : {},
     })
   } catch (error) {
     console.error('Get system status error:', error)

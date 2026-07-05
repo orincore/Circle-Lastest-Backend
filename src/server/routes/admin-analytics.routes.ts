@@ -6,7 +6,9 @@
 import express from 'express'
 import { requireAuth } from '../middleware/auth.js'
 import { requireAdmin, AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { profiles, messages, friendships, userReports } from '../db/schema.js'
 
 const router = express.Router()
 
@@ -22,61 +24,37 @@ router.get('/overview', requireAuth, requireAdmin, async (req: AdminRequest, res
     startDate.setDate(startDate.getDate() - days)
 
     // User statistics
-    const { count: totalUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .is('deleted_at', null)
+    const [{ count: totalUsers }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(profiles).where(isNull(profiles.deletedAt))
 
-    const { count: newUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', startDate.toISOString())
-      .is('deleted_at', null)
+    const [{ count: newUsers }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(profiles).where(and(gte(profiles.createdAt, startDate.toISOString()), isNull(profiles.deletedAt)))
 
-    const { count: activeUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .gte('last_seen', startDate.toISOString())
-      .is('deleted_at', null)
+    const [{ count: activeUsers }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(profiles).where(and(gte(profiles.lastSeen, startDate.toISOString()), isNull(profiles.deletedAt)))
 
-    const { count: suspendedUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .eq('is_suspended', true)
+    const [{ count: suspendedUsers }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(profiles).where(eq(profiles.isSuspended, true))
 
     // Engagement statistics
-    const { count: totalMessages } = await supabase
-      .from('messages')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', startDate.toISOString())
+    const [{ count: totalMessages }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(messages).where(gte(messages.createdAt, startDate.toISOString()))
 
-    const { count: totalFriendships } = await supabase
-      .from('friendships')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'active')
+    const [{ count: totalFriendships }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(friendships).where(eq(friendships.status, 'active'))
 
-    const { count: newFriendships } = await supabase
-      .from('friendships')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', startDate.toISOString())
-      .eq('status', 'active')
+    const [{ count: newFriendships }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(friendships).where(and(gte(friendships.createdAt, startDate.toISOString()), eq(friendships.status, 'active')))
 
     // Report statistics
-    const { count: totalReports } = await supabase
-      .from('user_reports')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', startDate.toISOString())
+    const [{ count: totalReports }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(userReports).where(gte(userReports.createdAt, startDate.toISOString()))
 
-    const { count: pendingReports } = await supabase
-      .from('user_reports')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'pending')
+    const [{ count: pendingReports }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(userReports).where(eq(userReports.status, 'pending'))
 
-    const { count: resolvedReports } = await supabase
-      .from('user_reports')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'resolved')
-      .gte('resolved_at', startDate.toISOString())
+    const [{ count: resolvedReports }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(userReports).where(and(eq(userReports.status, 'resolved'), gte(userReports.resolvedAt, startDate.toISOString())))
 
     // Log the action
     await logAdminAction(req.user!.id, 'view_analytics_overview', 'analytics', null, {
@@ -116,22 +94,20 @@ router.get('/user-growth', requireAuth, requireAdmin, async (req: AdminRequest, 
   try {
     const { days = '30' } = req.query
     const numDays = parseInt(days as string)
-    
+
     const startDate = new Date()
     startDate.setDate(startDate.getDate() - numDays)
 
     // Get daily user registrations
-    const { data: registrations } = await supabase
-      .from('profiles')
-      .select('created_at')
-      .gte('created_at', startDate.toISOString())
-      .is('deleted_at', null)
-      .order('created_at', { ascending: true })
+    const registrations = await db.select({ created_at: profiles.createdAt })
+      .from(profiles)
+      .where(and(gte(profiles.createdAt, startDate.toISOString()), isNull(profiles.deletedAt)))
+      .orderBy(profiles.createdAt)
 
     // Group by date
     const dailyData: Record<string, number> = {}
     registrations?.forEach(user => {
-      const date = new Date(user.created_at).toISOString().split('T')[0]
+      const date = new Date(user.created_at as string).toISOString().split('T')[0]
       dailyData[date] = (dailyData[date] || 0) + 1
     })
 
@@ -155,16 +131,14 @@ router.get('/engagement', requireAuth, requireAdmin, async (req: AdminRequest, r
   try {
     const { days = '7' } = req.query
     const numDays = parseInt(days as string)
-    
+
     const startDate = new Date()
     startDate.setDate(startDate.getDate() - numDays)
 
     // Daily active users
-    const { data: dailyActivity } = await supabase
-      .from('profiles')
-      .select('last_seen')
-      .gte('last_seen', startDate.toISOString())
-      .is('deleted_at', null)
+    const dailyActivity = await db.select({ last_seen: profiles.lastSeen })
+      .from(profiles)
+      .where(and(gte(profiles.lastSeen, startDate.toISOString()), isNull(profiles.deletedAt)))
 
     // Group by date
     const dailyActiveUsers: Record<string, Set<string>> = {}
@@ -178,13 +152,12 @@ router.get('/engagement', requireAuth, requireAdmin, async (req: AdminRequest, r
     })
 
     // Daily messages
-    const { data: messages } = await supabase
-      .from('messages')
-      .select('created_at')
-      .gte('created_at', startDate.toISOString())
+    const messagesData = await db.select({ created_at: messages.createdAt })
+      .from(messages)
+      .where(gte(messages.createdAt, startDate.toISOString()))
 
     const dailyMessages: Record<string, number> = {}
-    messages?.forEach(msg => {
+    messagesData?.forEach(msg => {
       const date = new Date(msg.created_at).toISOString().split('T')[0]
       dailyMessages[date] = (dailyMessages[date] || 0) + 1
     })
@@ -209,10 +182,9 @@ router.get('/engagement', requireAuth, requireAdmin, async (req: AdminRequest, r
 router.get('/demographics', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     // Gender distribution
-    const { data: genderData } = await supabase
-      .from('profiles')
-      .select('gender')
-      .is('deleted_at', null)
+    const genderData = await db.select({ gender: profiles.gender })
+      .from(profiles)
+      .where(isNull(profiles.deletedAt))
 
     const genderCount: Record<string, number> = {}
     genderData?.forEach(user => {
@@ -222,11 +194,9 @@ router.get('/demographics', requireAuth, requireAdmin, async (req: AdminRequest,
     })
 
     // Age distribution
-    const { data: ageData } = await supabase
-      .from('profiles')
-      .select('age')
-      .is('deleted_at', null)
-      .not('age', 'is', null)
+    const ageData = await db.select({ age: profiles.age })
+      .from(profiles)
+      .where(and(isNull(profiles.deletedAt), sql`${profiles.age} is not null`))
 
     const ageGroups: Record<string, number> = {
       '18-24': 0,
@@ -266,17 +236,28 @@ router.get('/top-users', requireAuth, requireAdmin, async (req: AdminRequest, re
 
     if (metric === 'messages') {
       // Top users by message count
-      const { data } = await supabase
-        .from('messages')
-        .select('sender_id, profiles!messages_sender_id_fkey(id, first_name, last_name, profile_photo_url)')
+      const rows = await db.select({
+        sender_id: messages.senderId,
+        id: profiles.id,
+        first_name: profiles.firstName,
+        last_name: profiles.lastName,
+        profile_photo_url: profiles.profilePhotoUrl,
+      })
+        .from(messages)
+        .leftJoin(profiles, eq(profiles.id, messages.senderId))
         .limit(1000)
 
       const messageCounts: Record<string, any> = {}
-      data?.forEach(msg => {
+      rows?.forEach(msg => {
         const userId = msg.sender_id
         if (!messageCounts[userId]) {
           messageCounts[userId] = {
-            user: msg.profiles,
+            user: msg.id ? {
+              id: msg.id,
+              first_name: msg.first_name,
+              last_name: msg.last_name,
+              profile_photo_url: msg.profile_photo_url,
+            } : null,
             count: 0,
           }
         }
@@ -290,10 +271,9 @@ router.get('/top-users', requireAuth, requireAdmin, async (req: AdminRequest, re
       return res.json({ topUsers, metric: 'messages' })
     } else if (metric === 'friends') {
       // Top users by friend count
-      const { data } = await supabase
-        .from('friendships')
-        .select('user1_id, user2_id')
-        .eq('status', 'active')
+      const data = await db.select({ user1_id: friendships.user1Id, user2_id: friendships.user2Id })
+        .from(friendships)
+        .where(eq(friendships.status, 'active'))
 
       const friendCounts: Record<string, number> = {}
       data?.forEach(friendship => {
@@ -306,10 +286,14 @@ router.get('/top-users', requireAuth, requireAdmin, async (req: AdminRequest, re
         .slice(0, limitNum)
         .map(([userId]) => userId)
 
-      const { data: users } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, profile_photo_url')
-        .in('id', topUserIds)
+      const users = topUserIds.length > 0
+        ? await db.select({
+            id: profiles.id,
+            first_name: profiles.firstName,
+            last_name: profiles.lastName,
+            profile_photo_url: profiles.profilePhotoUrl,
+          }).from(profiles).where(inArray(profiles.id, topUserIds))
+        : []
 
       const topUsers = topUserIds.map(userId => ({
         user: users?.find(u => u.id === userId),
@@ -334,19 +318,18 @@ router.get('/report-trends', requireAuth, requireAdmin, async (req: AdminRequest
   try {
     const { days = '30' } = req.query
     const numDays = parseInt(days as string)
-    
+
     const startDate = new Date()
     startDate.setDate(startDate.getDate() - numDays)
 
     // Get reports by type over time
-    const { data: reports } = await supabase
-      .from('user_reports')
-      .select('created_at, report_type')
-      .gte('created_at', startDate.toISOString())
+    const reports = await db.select({ created_at: userReports.createdAt, report_type: userReports.reportType })
+      .from(userReports)
+      .where(gte(userReports.createdAt, startDate.toISOString()))
 
     const dailyReports: Record<string, Record<string, number>> = {}
     reports?.forEach(report => {
-      const date = new Date(report.created_at).toISOString().split('T')[0]
+      const date = new Date(report.created_at as string).toISOString().split('T')[0]
       if (!dailyReports[date]) {
         dailyReports[date] = {}
       }

@@ -1,5 +1,7 @@
 import { Router } from 'express'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { announcements } from '../db/schema.js'
 
 const router = Router()
 
@@ -18,22 +20,33 @@ router.get('/active', async (req, res) => {
     // Note: Skipping auth enrichment to avoid dependency; rely on explicit query params or global defaults
 
     // Base: active (we'll do schedule + placement + audience filters in JS to avoid .or overrides)
-    let query = supabase
-      .from('announcements')
-      .select('*')
-      .eq('is_active', true)
-      .order('priority', { ascending: false })
-      .order('published_at', { ascending: false, nullsFirst: false })
-      .order('created_at', { ascending: false })
+    const rows = await db.select({
+      id: announcements.id,
+      title: announcements.title,
+      message: announcements.message,
+      image_url: announcements.imageUrl,
+      link_url: announcements.linkUrl,
+      buttons: announcements.buttons,
+      placements: announcements.placements,
+      audience: announcements.audience,
+      countries: announcements.countries,
+      min_app_version: announcements.minAppVersion,
+      priority: announcements.priority,
+      starts_at: announcements.startsAt,
+      ends_at: announcements.endsAt,
+      is_active: announcements.isActive,
+      send_push_on_publish: announcements.sendPushOnPublish,
+      created_at: announcements.createdAt,
+      updated_at: announcements.updatedAt,
+      published_at: announcements.publishedAt,
+    })
+      .from(announcements)
+      .where(eq(announcements.isActive, true))
+      .orderBy(desc(announcements.priority), desc(announcements.publishedAt), desc(announcements.createdAt))
+
+    const data = rows
 
     // Note: placement, audience, country, time-window filtering are done below
-
-    const { data, error } = await query
-
-    if (error) {
-      console.error('Error fetching announcements:', error)
-      return res.status(500).json({ error: 'Failed to fetch announcements' })
-    }
 
     // Optional semver comparison for min_app_version
     const cmp = (a?: string, b?: string) => {
@@ -52,7 +65,7 @@ router.get('/active', async (req, res) => {
     const nowMs = Date.now()
 
     if (debug) {
-      const announcements = (data || []).map((row: any) => ({
+      const announcementsOut = (data || []).map((row: any) => ({
         id: row.id,
         title: row.title || undefined,
         message: row.message,
@@ -65,7 +78,7 @@ router.get('/active', async (req, res) => {
         audience: row.audience || 'all',
         sendPush: !!row.send_push_on_publish,
       }))
-      return res.json({ announcements })
+      return res.json({ announcements: announcementsOut })
     }
 
     const filteredByVersion = (data || []).filter((row: any) => {
@@ -105,7 +118,7 @@ router.get('/active', async (req, res) => {
       return arr.map(c => String(c).toUpperCase()).includes(String(country).toUpperCase())
     })
 
-    const announcements = filteredByCountry.map((row: any) => ({
+    const announcementsOut = filteredByCountry.map((row: any) => ({
       id: row.id,
       title: row.title || undefined,
       message: row.message,
@@ -119,7 +132,7 @@ router.get('/active', async (req, res) => {
       sendPush: !!row.send_push_on_publish,
     }))
 
-    return res.json({ announcements })
+    return res.json({ announcements: announcementsOut })
   } catch (e) {
     console.error('Announcements /active error:', e)
     return res.status(500).json({ error: 'Failed to fetch announcements' })

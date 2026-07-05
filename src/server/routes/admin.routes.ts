@@ -15,7 +15,10 @@ import {
   revokeAdminRole,
   getAdminRole
 } from '../middleware/adminAuth.js'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, gte, isNull, lte, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
+import { db } from '../config/db.js'
+import { adminRoles, adminAuditLogs, profiles, userReports, messages, friendships } from '../db/schema.js'
 
 const router = express.Router()
 
@@ -29,29 +32,27 @@ const router = express.Router()
  */
 router.get('/check', requireAuth, async (req: AuthRequest, res) => {
   try {
-    //console.log('🔍 Admin check - User ID:', req.user?.id)
     const userId = req.user!.id
 
     // Check admin_roles table for active admin role
-    const { data: adminRole, error } = await supabase
-      .from('admin_roles')
-      .select('id, role, granted_at, is_active')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    const [adminRole] = await db.select({
+      id: adminRoles.id,
+      role: adminRoles.role,
+      granted_at: adminRoles.grantedAt,
+      is_active: adminRoles.isActive,
+    }).from(adminRoles).where(and(
+      eq(adminRoles.userId, userId),
+      eq(adminRoles.isActive, true),
+      isNull(adminRoles.revokedAt),
+    )).limit(1)
 
-    //console.log('🔍 Admin check - Query result:', { adminRole, error })
-
-    if (error || !adminRole) {
-      //console.log('❌ Admin check - User is not an admin')
+    if (!adminRole) {
       return res.json({
         isAdmin: false,
         role: null
       })
     }
 
-    //console.log('✅ Admin check - User is admin:', adminRole.role)
     return res.json({
       isAdmin: true,
       role: adminRole.role,
@@ -74,15 +75,18 @@ router.get('/verify', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
 
     // Check admin_roles table for active admin role
-    const { data: adminRole, error } = await supabase
-      .from('admin_roles')
-      .select('id, role, granted_at, is_active')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    const [adminRole] = await db.select({
+      id: adminRoles.id,
+      role: adminRoles.role,
+      granted_at: adminRoles.grantedAt,
+      is_active: adminRoles.isActive,
+    }).from(adminRoles).where(and(
+      eq(adminRoles.userId, userId),
+      eq(adminRoles.isActive, true),
+      isNull(adminRoles.revokedAt),
+    )).limit(1)
 
-    if (error || !adminRole) {
+    if (!adminRole) {
       return res.status(403).json({
         isAdmin: false,
         error: 'Not authorized as admin'
@@ -111,27 +115,25 @@ router.get('/profile', requireAuth, requireAdmin, async (req: AdminRequest, res)
     const userId = req.user!.id
 
     // Get user profile
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('id, first_name, last_name, email, profile_photo_url, created_at')
-      .eq('id', userId)
-      .single()
+    const [profile] = await db.select({
+      id: profiles.id,
+      first_name: profiles.firstName,
+      last_name: profiles.lastName,
+      email: profiles.email,
+      profile_photo_url: profiles.profilePhotoUrl,
+      created_at: profiles.createdAt,
+    }).from(profiles).where(eq(profiles.id, userId)).limit(1)
 
-    if (profileError) {
+    if (!profile) {
       return res.status(404).json({ error: 'Profile not found' })
     }
 
     // Get admin stats
-    const { count: actionsCount } = await supabase
-      .from('admin_audit_logs')
-      .select('id', { count: 'exact', head: true })
-      .eq('admin_id', userId)
+    const [{ count: actionsCount }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(adminAuditLogs).where(eq(adminAuditLogs.adminId, userId))
 
-    const { count: reportsHandled } = await supabase
-      .from('user_reports')
-      .select('id', { count: 'exact', head: true })
-      .eq('moderator_id', userId)
-      .eq('status', 'resolved')
+    const [{ count: reportsHandled }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(userReports).where(and(eq(userReports.moderatorId, userId), eq(userReports.status, 'resolved')))
 
     return res.json({
       profile,
@@ -157,32 +159,45 @@ router.get('/profile', requireAuth, requireAdmin, async (req: AdminRequest, res)
  */
 router.get('/admins', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
-    const { data: admins, error } = await supabase
-      .from('admin_roles')
-      .select(`
-        id,
-        role,
-        granted_at,
-        is_active,
-        user:profiles!admin_roles_user_id_fkey (
-          id,
-          first_name,
-          last_name,
-          email,
-          profile_photo_url
-        ),
-        granted_by_user:profiles!admin_roles_granted_by_fkey (
-          id,
-          first_name,
-          last_name
-        )
-      `)
-      .order('granted_at', { ascending: false })
+    const grantedByProfiles = alias(profiles, 'granted_by_profiles')
 
-    if (error) {
-      console.error('Error fetching admins:', error)
-      return res.status(500).json({ error: 'Failed to fetch admins' })
-    }
+    const rows = await db.select({
+      id: adminRoles.id,
+      role: adminRoles.role,
+      granted_at: adminRoles.grantedAt,
+      is_active: adminRoles.isActive,
+      user_id: profiles.id,
+      user_first_name: profiles.firstName,
+      user_last_name: profiles.lastName,
+      user_email: profiles.email,
+      user_profile_photo_url: profiles.profilePhotoUrl,
+      granted_by_id: grantedByProfiles.id,
+      granted_by_first_name: grantedByProfiles.firstName,
+      granted_by_last_name: grantedByProfiles.lastName,
+    })
+      .from(adminRoles)
+      .leftJoin(profiles, eq(profiles.id, adminRoles.userId))
+      .leftJoin(grantedByProfiles, eq(grantedByProfiles.id, adminRoles.grantedBy))
+      .orderBy(desc(adminRoles.grantedAt))
+
+    const admins = rows.map(r => ({
+      id: r.id,
+      role: r.role,
+      granted_at: r.granted_at,
+      is_active: r.is_active,
+      user: r.user_id ? {
+        id: r.user_id,
+        first_name: r.user_first_name,
+        last_name: r.user_last_name,
+        email: r.user_email,
+        profile_photo_url: r.user_profile_photo_url,
+      } : null,
+      granted_by_user: r.granted_by_id ? {
+        id: r.granted_by_id,
+        first_name: r.granted_by_first_name,
+        last_name: r.granted_by_last_name,
+      } : null,
+    }))
 
     return res.json({ admins })
   } catch (error) {
@@ -268,48 +283,36 @@ router.post('/admins/revoke', requireAuth, requireSuperAdmin, async (req: AdminR
 router.get('/dashboard/stats', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
     // Total users
-    const { count: totalUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
+    const [{ count: totalUsers }] = await db.select({ count: sql<number>`count(*)::int` }).from(profiles)
 
     // Active users (logged in within last 7 days)
     const sevenDaysAgo = new Date()
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
-    const { count: activeUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .gte('last_seen', sevenDaysAgo.toISOString())
+    const [{ count: activeUsers }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(profiles).where(gte(profiles.lastSeen, sevenDaysAgo.toISOString()))
 
     // New users (registered in last 30 days)
     const thirtyDaysAgo = new Date()
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
 
-    const { count: newUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', thirtyDaysAgo.toISOString())
+    const [{ count: newUsers }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(profiles).where(gte(profiles.createdAt, thirtyDaysAgo.toISOString()))
 
     // Pending reports
-    const { count: pendingReports } = await supabase
-      .from('user_reports')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'pending')
+    const [{ count: pendingReports }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(userReports).where(eq(userReports.status, 'pending'))
 
     // Total messages (last 24 hours)
     const oneDayAgo = new Date()
     oneDayAgo.setDate(oneDayAgo.getDate() - 1)
 
-    const { count: recentMessages } = await supabase
-      .from('messages')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', oneDayAgo.toISOString())
+    const [{ count: recentMessages }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(messages).where(gte(messages.createdAt, oneDayAgo.toISOString()))
 
     // Total friendships
-    const { count: totalFriendships } = await supabase
-      .from('friendships')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'active')
+    const [{ count: totalFriendships }] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(friendships).where(eq(friendships.status, 'active'))
 
     return res.json({
       stats: {
@@ -335,29 +338,37 @@ router.get('/dashboard/recent-actions', requireAuth, requireAdmin, async (req: A
   try {
     const limit = parseInt(req.query.limit as string) || 20
 
-    const { data: actions, error } = await supabase
-      .from('admin_audit_logs')
-      .select(`
-        id,
-        action,
-        target_type,
-        target_id,
-        details,
-        created_at,
-        admin:profiles!admin_audit_logs_admin_id_fkey (
-          id,
-          first_name,
-          last_name,
-          profile_photo_url
-        )
-      `)
-      .order('created_at', { ascending: false })
+    const rows = await db.select({
+      id: adminAuditLogs.id,
+      action: adminAuditLogs.action,
+      target_type: adminAuditLogs.targetType,
+      target_id: adminAuditLogs.targetId,
+      details: adminAuditLogs.details,
+      created_at: adminAuditLogs.createdAt,
+      admin_id: profiles.id,
+      admin_first_name: profiles.firstName,
+      admin_last_name: profiles.lastName,
+      admin_profile_photo_url: profiles.profilePhotoUrl,
+    })
+      .from(adminAuditLogs)
+      .leftJoin(profiles, eq(profiles.id, adminAuditLogs.adminId))
+      .orderBy(desc(adminAuditLogs.createdAt))
       .limit(limit)
 
-    if (error) {
-      console.error('Error fetching recent actions:', error)
-      return res.status(500).json({ error: 'Failed to fetch recent actions' })
-    }
+    const actions = rows.map(r => ({
+      id: r.id,
+      action: r.action,
+      target_type: r.target_type,
+      target_id: r.target_id,
+      details: r.details,
+      created_at: r.created_at,
+      admin: r.admin_id ? {
+        id: r.admin_id,
+        first_name: r.admin_first_name,
+        last_name: r.admin_last_name,
+        profile_photo_url: r.admin_profile_photo_url,
+      } : null,
+    }))
 
     return res.json({ actions })
   } catch (error) {
@@ -390,50 +401,55 @@ router.get('/audit-logs', requireAuth, requireAdmin, async (req: AdminRequest, r
     const limitNum = parseInt(limit as string)
     const offset = (pageNum - 1) * limitNum
 
-    let query = supabase
-      .from('admin_audit_logs')
-      .select(`
-        id,
-        action,
-        target_type,
-        target_id,
-        details,
-        ip_address,
-        created_at,
-        admin:profiles!admin_audit_logs_admin_id_fkey (
-          id,
-          first_name,
-          last_name,
-          email,
-          profile_photo_url
-        )
-      `, { count: 'exact' })
-
     // Apply filters
-    if (adminId) {
-      query = query.eq('admin_id', adminId)
-    }
-    if (action) {
-      query = query.eq('action', action)
-    }
-    if (targetType) {
-      query = query.eq('target_type', targetType)
-    }
-    if (startDate) {
-      query = query.gte('created_at', startDate)
-    }
-    if (endDate) {
-      query = query.lte('created_at', endDate)
-    }
+    const conditions = []
+    if (adminId) conditions.push(eq(adminAuditLogs.adminId, adminId as string))
+    if (action) conditions.push(eq(adminAuditLogs.action, action as string))
+    if (targetType) conditions.push(eq(adminAuditLogs.targetType, targetType as string))
+    if (startDate) conditions.push(gte(adminAuditLogs.createdAt, startDate as string))
+    if (endDate) conditions.push(lte(adminAuditLogs.createdAt, endDate as string))
 
-    const { data: logs, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limitNum - 1)
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
-    if (error) {
-      console.error('Error fetching audit logs:', error)
-      return res.status(500).json({ error: 'Failed to fetch audit logs' })
-    }
+    const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(adminAuditLogs).where(whereClause)
+
+    const rows = await db.select({
+      id: adminAuditLogs.id,
+      action: adminAuditLogs.action,
+      target_type: adminAuditLogs.targetType,
+      target_id: adminAuditLogs.targetId,
+      details: adminAuditLogs.details,
+      ip_address: adminAuditLogs.ipAddress,
+      created_at: adminAuditLogs.createdAt,
+      admin_id: profiles.id,
+      admin_first_name: profiles.firstName,
+      admin_last_name: profiles.lastName,
+      admin_email: profiles.email,
+      admin_profile_photo_url: profiles.profilePhotoUrl,
+    })
+      .from(adminAuditLogs)
+      .leftJoin(profiles, eq(profiles.id, adminAuditLogs.adminId))
+      .where(whereClause)
+      .orderBy(desc(adminAuditLogs.createdAt))
+      .limit(limitNum)
+      .offset(offset)
+
+    const logs = rows.map(r => ({
+      id: r.id,
+      action: r.action,
+      target_type: r.target_type,
+      target_id: r.target_id,
+      details: r.details,
+      ip_address: r.ip_address,
+      created_at: r.created_at,
+      admin: r.admin_id ? {
+        id: r.admin_id,
+        first_name: r.admin_first_name,
+        last_name: r.admin_last_name,
+        email: r.admin_email,
+        profile_photo_url: r.admin_profile_photo_url,
+      } : null,
+    }))
 
     return res.json({
       logs,
