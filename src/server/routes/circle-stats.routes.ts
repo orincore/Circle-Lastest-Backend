@@ -1,6 +1,9 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
 import { CirclePointsService } from '../services/circle-points.service.js'
+import { db } from '../config/db.js'
+import { userActivities } from '../db/schema.js'
+import { desc, eq } from 'drizzle-orm'
 
 const router = Router()
 
@@ -107,19 +110,21 @@ router.get('/activities', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
     const limit = parseInt(req.query.limit as string) || 20
     
-    const { data: activities, error } = await require('../config/supabase.js').supabase
-      .from('user_activities')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
+    const rows = await db.select({
+      id: userActivities.id,
+      user_id: userActivities.userId,
+      activity_type: userActivities.activityType,
+      points_change: userActivities.pointsChange,
+      related_user_id: userActivities.relatedUserId,
+      metadata: userActivities.metadata,
+      created_at: userActivities.createdAt,
+    })
+      .from(userActivities)
+      .where(eq(userActivities.userId, userId))
+      .orderBy(desc(userActivities.createdAt))
       .limit(limit)
-    
-    if (error) {
-      console.error('Error fetching activities:', error)
-      return res.status(500).json({ error: 'Failed to fetch activities' })
-    }
-    
-    res.json({ activities })
+
+    res.json({ activities: rows })
     
   } catch (error) {
     console.error('Error in activities endpoint:', error)

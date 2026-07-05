@@ -1,7 +1,10 @@
 import { Router } from 'express'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
 import type { AuthRequest } from '../middleware/auth.js'
+import { asc, eq, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { appVersionConfig } from '../db/schema.js'
+import { logger } from '../config/logger.js'
 
 const router = Router()
 
@@ -67,13 +70,18 @@ router.get('/check', async (req, res) => {
     }
 
     // Get version config from database
-    const { data: config, error } = await supabase
-      .from('app_version_config')
-      .select('*')
-      .eq('platform', normalizedPlatform)
-      .single()
+    const configRows = await db.select({
+      platform: appVersionConfig.platform,
+      min_version: appVersionConfig.minVersion,
+      latest_version: appVersionConfig.latestVersion,
+      force_update: appVersionConfig.forceUpdate,
+      update_message: appVersionConfig.updateMessage,
+      optional_update_message: appVersionConfig.optionalUpdateMessage,
+      store_url: appVersionConfig.storeUrl,
+    }).from(appVersionConfig).where(eq(appVersionConfig.platform, normalizedPlatform)).limit(1)
+    const config = configRows[0]
 
-    if (error || !config) {
+    if (!config) {
       // No config found, fall back to baseline defaults so new major versions are recognised
       const baseline = BASELINE_VERSION_CONFIG[normalizedPlatform]
       const needsUpdate = compareVersions(version, baseline.min_version) < 0
@@ -140,15 +148,15 @@ router.get('/check', async (req, res) => {
  */
 router.get('/config', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   try {
-    const { data: configs, error } = await supabase
-      .from('app_version_config')
-      .select('*')
-      .order('platform')
-
-    if (error) {
-      console.error('Get version config error:', error)
-      return res.status(500).json({ error: 'Failed to fetch version config' })
-    }
+    const configs = await db.select({
+      platform: appVersionConfig.platform,
+      min_version: appVersionConfig.minVersion,
+      latest_version: appVersionConfig.latestVersion,
+      force_update: appVersionConfig.forceUpdate,
+      update_message: appVersionConfig.updateMessage,
+      optional_update_message: appVersionConfig.optionalUpdateMessage,
+      store_url: appVersionConfig.storeUrl,
+    }).from(appVersionConfig).orderBy(asc(appVersionConfig.platform))
 
     // Return configs or defaults
     const baselineConfigs = {
@@ -157,9 +165,17 @@ router.get('/config', requireAuth, requireAdmin, async (req: AuthRequest, res) =
     }
 
     // Merge with existing configs
-    const result: Record<string, typeof baselineConfigs.android> = { ...baselineConfigs }
+    const result: Record<string, {
+      platform: string
+      min_version: string | null
+      latest_version: string | null
+      force_update: boolean | null
+      update_message: string | null
+      optional_update_message: string | null
+      store_url: string | null
+    }> = { ...baselineConfigs }
     if (configs) {
-      configs.forEach((config: typeof baselineConfigs.android) => {
+      configs.forEach((config) => {
         if (config.platform === 'android' || config.platform === 'ios') {
           result[config.platform] = {
             ...baselineConfigs[config.platform],
@@ -219,52 +235,63 @@ router.put('/config', requireAuth, requireAdmin, async (req: AuthRequest, res) =
       updated_by: req.user!.id
     }
 
-    // Check if config exists
-    const { data: existing } = await supabase
-      .from('app_version_config')
-      .select('id')
-      .eq('platform', platform)
-      .single()
+    // Upsert config (platform has a unique constraint)
+    const [row] = await db.insert(appVersionConfig).values({
+      platform,
+      minVersion: configData.min_version,
+      latestVersion: configData.latest_version,
+      forceUpdate: configData.force_update,
+      updateMessage: configData.update_message,
+      optionalUpdateMessage: configData.optional_update_message,
+      storeUrl: configData.store_url,
+      updatedAt: configData.updated_at,
+      updatedBy: configData.updated_by,
+    }).onConflictDoUpdate({
+      target: appVersionConfig.platform,
+      set: {
+        minVersion: configData.min_version,
+        latestVersion: configData.latest_version,
+        forceUpdate: configData.force_update,
+        updateMessage: configData.update_message,
+        optionalUpdateMessage: configData.optional_update_message,
+        storeUrl: configData.store_url,
+        updatedAt: configData.updated_at,
+        updatedBy: configData.updated_by,
+      },
+    }).returning()
 
-    let result
-    if (existing) {
-      // Update existing
-      const { data, error } = await supabase
-        .from('app_version_config')
-        .update(configData)
-        .eq('platform', platform)
-        .select()
-        .single()
-      result = { data, error }
-    } else {
-      // Insert new
-      const { data, error } = await supabase
-        .from('app_version_config')
-        .insert(configData)
-        .select()
-        .single()
-      result = { data, error }
-    }
-
-    if (result.error) {
-      console.error('Update version config error:', result.error)
+    if (!row) {
+      console.error('Update version config error: no row returned')
       return res.status(500).json({ error: 'Failed to update version config' })
     }
 
     // Log admin action
-    await supabase
-      .from('admin_logs')
-      .insert({
-        admin_id: req.user!.id,
-        action: 'update_app_version_config',
-        target_type: 'system',
-        details: { platform, config: configData },
-        created_at: new Date().toISOString()
-      })
+    try {
+      await db.execute(sql`
+        insert into admin_logs (admin_id, action, target_type, details, created_at)
+        values (${req.user!.id}::uuid, 'update_app_version_config', 'system', ${JSON.stringify({ platform, config: configData })}::jsonb, ${new Date().toISOString()})
+      `)
+    } catch (err) {
+      logger.warn({ error: err }, 'Could not write to admin_logs table')
+    }
+
+    const responseConfig = {
+      id: row.id,
+      platform: row.platform,
+      min_version: row.minVersion,
+      latest_version: row.latestVersion,
+      force_update: row.forceUpdate,
+      update_message: row.updateMessage,
+      optional_update_message: row.optionalUpdateMessage,
+      store_url: row.storeUrl,
+      updated_at: row.updatedAt,
+      updated_by: row.updatedBy,
+      created_at: row.createdAt,
+    }
 
     return res.json({
       success: true,
-      config: result.data,
+      config: responseConfig,
       message: `${platform} version config updated successfully`
     })
   } catch (error) {

@@ -1,29 +1,55 @@
 import { Router } from 'express'
-import { supabase } from '../config/supabase.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import type { AuthRequest } from '../middleware/auth.js'
+import { desc, eq } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { emailTemplates, notificationTemplates } from '../db/schema.js'
 
 const router = Router()
+
+function rowToNotificationTemplate(row: typeof notificationTemplates.$inferSelect) {
+  return {
+    id: row.id,
+    name: row.name,
+    title: row.title,
+    body: row.body,
+    category: row.category,
+    icon: row.icon,
+    image_url: row.imageUrl,
+    deep_link: row.deepLink,
+    variables: row.variables,
+    created_by: row.createdBy,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
+}
+
+function rowToEmailTemplate(row: typeof emailTemplates.$inferSelect) {
+  return {
+    id: row.id,
+    name: row.name,
+    subject: row.subject,
+    html_content: row.htmlContent,
+    text_content: row.textContent,
+    category: row.category,
+    variables: row.variables,
+    preview_text: row.previewText,
+    created_by: row.createdBy,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  }
+}
 
 // Get all notification templates
 router.get('/notifications', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   try {
     const { category } = req.query
 
-    let query = supabase
-      .from('notification_templates')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const condition = category && category !== 'all' ? eq(notificationTemplates.category, category as string) : undefined
 
-    if (category && category !== 'all') {
-      query = query.eq('category', category)
-    }
+    const rows = await db.select().from(notificationTemplates).where(condition).orderBy(desc(notificationTemplates.createdAt))
 
-    const { data, error } = await query
-
-    if (error) throw error
-
-    res.json(data || [])
+    res.json(rows.map(rowToNotificationTemplate))
   } catch (error) {
     console.error('Error fetching notification templates:', error)
     res.status(500).json({ error: 'Failed to fetch templates' })
@@ -40,25 +66,19 @@ router.post('/notifications', requireAuth, requireAdmin, async (req: AuthRequest
       return res.status(400).json({ error: 'Name, title, and body are required' })
     }
 
-    const { data, error } = await supabase
-      .from('notification_templates')
-      .insert({
-        name,
-        title,
-        body,
-        category,
-        icon,
-        image_url,
-        deep_link,
-        variables,
-        created_by: userId
-      })
-      .select()
-      .single()
+    const rows = await db.insert(notificationTemplates).values({
+      name,
+      title,
+      body,
+      category,
+      icon,
+      imageUrl: image_url,
+      deepLink: deep_link,
+      variables,
+      createdBy: userId,
+    }).returning()
 
-    if (error) throw error
-
-    res.status(201).json(data)
+    res.status(201).json(rowToNotificationTemplate(rows[0]))
   } catch (error) {
     console.error('Error creating notification template:', error)
     res.status(500).json({ error: 'Failed to create template' })
@@ -71,16 +91,22 @@ router.put('/notifications/:id', requireAuth, requireAdmin, async (req: AuthRequ
     const { id } = req.params
     const updates = req.body
 
-    const { data, error } = await supabase
-      .from('notification_templates')
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .select()
-      .single()
+    const setData: Partial<typeof notificationTemplates.$inferInsert> = {
+      updatedAt: new Date().toISOString(),
+    }
+    if (updates.name !== undefined) setData.name = updates.name
+    if (updates.title !== undefined) setData.title = updates.title
+    if (updates.body !== undefined) setData.body = updates.body
+    if (updates.category !== undefined) setData.category = updates.category
+    if (updates.icon !== undefined) setData.icon = updates.icon
+    if (updates.image_url !== undefined) setData.imageUrl = updates.image_url
+    if (updates.deep_link !== undefined) setData.deepLink = updates.deep_link
+    if (updates.variables !== undefined) setData.variables = updates.variables
+    if (updates.created_by !== undefined) setData.createdBy = updates.created_by
 
-    if (error) throw error
+    const rows = await db.update(notificationTemplates).set(setData).where(eq(notificationTemplates.id, id)).returning()
 
-    res.json(data)
+    res.json(rowToNotificationTemplate(rows[0]))
   } catch (error) {
     console.error('Error updating notification template:', error)
     res.status(500).json({ error: 'Failed to update template' })
@@ -92,12 +118,7 @@ router.delete('/notifications/:id', requireAuth, requireAdmin, async (req: AuthR
   try {
     const { id } = req.params
 
-    const { error } = await supabase
-      .from('notification_templates')
-      .delete()
-      .eq('id', id)
-
-    if (error) throw error
+    await db.delete(notificationTemplates).where(eq(notificationTemplates.id, id))
 
     res.json({ success: true })
   } catch (error) {
@@ -111,20 +132,11 @@ router.get('/emails', requireAuth, requireAdmin, async (req: AuthRequest, res) =
   try {
     const { category } = req.query
 
-    let query = supabase
-      .from('email_templates')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const condition = category && category !== 'all' ? eq(emailTemplates.category, category as string) : undefined
 
-    if (category && category !== 'all') {
-      query = query.eq('category', category)
-    }
+    const rows = await db.select().from(emailTemplates).where(condition).orderBy(desc(emailTemplates.createdAt))
 
-    const { data, error } = await query
-
-    if (error) throw error
-
-    res.json(data || [])
+    res.json(rows.map(rowToEmailTemplate))
   } catch (error) {
     console.error('Error fetching email templates:', error)
     res.status(500).json({ error: 'Failed to fetch templates' })
@@ -141,24 +153,18 @@ router.post('/emails', requireAuth, requireAdmin, async (req: AuthRequest, res) 
       return res.status(400).json({ error: 'Name, subject, and html_content are required' })
     }
 
-    const { data, error } = await supabase
-      .from('email_templates')
-      .insert({
-        name,
-        subject,
-        html_content,
-        text_content,
-        category,
-        variables,
-        preview_text,
-        created_by: userId
-      })
-      .select()
-      .single()
+    const rows = await db.insert(emailTemplates).values({
+      name,
+      subject,
+      htmlContent: html_content,
+      textContent: text_content,
+      category,
+      variables,
+      previewText: preview_text,
+      createdBy: userId,
+    }).returning()
 
-    if (error) throw error
-
-    res.status(201).json(data)
+    res.status(201).json(rowToEmailTemplate(rows[0]))
   } catch (error) {
     console.error('Error creating email template:', error)
     res.status(500).json({ error: 'Failed to create template' })

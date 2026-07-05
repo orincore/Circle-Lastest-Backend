@@ -1,5 +1,7 @@
 import express from 'express'
-import { supabase } from '../config/supabase.js'
+import { db } from '../config/db.js'
+import { profiles } from '../db/schema.js'
+import { and, eq, ilike, isNull } from 'drizzle-orm'
 import { cache, cacheKeys, PROFILE_TTL } from '../services/cache.js'
 
 const router = express.Router()
@@ -13,29 +15,28 @@ router.get('/profile/:username', async (req, res) => {
     const cached = await cache.getJSON(cacheKey)
     if (cached) return res.json(cached)
 
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select(`
-        id,
-        username,
-        first_name,
-        last_name,
-        profile_photo_url,
-        age,
-        gender,
-        about,
-        interests,
-        needs,
-        verification_status,
-        verified_at,
-        created_at,
-        is_suspended,
-        deleted_at
-      `)
-      .ilike('username', raw)
-      .maybeSingle()
+    const [profile] = await db.select({
+      id: profiles.id,
+      username: profiles.username,
+      first_name: profiles.firstName,
+      last_name: profiles.lastName,
+      profile_photo_url: profiles.profilePhotoUrl,
+      age: profiles.age,
+      gender: profiles.gender,
+      about: profiles.about,
+      interests: profiles.interests,
+      needs: profiles.needs,
+      verification_status: profiles.verificationStatus,
+      verified_at: profiles.verifiedAt,
+      created_at: profiles.createdAt,
+      is_suspended: profiles.isSuspended,
+      deleted_at: profiles.deletedAt,
+    })
+      .from(profiles)
+      .where(ilike(profiles.username, raw))
+      .limit(1)
 
-    if (error || !profile) {
+    if (!profile) {
       return res.status(404).json({ error: 'Profile not found' })
     }
 

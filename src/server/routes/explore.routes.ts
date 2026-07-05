@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { requireAuth, AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { db } from '../config/db.js'
+import { blindDateMatches, blocks, chatMembers, exploreInteractions, friendships, matchmakingProposals, messages, profiles } from '../db/schema.js'
+import { and, count, eq, gte, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import { getCachedOrFetch, generateCacheKey } from '../services/explore-cache.js'
 import { cache, cacheKeys, PROFILE_TTL } from '../services/cache.js'
 
@@ -11,16 +13,12 @@ async function getAllSectionsLogic(currentUserId: string) {
   //console.log('Fetching fresh explore data for user:', currentUserId)
   
   // Get current user's profile for compatibility calculation
-  const { data: currentUser, error: currentUserError } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', currentUserId)
-    .single()
+  const [currentUser] = await db.select().from(profiles).where(eq(profiles.id, currentUserId)).limit(1)
 
-  if (currentUserError) throw currentUserError
+  if (!currentUser) throw new Error('Current user profile not found')
 
   // Check if current user is in invisible mode
-  if (currentUser.invisible_mode) {
+  if (currentUser.invisibleMode) {
     return {
       topUsers: [],
       newUsers: [],
@@ -30,83 +28,97 @@ async function getAllSectionsLogic(currentUserId: string) {
   }
 
   // Get all potential users (increased limit for better distribution) - show all users regardless of verification
-  const { data: allUsers, error } = await supabase
-    .from('profiles')
-    .select(`
-      id,
-      first_name,
-      last_name,
-      username,
-      email,
-      profile_photo_url,
-      instagram_username,
-      age,
-      gender,
-      interests,
-      needs,
-      latitude,
-      longitude,
-      created_at,
-      updated_at,
-      invisible_mode,
-      verification_status,
-      email_verified
-    `)
-    .neq('id', currentUserId)
-    .not('first_name', 'is', null)
-    .not('last_name', 'is', null)
-    .neq('invisible_mode', true) // Exclude users in invisible mode
-    .is('deleted_at', null) // Exclude deleted accounts
-    .or('is_suspended.is.null,is_suspended.eq.false') // Exclude suspended accounts
-    .order('updated_at', { ascending: false })
-    .limit(100) // Get more users for better distribution
+  const allUsersRows = await db.select({
+    id: profiles.id,
+    first_name: profiles.firstName,
+    last_name: profiles.lastName,
+    username: profiles.username,
+    email: profiles.email,
+    profile_photo_url: profiles.profilePhotoUrl,
+    instagram_username: profiles.instagramUsername,
+    age: profiles.age,
+    gender: profiles.gender,
+    interests: profiles.interests,
+    needs: profiles.needs,
+    latitude: profiles.latitude,
+    longitude: profiles.longitude,
+    created_at: profiles.createdAt,
+    updated_at: profiles.updatedAt,
+    invisible_mode: profiles.invisibleMode,
+    verification_status: profiles.verificationStatus,
+    email_verified: profiles.emailVerified,
+  })
+    .from(profiles)
+    .where(and(
+      ne(profiles.id, currentUserId),
+      sql`${profiles.firstName} is not null`,
+      sql`${profiles.lastName} is not null`,
+      ne(profiles.invisibleMode, true),
+      isNull(profiles.deletedAt),
+      or(isNull(profiles.isSuspended), eq(profiles.isSuspended, false)),
+    ))
+    .orderBy(sql`${profiles.updatedAt} desc`)
+    .limit(100)
 
-  if (error) throw error
+  const allUsers = allUsersRows
 
   // Filter out friends and blocked users
   const userIds = allUsers?.map(u => u.id) || []
-  
+
   // Get friendships to exclude (accept both 'active' and 'accepted')
-  const { data: friendships } = await supabase
-    .from('friendships')
-    .select('user1_id, user2_id')
-    .or(`user1_id.eq.${currentUserId},user2_id.eq.${currentUserId}`)
-    .in('status', ['active', 'accepted'])
-    .in('user1_id', [...userIds, currentUserId])
-    .in('user2_id', [...userIds, currentUserId])
+  const friendshipRows = userIds.length > 0 ? await db.select({
+    user1_id: friendships.user1Id,
+    user2_id: friendships.user2Id,
+  })
+    .from(friendships)
+    .where(and(
+      or(eq(friendships.user1Id, currentUserId), eq(friendships.user2Id, currentUserId)),
+      inArray(friendships.status, ['active', 'accepted']),
+      inArray(friendships.user1Id, [...userIds, currentUserId]),
+      inArray(friendships.user2Id, [...userIds, currentUserId]),
+    )) : []
 
   // Get blocks to exclude
-  const { data: blocks } = await supabase
-    .from('blocks')
-    .select('blocker_id, blocked_id')
-    .or(`blocker_id.eq.${currentUserId},blocked_id.eq.${currentUserId}`)
-    .in('blocker_id', [...userIds, currentUserId])
-    .in('blocked_id', [...userIds, currentUserId])
+  const blockRows = userIds.length > 0 ? await db.select({
+    blocker_id: blocks.blockerId,
+    blocked_id: blocks.blockedId,
+  })
+    .from(blocks)
+    .where(and(
+      or(eq(blocks.blockerId, currentUserId), eq(blocks.blockedId, currentUserId)),
+      inArray(blocks.blockerId, [...userIds, currentUserId]),
+      inArray(blocks.blockedId, [...userIds, currentUserId]),
+    )) : []
 
   // Create sets of user IDs to exclude
   const friendIds = new Set<string>()
   const blockedIds = new Set<string>()
 
-  friendships?.forEach(f => {
+  friendshipRows?.forEach(f => {
     if (f.user1_id === currentUserId) friendIds.add(f.user2_id)
     if (f.user2_id === currentUserId) friendIds.add(f.user1_id)
   })
 
-  blocks?.forEach(b => {
+  blockRows?.forEach(b => {
     blockedIds.add(b.blocker_id)
     blockedIds.add(b.blocked_id)
   })
 
   // Also exclude users who are currently in an ACTIVE blind date match with the current user.
   // Once a blind date is revealed, they can appear normally in explore/search.
-  const { data: blindMatches } = await supabase
-    .from('blind_date_matches')
-    .select('user_a, user_b, status')
-    .or(`user_a.eq.${currentUserId},user_b.eq.${currentUserId}`)
-    .eq('status', 'active')
+  const blindMatchRows = await db.select({
+    user_a: blindDateMatches.userA,
+    user_b: blindDateMatches.userB,
+    status: blindDateMatches.status,
+  })
+    .from(blindDateMatches)
+    .where(and(
+      or(eq(blindDateMatches.userA, currentUserId), eq(blindDateMatches.userB, currentUserId)),
+      eq(blindDateMatches.status, 'active'),
+    ))
 
   const blindPartnerIds = new Set<string>()
-  blindMatches?.forEach((m: any) => {
+  blindMatchRows?.forEach((m: any) => {
     const otherId = m.user_a === currentUserId ? m.user_b : m.user_a
     if (otherId) blindPartnerIds.add(otherId)
   })
@@ -114,8 +126,8 @@ async function getAllSectionsLogic(currentUserId: string) {
   // Get current user's preferences for filtering
   const userNeeds = currentUser.needs || []
   const userInterests = currentUser.interests || []
-  const userAgePreference = currentUser.age_preference || 'flexible'
-  const userLocationPreference = currentUser.location_preference || 'nearby'
+  const userAgePreference = currentUser.agePreference || 'flexible'
+  const userLocationPreference = currentUser.locationPreference || 'nearby'
   
   // Calculate age range based on preference
   const getAgeRange = (preference: string, userAge: number) => {
@@ -155,8 +167,8 @@ async function getAllSectionsLogic(currentUserId: string) {
     // Location preference filter (if user has location data)
     if (currentUser.latitude && currentUser.longitude && user.latitude && user.longitude) {
       const distance = calculateDistance(
-        currentUser.latitude, currentUser.longitude,
-        user.latitude, user.longitude
+        Number(currentUser.latitude), Number(currentUser.longitude),
+        Number(user.latitude), Number(user.longitude)
       )
       
       // Apply location preference
@@ -177,7 +189,7 @@ async function getAllSectionsLogic(currentUserId: string) {
 
   const usersWithScores = eligibleUsers.map(user => {
     const compatibilityScore = calculateCompatibilityScore(currentUser, user)
-    const isNewUser = new Date(user.created_at) >= sevenDaysAgo
+    const isNewUser = new Date(user.created_at as string) >= sevenDaysAgo
     
     // Calculate profile completeness score
     const completenessScore = (
@@ -234,7 +246,7 @@ async function getAllSectionsLogic(currentUserId: string) {
   // 2. Second priority: New users (not already in compatibility)
   const availableNewUsers = usersWithScores
     .filter(user => user.isNewUser && !usedUserIds.has(user.id))
-    .sort((a, b) => new Date(b.joinedDate).getTime() - new Date(a.joinedDate).getTime())
+    .sort((a, b) => new Date(b.joinedDate as string).getTime() - new Date(a.joinedDate as string).getTime())
     .slice(0, 5)
 
   availableNewUsers.forEach(user => {
@@ -250,7 +262,7 @@ async function getAllSectionsLogic(currentUserId: string) {
       if (b.completenessScore !== a.completenessScore) {
         return b.completenessScore - a.completenessScore
       }
-      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      return new Date(b.updatedAt as string).getTime() - new Date(a.updatedAt as string).getTime()
     })
     .slice(0, 5)
 
@@ -345,71 +357,88 @@ router.get('/search', requireAuth, async (req: AuthRequest, res) => {
     const searchTerm = query.trim().toLowerCase()
 
     // Search in multiple fields - show all users regardless of verification status
-    const { data: searchResults, error } = await supabase
-      .from('profiles')
-      .select(`
-        id,
-        first_name,
-        last_name,
-        username,
-        email,
-        profile_photo_url,
-        instagram_username,
-        age,
-        gender,
-        interests,
-        needs,
-        verification_status,
-        email_verified
-      `)
-      .neq('id', currentUserId)
-      .is('deleted_at', null) // Exclude deleted accounts
-      .or('is_suspended.is.null,is_suspended.eq.false') // Exclude suspended accounts
-      .or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,username.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
+    const searchResults = await db.select({
+      id: profiles.id,
+      first_name: profiles.firstName,
+      last_name: profiles.lastName,
+      username: profiles.username,
+      email: profiles.email,
+      profile_photo_url: profiles.profilePhotoUrl,
+      instagram_username: profiles.instagramUsername,
+      age: profiles.age,
+      gender: profiles.gender,
+      interests: profiles.interests,
+      needs: profiles.needs,
+      verification_status: profiles.verificationStatus,
+      email_verified: profiles.emailVerified,
+    })
+      .from(profiles)
+      .where(and(
+        ne(profiles.id, currentUserId),
+        isNull(profiles.deletedAt),
+        or(isNull(profiles.isSuspended), eq(profiles.isSuspended, false)),
+        or(
+          ilike(profiles.firstName, `%${searchTerm}%`),
+          ilike(profiles.lastName, `%${searchTerm}%`),
+          ilike(profiles.username, `%${searchTerm}%`),
+          ilike(profiles.email, `%${searchTerm}%`),
+        ),
+      ))
       .limit(parseInt(limit as string))
-
-    if (error) throw error
 
     // Filter out blocked users (but include friends in search results)
     const userIds = searchResults?.map(u => u.id) || []
-    
-    const { data: blocks } = await supabase
-      .from('blocks')
-      .select('blocker_id, blocked_id')
-      .or(`blocker_id.eq.${currentUserId},blocked_id.eq.${currentUserId}`)
-      .in('blocker_id', [...userIds, currentUserId])
-      .in('blocked_id', [...userIds, currentUserId])
+
+    const blockRows = userIds.length > 0 ? await db.select({
+      blocker_id: blocks.blockerId,
+      blocked_id: blocks.blockedId,
+    })
+      .from(blocks)
+      .where(and(
+        or(eq(blocks.blockerId, currentUserId), eq(blocks.blockedId, currentUserId)),
+        inArray(blocks.blockerId, [...userIds, currentUserId]),
+        inArray(blocks.blockedId, [...userIds, currentUserId]),
+      )) : []
 
     const blockedIds = new Set()
-    blocks?.forEach(b => {
+    blockRows?.forEach(b => {
       blockedIds.add(b.blocker_id)
       blockedIds.add(b.blocked_id)
     })
 
     // Get friendship status for search results (accept both 'active' and 'accepted')
-    const { data: friendships } = await supabase
-      .from('friendships')
-      .select('user1_id, user2_id')
-      .or(`user1_id.eq.${currentUserId},user2_id.eq.${currentUserId}`)
-      .in('status', ['active', 'accepted'])
-      .in('user1_id', [...userIds, currentUserId])
-      .in('user2_id', [...userIds, currentUserId])
+    const friendshipRows = userIds.length > 0 ? await db.select({
+      user1_id: friendships.user1Id,
+      user2_id: friendships.user2Id,
+    })
+      .from(friendships)
+      .where(and(
+        or(eq(friendships.user1Id, currentUserId), eq(friendships.user2Id, currentUserId)),
+        inArray(friendships.status, ['active', 'accepted']),
+        inArray(friendships.user1Id, [...userIds, currentUserId]),
+        inArray(friendships.user2Id, [...userIds, currentUserId]),
+      )) : []
 
     const friendIds = new Set()
-    friendships?.forEach(f => {
+    friendshipRows?.forEach(f => {
       if (f.user1_id === currentUserId) friendIds.add(f.user2_id)
       if (f.user2_id === currentUserId) friendIds.add(f.user1_id)
     })
 
     // Exclude users who are in an ACTIVE blind date match with the current user
-    const { data: blindMatches } = await supabase
-      .from('blind_date_matches')
-      .select('user_a, user_b, status')
-      .or(`user_a.eq.${currentUserId},user_b.eq.${currentUserId}`)
-      .eq('status', 'active')
+    const blindMatchRows = await db.select({
+      user_a: blindDateMatches.userA,
+      user_b: blindDateMatches.userB,
+      status: blindDateMatches.status,
+    })
+      .from(blindDateMatches)
+      .where(and(
+        or(eq(blindDateMatches.userA, currentUserId), eq(blindDateMatches.userB, currentUserId)),
+        eq(blindDateMatches.status, 'active'),
+      ))
 
     const blindPartnerIds = new Set<string>()
-    blindMatches?.forEach((m: any) => {
+    blindMatchRows?.forEach((m: any) => {
       const otherId = m.user_a === currentUserId ? m.user_b : m.user_a
       if (otherId) blindPartnerIds.add(otherId)
     })
@@ -470,8 +499,8 @@ function calculateCompatibilityScore(user1: any, user2: any): number {
   // Location proximity (max 25 points)
   if (user1.latitude && user1.longitude && user2.latitude && user2.longitude) {
     const distance = calculateDistance(
-      user1.latitude, user1.longitude,
-      user2.latitude, user2.longitude
+      Number(user1.latitude), Number(user1.longitude),
+      Number(user2.latitude), Number(user2.longitude)
     )
     if (distance <= 5) score += 25
     else if (distance <= 15) score += 20
@@ -511,12 +540,17 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
 
     // Block check first — it's viewer-specific (depends on currentUserId), so it
     // must run on every request and can't be part of the shared cached payload.
-    const { data: blocks } = await supabase
-      .from('blocks')
-      .select('blocker_id, blocked_id')
-      .or(`and(blocker_id.eq.${currentUserId},blocked_id.eq.${userId}),and(blocker_id.eq.${userId},blocked_id.eq.${currentUserId})`)
+    const blockRows = await db.select({
+      blocker_id: blocks.blockerId,
+      blocked_id: blocks.blockedId,
+    })
+      .from(blocks)
+      .where(or(
+        and(eq(blocks.blockerId, currentUserId), eq(blocks.blockedId, userId)),
+        and(eq(blocks.blockerId, userId), eq(blocks.blockedId, currentUserId)),
+      ))
 
-    const isBlocked = blocks && blocks.length > 0
+    const isBlocked = blockRows && blockRows.length > 0
 
     if (isBlocked) {
       return res.status(403).json({ error: 'User profile not accessible' })
@@ -531,40 +565,33 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Get user profile
-    const { data: userProfile, error } = await supabase
-      .from('profiles')
-      .select(`
-        id,
-        first_name,
-        last_name,
-        username,
-        email,
-        profile_photo_url,
-        instagram_username,
-        age,
-        gender,
-        about,
-        interests,
-        needs,
-        created_at,
-        verification_status,
-        email_verified,
-        is_suspended,
-        deleted_at
-      `)
-      .eq('id', userId)
-      .single()
-
-    //console.log('Supabase query result:', { userProfile, error })
-
-    if (error) {
-      console.error('Error fetching user profile:', error)
-      console.error('Error details:', {
-        code: error.code,
-        message: error.message,
-        details: error.details,
-        hint: error.hint
+    let userProfile
+    try {
+      const [row] = await db.select({
+        id: profiles.id,
+        first_name: profiles.firstName,
+        last_name: profiles.lastName,
+        username: profiles.username,
+        email: profiles.email,
+        profile_photo_url: profiles.profilePhotoUrl,
+        instagram_username: profiles.instagramUsername,
+        age: profiles.age,
+        gender: profiles.gender,
+        about: profiles.about,
+        interests: profiles.interests,
+        needs: profiles.needs,
+        created_at: profiles.createdAt,
+        verification_status: profiles.verificationStatus,
+        email_verified: profiles.emailVerified,
+        is_suspended: profiles.isSuspended,
+        deleted_at: profiles.deletedAt,
       })
+        .from(profiles)
+        .where(eq(profiles.id, userId))
+        .limit(1)
+      userProfile = row
+    } catch (error) {
+      console.error('Error fetching user profile:', error)
       return res.status(404).json({ error: 'User not found' })
     }
 
@@ -580,36 +607,33 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
 
     // Get user stats
     // 1. Count friends (accept both 'active' and 'accepted')
-    const { count: friendsCount } = await supabase
-      .from('friendships')
-      .select('*', { count: 'exact', head: true })
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .in('status', ['active', 'accepted'])
+    const [{ count: friendsCount }] = await db.select({ count: count() })
+      .from(friendships)
+      .where(and(
+        or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId)),
+        inArray(friendships.status, ['active', 'accepted']),
+      ))
 
     // 2. Count chats (where user is a participant)
-    const { data: userChats } = await supabase
-      .from('chat_participants')
-      .select('chat_id')
-      .eq('user_id', userId)
+    const userChats = await db.select({ chat_id: chatMembers.chatId })
+      .from(chatMembers)
+      .where(eq(chatMembers.userId, userId))
 
     const chatIds = userChats?.map(c => c.chat_id) || []
     const chatsCount = chatIds.length
 
     // 3. Count messages sent
-    const { count: messagesSent } = await supabase
-      .from('messages')
-      .select('*', { count: 'exact', head: true })
-      .eq('sender_id', userId)
+    const [{ count: messagesSent }] = await db.select({ count: count() })
+      .from(messages)
+      .where(eq(messages.senderId, userId))
 
     // 4. Count messages received (messages in user's chats but not sent by them)
     let messagesReceived = 0
     if (chatIds.length > 0) {
-      const { count } = await supabase
-        .from('messages')
-        .select('*', { count: 'exact', head: true })
-        .in('chat_id', chatIds)
-        .neq('sender_id', userId)
-      messagesReceived = count || 0
+      const [{ count: recvCount }] = await db.select({ count: count() })
+        .from(messages)
+        .where(and(inArray(messages.chatId, chatIds), ne(messages.senderId, userId)))
+      messagesReceived = recvCount || 0
     }
 
     // Transform user data
@@ -665,70 +689,71 @@ router.post('/match', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Check if already matched
-    const { data: existingFriendship } = await supabase
-      .from('friendships')
-      .select('id, status')
-      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${targetUserId}),and(user1_id.eq.${targetUserId},user2_id.eq.${currentUserId})`)
-      .in('status', ['active', 'accepted', 'pending'])
+    const [existingFriendship] = await db.select({
+      id: friendships.id,
+      status: friendships.status,
+    })
+      .from(friendships)
+      .where(and(
+        or(
+          and(eq(friendships.user1Id, currentUserId), eq(friendships.user2Id, targetUserId)),
+          and(eq(friendships.user1Id, targetUserId), eq(friendships.user2Id, currentUserId)),
+        ),
+        inArray(friendships.status, ['active', 'accepted', 'pending']),
+      ))
       .limit(1)
-      .maybeSingle()
 
     if (existingFriendship) {
-      return res.json({ 
+      return res.json({
         matchStatus: existingFriendship.status === 'pending' ? 'pending' : 'matched',
         message: existingFriendship.status === 'pending' ? 'Match request already sent' : 'Already matched with this user'
       })
     }
 
     // Track explore interaction
-    await supabase
-      .from('explore_interactions')
-      .insert({
-        user_id: currentUserId,
-        target_user_id: targetUserId,
-        action_type: actionType,
-        interaction_source: 'explore'
-      })
+    await db.insert(exploreInteractions).values({
+      userId: currentUserId,
+      targetUserId: targetUserId,
+      actionType: actionType,
+      interactionSource: 'explore',
+    })
 
     if (actionType === 'pass') {
-      return res.json({ 
+      return res.json({
         matchStatus: 'passed',
         message: 'User passed'
       })
     }
 
     // Check if target user has already liked current user (mutual match)
-    const { data: reverseProposal } = await supabase
-      .from('matchmaking_proposals')
-      .select('id')
-      .eq('a', targetUserId)
-      .eq('b', currentUserId)
-      .eq('status', 'pending')
+    const [reverseProposal] = await db.select({ id: matchmakingProposals.id })
+      .from(matchmakingProposals)
+      .where(and(
+        eq(matchmakingProposals.a, targetUserId),
+        eq(matchmakingProposals.b, currentUserId),
+        eq(matchmakingProposals.status, 'pending'),
+      ))
       .limit(1)
-      .maybeSingle()
 
     if (reverseProposal) {
       // Mutual match! Create friendship
-      const { data: newFriendship, error: friendshipError } = await supabase
-        .from('friendships')
-        .insert({
-          user1_id: currentUserId,
-          user2_id: targetUserId,
-          status: 'accepted'
-        })
-        .select()
-        .single()
-
-      if (friendshipError) {
+      let newFriendship
+      try {
+        const [row] = await db.insert(friendships).values({
+          user1Id: currentUserId,
+          user2Id: targetUserId,
+          status: 'accepted',
+        }).returning()
+        newFriendship = row
+      } catch (friendshipError) {
         console.error('Error creating friendship:', friendshipError)
         return res.status(500).json({ error: 'Failed to create match' })
       }
 
       // Update both proposals to matched
-      await supabase
-        .from('matchmaking_proposals')
-        .update({ status: 'matched' })
-        .eq('id', reverseProposal.id)
+      await db.update(matchmakingProposals)
+        .set({ status: 'matched' })
+        .where(eq(matchmakingProposals.id, reverseProposal.id))
 
       // Send notifications
       const io = req.app.get('io')
@@ -751,18 +776,16 @@ router.post('/match', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Create new match proposal
-    const { data: newProposal, error: proposalError } = await supabase
-      .from('matchmaking_proposals')
-      .insert({
+    let newProposal
+    try {
+      const [row] = await db.insert(matchmakingProposals).values({
         a: currentUserId,
         b: targetUserId,
         status: 'pending',
-        type: actionType === 'super_like' ? 'super_like' : 'like'
-      })
-      .select()
-      .single()
-
-    if (proposalError) {
+        type: actionType === 'super_like' ? 'super_like' : 'like',
+      }).returning()
+      newProposal = row
+    } catch (proposalError) {
       console.error('Error creating proposal:', proposalError)
       return res.status(500).json({ error: 'Failed to send match request' })
     }
@@ -799,30 +822,40 @@ router.get('/match-status/:userId', requireAuth, async (req: AuthRequest, res) =
     }
 
     // Check friendship status
-    const { data: friendship } = await supabase
-      .from('friendships')
-      .select('id, status')
-      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${targetUserId}),and(user1_id.eq.${targetUserId},user2_id.eq.${currentUserId})`)
+    const [friendship] = await db.select({
+      id: friendships.id,
+      status: friendships.status,
+    })
+      .from(friendships)
+      .where(or(
+        and(eq(friendships.user1Id, currentUserId), eq(friendships.user2Id, targetUserId)),
+        and(eq(friendships.user1Id, targetUserId), eq(friendships.user2Id, currentUserId)),
+      ))
       .limit(1)
-      .maybeSingle()
 
     if (friendship) {
-      return res.json({ 
+      return res.json({
         status: friendship.status === 'pending' ? 'pending' : 'matched'
       })
     }
 
     // Check if there's a pending proposal
-    const { data: proposal } = await supabase
-      .from('matchmaking_proposals')
-      .select('id, type')
-      .or(`and(a.eq.${currentUserId},b.eq.${targetUserId}),and(a.eq.${targetUserId},b.eq.${currentUserId})`)
-      .eq('status', 'pending')
+    const [proposal] = await db.select({
+      id: matchmakingProposals.id,
+      type: matchmakingProposals.type,
+    })
+      .from(matchmakingProposals)
+      .where(and(
+        or(
+          and(eq(matchmakingProposals.a, currentUserId), eq(matchmakingProposals.b, targetUserId)),
+          and(eq(matchmakingProposals.a, targetUserId), eq(matchmakingProposals.b, currentUserId)),
+        ),
+        eq(matchmakingProposals.status, 'pending'),
+      ))
       .limit(1)
-      .maybeSingle()
 
     if (proposal) {
-      return res.json({ 
+      return res.json({
         status: 'pending',
         type: proposal.type
       })
@@ -849,15 +882,14 @@ router.post('/undo-pass', requireAuth, async (req: AuthRequest, res) => {
     const oneDayAgo = new Date()
     oneDayAgo.setDate(oneDayAgo.getDate() - 1)
 
-    const { error } = await supabase
-      .from('explore_interactions')
-      .delete()
-      .eq('user_id', currentUserId)
-      .eq('target_user_id', targetUserId)
-      .eq('action_type', 'pass')
-      .gte('created_at', oneDayAgo.toISOString())
-
-    if (error) {
+    try {
+      await db.delete(exploreInteractions).where(and(
+        eq(exploreInteractions.userId, currentUserId),
+        eq(exploreInteractions.targetUserId, targetUserId),
+        eq(exploreInteractions.actionType, 'pass'),
+        gte(exploreInteractions.createdAt, oneDayAgo.toISOString()),
+      ))
+    } catch (error) {
       console.error('Error undoing pass:', error)
       return res.status(500).json({ error: 'Failed to undo pass' })
     }

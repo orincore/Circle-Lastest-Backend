@@ -5,7 +5,9 @@
 
 import express from 'express'
 import { requireAuth, AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, gte } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { profiles, userReports } from '../db/schema.js'
 
 const router = express.Router()
 
@@ -47,19 +49,19 @@ router.post('/', requireAuth, async (req: AuthRequest, res) => {
     oneDayAgo.setDate(oneDayAgo.getDate() - 1)
 
     // Build query for duplicate check
-    let duplicateQuery = supabase
-      .from('user_reports')
-      .select('id')
-      .eq('reporter_id', reporterId)
-      .eq('reported_user_id', reportedUserId)
-      .gte('created_at', oneDayAgo.toISOString())
+    const duplicateConditions = [
+      eq(userReports.reporterId, reporterId),
+      eq(userReports.reportedUserId, reportedUserId),
+      gte(userReports.createdAt, oneDayAgo.toISOString()),
+    ]
 
     // If reporting a specific message, check for duplicate message reports
     if (messageId) {
-      duplicateQuery = duplicateQuery.eq('message_id', messageId)
+      duplicateConditions.push(eq(userReports.messageId, messageId))
     }
 
-    const { data: existingReport } = await duplicateQuery.maybeSingle()
+    const existingRows = await db.select({ id: userReports.id }).from(userReports).where(and(...duplicateConditions)).limit(1)
+    const existingReport = existingRows[0]
 
     if (existingReport) {
       return res.status(429).json({
@@ -71,33 +73,31 @@ router.post('/', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Build report data
-    const reportData: any = {
-      reporter_id: reporterId,
-      reported_user_id: reportedUserId,
-      report_type: reportType,
-      reason: reason,
-      status: 'pending'
+    const reportData: typeof userReports.$inferInsert = {
+      reporterId,
+      reportedUserId,
+      reportType,
+      reason,
+      status: 'pending',
     }
 
     // Add optional fields if provided
     if (messageId) {
-      reportData.message_id = messageId
+      reportData.messageId = messageId
     }
     if (chatId) {
-      reportData.chat_id = chatId
+      reportData.chatId = chatId
     }
     if (additionalDetails) {
-      reportData.additional_details = additionalDetails
+      reportData.additionalDetails = additionalDetails
     }
 
     // Create the report
-    const { data: report, error } = await supabase
-      .from('user_reports')
-      .insert(reportData)
-      .select()
-      .single()
-
-    if (error) {
+    let report
+    try {
+      const rows = await db.insert(userReports).values(reportData).returning()
+      report = rows[0]
+    } catch (error) {
       console.error('Error creating report:', error)
       return res.status(500).json({
         error: 'Failed to submit report',
@@ -129,25 +129,38 @@ router.get('/my-reports', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
 
-    const { data: reports, error } = await supabase
-      .from('user_reports')
-      .select(`
-        id,
-        report_type,
-        reason,
-        status,
-        created_at,
-        reported_user:profiles!user_reports_reported_user_id_fkey (
-          id,
-          first_name,
-          last_name,
-          profile_photo_url
-        )
-      `)
-      .eq('reporter_id', userId)
-      .order('created_at', { ascending: false })
+    let reports
+    try {
+      const rows = await db.select({
+        id: userReports.id,
+        report_type: userReports.reportType,
+        reason: userReports.reason,
+        status: userReports.status,
+        created_at: userReports.createdAt,
+        reported_user_id: profiles.id,
+        reported_user_first_name: profiles.firstName,
+        reported_user_last_name: profiles.lastName,
+        reported_user_photo: profiles.profilePhotoUrl,
+      })
+        .from(userReports)
+        .leftJoin(profiles, eq(profiles.id, userReports.reportedUserId))
+        .where(eq(userReports.reporterId, userId))
+        .orderBy(desc(userReports.createdAt))
 
-    if (error) {
+      reports = rows.map(r => ({
+        id: r.id,
+        report_type: r.report_type,
+        reason: r.reason,
+        status: r.status,
+        created_at: r.created_at,
+        reported_user: r.reported_user_id ? {
+          id: r.reported_user_id,
+          first_name: r.reported_user_first_name,
+          last_name: r.reported_user_last_name,
+          profile_photo_url: r.reported_user_photo,
+        } : null,
+      }))
+    } catch (error) {
       console.error('Error fetching user reports:', error)
       return res.status(500).json({ error: 'Failed to fetch reports' })
     }

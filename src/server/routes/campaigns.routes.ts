@@ -1,54 +1,103 @@
 import { Router } from 'express'
 import { AuthRequest, requireAuth, requireAdmin } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { and, count, desc, eq, gte, ilike, inArray, isNull, lte, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { campaignAnalytics, marketingCampaigns, profiles, pushTokens, userCampaignInteractions } from '../db/schema.js'
 import emailService from '../../services/emailService.js'
 
 const router = Router()
 
+function toCampaignJson(row: typeof marketingCampaigns.$inferSelect) {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    status: row.status,
+    subject: row.subject,
+    content: row.content,
+    template_id: row.templateId,
+    segment_criteria: row.segmentCriteria,
+    scheduled_at: row.scheduledAt,
+    sent_at: row.sentAt,
+    created_by: row.createdBy,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+    push_title: row.pushTitle,
+    push_body: row.pushBody,
+  }
+}
+
+function toCampaignAnalyticsJson(row: typeof campaignAnalytics.$inferSelect) {
+  return {
+    id: row.id,
+    campaign_id: row.campaignId,
+    total_sent: row.totalSent,
+    delivered: row.delivered,
+    opened: row.opened,
+    clicked: row.clicked,
+    converted: row.converted,
+    unsubscribed: row.unsubscribed,
+    bounced: row.bounced,
+    failed: row.failed,
+    updated_at: row.updatedAt,
+  }
+}
+
 // Get all campaigns with filters
 router.get('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   try {
-    const { 
-      status, 
-      type, 
-      page = '1', 
+    const {
+      status,
+      type,
+      page = '1',
       limit = '20',
-      search 
+      search
     } = req.query
 
     const pageNum = parseInt(page as string)
     const limitNum = parseInt(limit as string)
     const offset = (pageNum - 1) * limitNum
 
-    let query = supabase
-      .from('marketing_campaigns')
-      .select('*, campaign_analytics(*)', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limitNum - 1)
-
+    const conditions = []
     if (status && status !== 'all') {
-      query = query.eq('status', status)
+      conditions.push(eq(marketingCampaigns.status, status as string))
     }
-
     if (type && type !== 'all') {
-      query = query.eq('type', type)
+      conditions.push(eq(marketingCampaigns.type, type as string))
     }
-
     if (search) {
-      query = query.ilike('name', `%${search}%`)
+      conditions.push(ilike(marketingCampaigns.name, `%${search}%`))
     }
+    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined
 
-    const { data, error, count } = await query
+    const [{ count: total }] = await db.select({ count: count() }).from(marketingCampaigns).where(whereCondition)
 
-    if (error) throw error
+    const rows = await db.select()
+      .from(marketingCampaigns)
+      .where(whereCondition)
+      .orderBy(desc(marketingCampaigns.createdAt))
+      .limit(limitNum)
+      .offset(offset)
+
+    // Attach campaign_analytics (one-to-one) like the original nested select did
+    const campaignIds = rows.map(r => r.id)
+    const analyticsRows = campaignIds.length > 0
+      ? await db.select().from(campaignAnalytics).where(inArray(campaignAnalytics.campaignId, campaignIds))
+      : []
+    const analyticsByCampaign = new Map(analyticsRows.map(a => [a.campaignId, a]))
+
+    const campaigns = rows.map(row => ({
+      ...toCampaignJson(row),
+      campaign_analytics: analyticsByCampaign.has(row.id) ? [toCampaignAnalyticsJson(analyticsByCampaign.get(row.id)!)] : [],
+    }))
 
     res.json({
-      campaigns: data,
+      campaigns,
       pagination: {
         page: pageNum,
         limit: limitNum,
-        total: count || 0,
-        totalPages: Math.ceil((count || 0) / limitNum)
+        total: total || 0,
+        totalPages: Math.ceil((total || 0) / limitNum)
       }
     })
   } catch (error) {
@@ -62,18 +111,18 @@ router.get('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params
 
-    const { data, error } = await supabase
-      .from('marketing_campaigns')
-      .select('*, campaign_analytics(*)')
-      .eq('id', id)
-      .single()
+    const [row] = await db.select().from(marketingCampaigns).where(eq(marketingCampaigns.id, id)).limit(1)
 
-    if (error) throw error
-    if (!data) {
+    if (!row) {
       return res.status(404).json({ error: 'Campaign not found' })
     }
 
-    res.json(data)
+    const [analyticsRow] = await db.select().from(campaignAnalytics).where(eq(campaignAnalytics.campaignId, id)).limit(1)
+
+    res.json({
+      ...toCampaignJson(row),
+      campaign_analytics: analyticsRow ? [toCampaignAnalyticsJson(analyticsRow)] : [],
+    })
   } catch (error) {
     console.error('Error fetching campaign:', error)
     res.status(500).json({ error: 'Failed to fetch campaign' })
@@ -83,12 +132,12 @@ router.get('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
 // Create new campaign
 router.post('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   try {
-    const { 
-      name, 
-      type, 
-      subject, 
-      content, 
-      template_id, 
+    const {
+      name,
+      type,
+      subject,
+      content,
+      template_id,
       segment_criteria,
       scheduled_at,
       push_title,
@@ -103,32 +152,24 @@ router.post('/', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     }
 
     // Create campaign
-    const { data: campaign, error: campaignError } = await supabase
-      .from('marketing_campaigns')
-      .insert({
-        name,
-        type,
-        subject,
-        content,
-        template_id,
-        segment_criteria,
-        scheduled_at,
-        push_title,
-        push_body,
-        status: scheduled_at ? 'scheduled' : 'draft',
-        created_by: userId
-      })
-      .select()
-      .single()
-
-    if (campaignError) throw campaignError
+    const [campaign] = await db.insert(marketingCampaigns).values({
+      name,
+      type,
+      subject,
+      content,
+      templateId: template_id,
+      segmentCriteria: segment_criteria,
+      scheduledAt: scheduled_at,
+      pushTitle: push_title,
+      pushBody: push_body,
+      status: scheduled_at ? 'scheduled' : 'draft',
+      createdBy: userId,
+    }).returning()
 
     // Create analytics record
-    await supabase
-      .from('campaign_analytics')
-      .insert({ campaign_id: campaign.id })
+    await db.insert(campaignAnalytics).values({ campaignId: campaign.id })
 
-    res.status(201).json(campaign)
+    res.status(201).json(toCampaignJson(campaign))
   } catch (error) {
     console.error('Error creating campaign:', error)
     res.status(500).json({ error: 'Failed to create campaign' })
@@ -142,26 +183,29 @@ router.put('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     const updates = req.body
 
     // Don't allow updating sent campaigns
-    const { data: existing } = await supabase
-      .from('marketing_campaigns')
-      .select('status')
-      .eq('id', id)
-      .single()
+    const [existing] = await db.select({ status: marketingCampaigns.status }).from(marketingCampaigns).where(eq(marketingCampaigns.id, id)).limit(1)
 
     if (existing?.status === 'sent') {
       return res.status(400).json({ error: 'Cannot update sent campaigns' })
     }
 
-    const { data, error } = await supabase
-      .from('marketing_campaigns')
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .select()
-      .single()
+    // Map snake_case update fields (from admin panel) to camelCase Drizzle columns
+    const updateData: Record<string, unknown> = { updatedAt: new Date().toISOString() }
+    if (updates.name !== undefined) updateData.name = updates.name
+    if (updates.type !== undefined) updateData.type = updates.type
+    if (updates.status !== undefined) updateData.status = updates.status
+    if (updates.subject !== undefined) updateData.subject = updates.subject
+    if (updates.content !== undefined) updateData.content = updates.content
+    if (updates.template_id !== undefined) updateData.templateId = updates.template_id
+    if (updates.segment_criteria !== undefined) updateData.segmentCriteria = updates.segment_criteria
+    if (updates.scheduled_at !== undefined) updateData.scheduledAt = updates.scheduled_at
+    if (updates.sent_at !== undefined) updateData.sentAt = updates.sent_at
+    if (updates.push_title !== undefined) updateData.pushTitle = updates.push_title
+    if (updates.push_body !== undefined) updateData.pushBody = updates.push_body
 
-    if (error) throw error
+    const [row] = await db.update(marketingCampaigns).set(updateData).where(eq(marketingCampaigns.id, id)).returning()
 
-    res.json(data)
+    res.json(toCampaignJson(row))
   } catch (error) {
     console.error('Error updating campaign:', error)
     res.status(500).json({ error: 'Failed to update campaign' })
@@ -174,22 +218,13 @@ router.delete('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) =
     const { id } = req.params
 
     // Don't allow deleting sent campaigns
-    const { data: existing } = await supabase
-      .from('marketing_campaigns')
-      .select('status')
-      .eq('id', id)
-      .single()
+    const [existing] = await db.select({ status: marketingCampaigns.status }).from(marketingCampaigns).where(eq(marketingCampaigns.id, id)).limit(1)
 
     if (existing?.status === 'sent' || existing?.status === 'sending') {
       return res.status(400).json({ error: 'Cannot delete sent or sending campaigns' })
     }
 
-    const { error } = await supabase
-      .from('marketing_campaigns')
-      .delete()
-      .eq('id', id)
-
-    if (error) throw error
+    await db.delete(marketingCampaigns).where(eq(marketingCampaigns.id, id))
 
     res.json({ success: true })
   } catch (error) {
@@ -204,16 +239,12 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
     const { id } = req.params
 
     // Get campaign
-    const { data: campaign, error: campaignError } = await supabase
-      .from('marketing_campaigns')
-      .select('*')
-      .eq('id', id)
-      .single()
+    const [campaignRow] = await db.select().from(marketingCampaigns).where(eq(marketingCampaigns.id, id)).limit(1)
 
-    if (campaignError) throw campaignError
-    if (!campaign) {
+    if (!campaignRow) {
       return res.status(404).json({ error: 'Campaign not found' })
     }
+    const campaign = toCampaignJson(campaignRow)
 
     if (campaign.status === 'sent') {
       return res.status(400).json({ error: 'Campaign already sent' })
@@ -223,22 +254,19 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
     const users = await getSegmentedUsers(campaign.segment_criteria)
 
     // Update campaign status
-    await supabase
-      .from('marketing_campaigns')
-      .update({ 
-        status: 'sending',
-        sent_at: new Date().toISOString()
-      })
-      .eq('id', id)
+    await db.update(marketingCampaigns).set({
+      status: 'sending',
+      sentAt: new Date().toISOString(),
+    }).where(eq(marketingCampaigns.id, id))
 
     // Send campaign based on type
-    const interactions = []
+    const interactions: { campaign_id: string; user_id: string; action: string; created_at: string }[] = []
     let sentCount = 0
-    
+
     if (campaign.type === 'email') {
       // Send email campaigns
       //console.log(`📧 Sending email campaign to ${users.length} users`)
-      
+
       for (const user of users) {
         try {
           if (user.email) {
@@ -249,13 +277,13 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
               campaignId: id,
               userId: user.id,
             })
-            
+
             await emailService.sendEmail({
               to: user.email,
               subject: campaign.subject || campaign.name,
               html,
             })
-            
+
             sentCount++
             interactions.push({
               campaign_id: id,
@@ -271,22 +299,19 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
     } else if (campaign.type === 'push_notification') {
       // Send push notification campaigns
       // Allow explicit push title/body fields from admin panel, with safe fallbacks
-      const pushTitle = (campaign as any).push_title || campaign.subject || campaign.name;
-      const pushBody = (campaign as any).push_body || campaign.content;
+      const pushTitle = campaign.push_title || campaign.subject || campaign.name;
+      const pushBody = campaign.push_body || campaign.content;
 
       //console.log(`📱 Sending push notification campaign to ${users.length} users`)
-      
+
       for (const user of users) {
         try {
           // Get user's push token
-          const { data: pushToken } = await supabase
-            .from('push_tokens')
-            .select('token')
-            .eq('user_id', user.id)
-            .eq('enabled', true)
-            .order('created_at', { ascending: false })
+          const [pushToken] = await db.select({ token: pushTokens.token })
+            .from(pushTokens)
+            .where(and(eq(pushTokens.userId, user.id), eq(pushTokens.enabled, true)))
+            .orderBy(desc(pushTokens.createdAt))
             .limit(1)
-            .maybeSingle()
 
           if (pushToken?.token) {
             // Send push notification using Expo
@@ -295,7 +320,7 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
               sound: 'default',
               title: pushTitle,
               body: pushBody,
-              data: { 
+              data: {
                 campaignId: id,
                 type: 'marketing_campaign',
                 title: pushTitle,
@@ -333,31 +358,28 @@ router.post('/:id/send', requireAuth, requireAdmin, async (req: AuthRequest, res
 
     // Save interaction records
     if (interactions.length > 0) {
-      await supabase
-        .from('user_campaign_interactions')
-        .insert(interactions)
+      await db.insert(userCampaignInteractions).values(interactions.map(i => ({
+        campaignId: i.campaign_id,
+        userId: i.user_id,
+        action: i.action,
+        createdAt: i.created_at,
+      })))
     }
 
     // Update analytics
-    await supabase
-      .from('campaign_analytics')
-      .update({ 
-        total_sent: sentCount,
-        delivered: sentCount,
-        updated_at: new Date().toISOString()
-      })
-      .eq('campaign_id', id)
+    await db.update(campaignAnalytics).set({
+      totalSent: sentCount,
+      delivered: sentCount,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(campaignAnalytics.campaignId, id))
 
     // Mark as sent
-    await supabase
-      .from('marketing_campaigns')
-      .update({ status: 'sent' })
-      .eq('id', id)
+    await db.update(marketingCampaigns).set({ status: 'sent' }).where(eq(marketingCampaigns.id, id))
 
     //console.log(`✅ Campaign ${id} sent to ${sentCount}/${users.length} users`)
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       sent_to: sentCount,
       total_users: users.length,
       message: `Campaign sent to ${sentCount} users (${users.length - sentCount} users don't have push tokens)`
@@ -373,23 +395,21 @@ router.get('/:id/analytics', requireAuth, requireAdmin, async (req: AuthRequest,
   try {
     const { id } = req.params
 
-    const { data, error } = await supabase
-      .from('campaign_analytics')
-      .select('*')
-      .eq('campaign_id', id)
-      .single()
+    const [analyticsRow] = await db.select().from(campaignAnalytics).where(eq(campaignAnalytics.campaignId, id)).limit(1)
 
-    if (error) throw error
+    if (!analyticsRow) {
+      throw new Error('Campaign analytics not found')
+    }
 
     // Get detailed interactions
-    const { data: interactions } = await supabase
-      .from('user_campaign_interactions')
-      .select('action, created_at')
-      .eq('campaign_id', id)
+    const interactionRows = await db.select({
+      action: userCampaignInteractions.action,
+      created_at: userCampaignInteractions.createdAt,
+    }).from(userCampaignInteractions).where(eq(userCampaignInteractions.campaignId, id))
 
     res.json({
-      ...data,
-      interactions: interactions || []
+      ...toCampaignAnalyticsJson(analyticsRow),
+      interactions: interactionRows || []
     })
   } catch (error) {
     console.error('Error fetching analytics:', error)
@@ -415,30 +435,21 @@ router.get('/:id/track/open', async (req, res) => {
     }
 
     // Record the open
-    await supabase
-      .from('user_campaign_interactions')
-      .insert({
-        campaign_id: id,
-        user_id: userId as string,
-        action: 'opened',
-        created_at: new Date().toISOString()
-      })
+    await db.insert(userCampaignInteractions).values({
+      campaignId: id,
+      userId: userId as string,
+      action: 'opened',
+      createdAt: new Date().toISOString(),
+    })
 
     // Update analytics
-    const { data: analytics } = await supabase
-      .from('campaign_analytics')
-      .select('opened')
-      .eq('campaign_id', id)
-      .single()
+    const [analytics] = await db.select({ opened: campaignAnalytics.opened }).from(campaignAnalytics).where(eq(campaignAnalytics.campaignId, id)).limit(1)
 
     if (analytics) {
-      await supabase
-        .from('campaign_analytics')
-        .update({ 
-          opened: (analytics.opened || 0) + 1,
-          updated_at: new Date().toISOString()
-        })
-        .eq('campaign_id', id)
+      await db.update(campaignAnalytics).set({
+        opened: (analytics.opened || 0) + 1,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(campaignAnalytics.campaignId, id))
     }
 
     // Return 1x1 transparent pixel
@@ -469,30 +480,21 @@ router.get('/:id/track/click', async (req, res) => {
 
     if (userId) {
       // Record the click
-      await supabase
-        .from('user_campaign_interactions')
-        .insert({
-          campaign_id: id,
-          user_id: userId as string,
-          action: 'clicked',
-          created_at: new Date().toISOString()
-        })
+      await db.insert(userCampaignInteractions).values({
+        campaignId: id,
+        userId: userId as string,
+        action: 'clicked',
+        createdAt: new Date().toISOString(),
+      })
 
       // Update analytics
-      const { data: analytics } = await supabase
-        .from('campaign_analytics')
-        .select('clicked')
-        .eq('campaign_id', id)
-        .single()
+      const [analytics] = await db.select({ clicked: campaignAnalytics.clicked }).from(campaignAnalytics).where(eq(campaignAnalytics.campaignId, id)).limit(1)
 
       if (analytics) {
-        await supabase
-          .from('campaign_analytics')
-          .update({ 
-            clicked: (analytics.clicked || 0) + 1,
-            updated_at: new Date().toISOString()
-          })
-          .eq('campaign_id', id)
+        await db.update(campaignAnalytics).set({
+          clicked: (analytics.clicked || 0) + 1,
+          updatedAt: new Date().toISOString(),
+        }).where(eq(campaignAnalytics.campaignId, id))
       }
     }
 
@@ -515,45 +517,38 @@ router.get('/:id/track/click', async (req, res) => {
 
 // Helper function to get segmented users
 async function getSegmentedUsers(criteria: any) {
-  let query = supabase
-    .from('profiles')
-    .select('id, email, first_name')
-    .is('deleted_at', null)
-    .is('is_suspended', false)
+  const conditions = [isNull(profiles.deletedAt), eq(profiles.isSuspended, false)]
 
-  if (!criteria) {
-    // No criteria, return all active users
-    const { data } = await query
-    return data || []
+  if (criteria) {
+    if (criteria.gender) {
+      conditions.push(eq(profiles.gender, criteria.gender))
+    }
+    if (criteria.age_min) {
+      conditions.push(gte(profiles.age, criteria.age_min))
+    }
+    if (criteria.age_max) {
+      conditions.push(lte(profiles.age, criteria.age_max))
+    }
+    if (criteria.location_city) {
+      conditions.push(eq(profiles.locationCity, criteria.location_city))
+    }
+    if (criteria.location_country) {
+      conditions.push(eq(profiles.locationCountry, criteria.location_country))
+    }
+    if (criteria.interests && criteria.interests.length > 0) {
+      // Interpolating a JS array directly into a sql`` template expands it into a
+      // comma-separated parameter list, not a Postgres array literal — build a
+      // real ARRAY[...]::text[] literal instead (same fix as prompt-matching.service.ts).
+      const interestsArray = sql`ARRAY[${sql.join(criteria.interests.map((v: string) => sql`${v}`), sql`, `)}]::text[]`
+      conditions.push(sql`${profiles.interests} @> ${interestsArray}`)
+    }
   }
 
-  // Apply filters based on criteria
-  if (criteria.gender) {
-    query = query.eq('gender', criteria.gender)
-  }
+  const rows = await db.select({ id: profiles.id, email: profiles.email, first_name: profiles.firstName })
+    .from(profiles)
+    .where(and(...conditions))
 
-  if (criteria.age_min) {
-    query = query.gte('age', criteria.age_min)
-  }
-
-  if (criteria.age_max) {
-    query = query.lte('age', criteria.age_max)
-  }
-
-  if (criteria.location_city) {
-    query = query.eq('location_city', criteria.location_city)
-  }
-
-  if (criteria.location_country) {
-    query = query.eq('location_country', criteria.location_country)
-  }
-
-  if (criteria.interests && criteria.interests.length > 0) {
-    query = query.contains('interests', criteria.interests)
-  }
-
-  const { data } = await query
-  return data || []
+  return rows || []
 }
 
 export default router

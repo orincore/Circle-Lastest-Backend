@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { db } from '../config/db.js'
+import { blocks, friendships, nearbyNotifications, profiles } from '../db/schema.js'
+import { and, eq, gte, isNotNull, isNull, lt, ne, or } from 'drizzle-orm'
 import { logger } from '../config/logger.js'
 import { PushNotificationService } from '../services/pushNotificationService.js'
 
@@ -41,59 +43,74 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Get current user's profile for notification
-    const { data: currentUser, error: userError } = await supabase
-      .from('profiles')
-      .select('first_name, last_name, username, profile_photo_url')
-      .eq('id', userId)
-      .single()
+    const [currentUser] = await db.select({
+      first_name: profiles.firstName,
+      last_name: profiles.lastName,
+      username: profiles.username,
+      profile_photo_url: profiles.profilePhotoUrl,
+    })
+      .from(profiles)
+      .where(eq(profiles.id, userId))
+      .limit(1)
 
-    if (userError || !currentUser) {
-      logger.error({ error: userError, userId }, 'Failed to get current user profile')
+    if (!currentUser) {
+      logger.error({ userId }, 'Failed to get current user profile')
       return res.status(500).json({ error: 'Failed to get user profile' })
     }
 
     // Find nearby users within radius (using PostGIS if available, otherwise manual calculation)
     // First, get users with recent location updates (within last 24 hours)
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-    
-    const { data: nearbyUsers, error: nearbyError } = await supabase
-      .from('profiles')
-      .select('id, first_name, last_name, username, profile_photo_url, latitude, longitude, location_updated_at')
-      .neq('id', userId)
-      .not('latitude', 'is', null)
-      .not('longitude', 'is', null)
-      .gte('location_updated_at', twentyFourHoursAgo)
-      .eq('is_suspended', false)
-      .is('deleted_at', null)
 
-    if (nearbyError) {
-      logger.error({ error: nearbyError, userId }, 'Failed to query nearby users')
-      return res.status(500).json({ error: 'Failed to find nearby users' })
-    }
+    const nearbyUsers = await db.select({
+      id: profiles.id,
+      first_name: profiles.firstName,
+      last_name: profiles.lastName,
+      username: profiles.username,
+      profile_photo_url: profiles.profilePhotoUrl,
+      latitude: profiles.latitude,
+      longitude: profiles.longitude,
+      location_updated_at: profiles.locationUpdatedAt,
+    })
+      .from(profiles)
+      .where(and(
+        ne(profiles.id, userId),
+        isNotNull(profiles.latitude),
+        isNotNull(profiles.longitude),
+        gte(profiles.locationUpdatedAt, twentyFourHoursAgo),
+        eq(profiles.isSuspended, false),
+        isNull(profiles.deletedAt),
+      ))
 
     if (!nearbyUsers || nearbyUsers.length === 0) {
       return res.json({ success: true, nearbyUsersNotified: 0, message: 'No nearby users found' })
     }
 
     // Get user's friends to exclude from notifications (they already get friend notifications)
-    const { data: friendships } = await supabase
-      .from('friendships')
-      .select('user1_id, user2_id')
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .eq('status', 'accepted')
+    const friendshipRows = await db.select({
+      user1_id: friendships.user1Id,
+      user2_id: friendships.user2Id,
+    })
+      .from(friendships)
+      .where(and(
+        or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId)),
+        eq(friendships.status, 'accepted'),
+      ))
 
     const friendIds = new Set(
-      (friendships || []).map(f => f.user1_id === userId ? f.user2_id : f.user1_id)
+      (friendshipRows || []).map(f => f.user1_id === userId ? f.user2_id : f.user1_id)
     )
 
     // Get users who have blocked or been blocked by current user
-    const { data: blocks } = await supabase
-      .from('blocks')
-      .select('blocker_id, blocked_id')
-      .or(`blocker_id.eq.${userId},blocked_id.eq.${userId}`)
+    const blockRows = await db.select({
+      blocker_id: blocks.blockerId,
+      blocked_id: blocks.blockedId,
+    })
+      .from(blocks)
+      .where(or(eq(blocks.blockerId, userId), eq(blocks.blockedId, userId)))
 
     const blockedIds = new Set(
-      (blocks || []).flatMap(b => [b.blocker_id, b.blocked_id])
+      (blockRows || []).flatMap(b => [b.blocker_id, b.blocked_id])
     )
 
     // Filter users within radius and not friends/blocked
@@ -106,10 +123,10 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
       
       // Calculate distance
       const distance = calculateDistance(
-        latitude, 
-        longitude, 
-        user.latitude!, 
-        user.longitude!
+        latitude,
+        longitude,
+        Number(user.latitude),
+        Number(user.longitude)
       )
       
       return distance <= radiusKm
@@ -129,14 +146,20 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
 
     for (const nearbyUser of usersWithinRadius) {
       // Check notification cooldown from database (5-day cooldown)
-      const { data: recentNotification } = await supabase
-        .from('nearby_notifications')
-        .select('id, sent_at')
-        .or(`and(from_user_id.eq.${userId},to_user_id.eq.${nearbyUser.id}),and(from_user_id.eq.${nearbyUser.id},to_user_id.eq.${userId})`)
-        .gte('sent_at', cooldownThreshold.toISOString())
+      const [recentNotification] = await db.select({
+        id: nearbyNotifications.id,
+        sent_at: nearbyNotifications.sentAt,
+      })
+        .from(nearbyNotifications)
+        .where(and(
+          or(
+            and(eq(nearbyNotifications.fromUserId, userId), eq(nearbyNotifications.toUserId, nearbyUser.id)),
+            and(eq(nearbyNotifications.fromUserId, nearbyUser.id), eq(nearbyNotifications.toUserId, userId)),
+          ),
+          gte(nearbyNotifications.sentAt, cooldownThreshold.toISOString()),
+        ))
         .limit(1)
-        .maybeSingle()
-      
+
       if (recentNotification) {
         // Skip - already notified within cooldown period
         continue
@@ -148,7 +171,7 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
           ? `${nearbyUser.first_name}${nearbyUser.last_name ? ' ' + nearbyUser.last_name.charAt(0) + '.' : ''}`
           : nearbyUser.username || 'Someone'
         
-        const distance = calculateDistance(latitude, longitude, nearbyUser.latitude!, nearbyUser.longitude!)
+        const distance = calculateDistance(latitude, longitude, Number(nearbyUser.latitude), Number(nearbyUser.longitude))
         
         // Send push notification to the nearby user (about current user)
         await PushNotificationService.sendPushNotification(nearbyUser.id, {
@@ -181,13 +204,11 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
         })
 
         // Record notification in database for cooldown tracking (bidirectional)
-        await supabase
-          .from('nearby_notifications')
-          .insert({
-            from_user_id: userId,
-            to_user_id: nearbyUser.id,
-            sent_at: now.toISOString()
-          })
+        await db.insert(nearbyNotifications).values({
+          fromUserId: userId,
+          toUserId: nearbyUser.id,
+          sentAt: now.toISOString(),
+        })
 
         notifiedCount++
 
@@ -206,10 +227,7 @@ router.post('/check-nearby', requireAuth, async (req: AuthRequest, res) => {
     // Clean up old notification records (older than 30 days) - run occasionally
     if (Math.random() < 0.1) { // 10% chance to run cleanup
       const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-      await supabase
-        .from('nearby_notifications')
-        .delete()
-        .lt('sent_at', thirtyDaysAgo.toISOString())
+      await db.delete(nearbyNotifications).where(lt(nearbyNotifications.sentAt, thirtyDaysAgo.toISOString()))
     }
 
     logger.info({ 
@@ -248,19 +266,16 @@ router.post('/update', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Update user's location in database
-    const { error: updateError } = await supabase
-      .from('profiles')
-      .update({
-        latitude,
-        longitude,
-        location_address: address || null,
-        location_city: city || null,
-        location_country: country || null,
-        location_updated_at: new Date().toISOString()
-      })
-      .eq('id', userId)
-
-    if (updateError) {
+    try {
+      await db.update(profiles).set({
+        latitude: String(latitude),
+        longitude: String(longitude),
+        locationAddress: address || null,
+        locationCity: city || null,
+        locationCountry: country || null,
+        locationUpdatedAt: new Date().toISOString(),
+      }).where(eq(profiles.id, userId))
+    } catch (updateError) {
       logger.error({ error: updateError, userId }, 'Failed to update location')
       return res.status(500).json({ error: 'Failed to update location' })
     }

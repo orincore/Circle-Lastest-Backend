@@ -5,7 +5,9 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
-import { supabase } from '../config/supabase.js';
+import { and, count, desc, eq } from 'drizzle-orm';
+import { db } from '../config/db.js';
+import { userPhotos } from '../db/schema.js';
 
 const router = Router();
 
@@ -46,13 +48,17 @@ router.get('/photos', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id;
 
     // Fetch photos from database
-    const { data: photos, error } = await supabase
-      .from('user_photos')
-      .select('id, photo_url, created_at')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
+    let photos: { id: string; photo_url: string; created_at: string | null }[]
+    try {
+      photos = await db.select({
+        id: userPhotos.id,
+        photo_url: userPhotos.photoUrl,
+        created_at: userPhotos.createdAt,
+      })
+        .from(userPhotos)
+        .where(eq(userPhotos.userId, userId))
+        .orderBy(desc(userPhotos.createdAt));
+    } catch (error) {
       console.error('Error fetching photos:', error);
       return res.status(500).json({ error: 'Failed to fetch photos' });
     }
@@ -84,20 +90,19 @@ router.post('/photos', requireAuth, upload.single('photo'), async (req: AuthRequ
     const userId = req.user!.id;
 
     // Check current photo count
-    const { count, error: countError } = await supabase
-      .from('user_photos')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId);
-
-    if (countError) {
+    let photoCount: number
+    try {
+      const [{ count: currentCount }] = await db.select({ count: count() }).from(userPhotos).where(eq(userPhotos.userId, userId));
+      photoCount = currentCount
+    } catch (countError) {
       console.error('Error counting photos:', countError);
       return res.status(500).json({ error: 'Failed to check photo count' });
     }
 
-    if (count && count >= MAX_PHOTOS) {
-      return res.status(400).json({ 
+    if (photoCount && photoCount >= MAX_PHOTOS) {
+      return res.status(400).json({
         error: `Maximum ${MAX_PHOTOS} photos allowed`,
-        message: `You can only upload up to ${MAX_PHOTOS} photos` 
+        message: `You can only upload up to ${MAX_PHOTOS} photos`
       });
     }
 
@@ -118,7 +123,7 @@ router.post('/photos', requireAuth, upload.single('photo'), async (req: AuthRequ
         })
         .jpeg({ quality: 80 })
         .toBuffer();
-      
+
       //console.log(`✅ Photo compressed: ${buffer.length / 1024} KB`);
     } catch (error) {
       console.error('Image compression failed:', error);
@@ -139,16 +144,14 @@ router.post('/photos', requireAuth, upload.single('photo'), async (req: AuthRequ
     const photoUrl = `https://${BUCKET_NAME}/${key}`;
 
     // Save to database
-    const { data: photo, error: dbError } = await supabase
-      .from('user_photos')
-      .insert({
-        user_id: userId,
-        photo_url: photoUrl,
-      })
-      .select()
-      .single();
-
-    if (dbError) {
+    let photo: typeof userPhotos.$inferSelect
+    try {
+      const [row] = await db.insert(userPhotos).values({
+        userId,
+        photoUrl,
+      }).returning();
+      photo = row
+    } catch (dbError) {
       console.error('Error saving photo to database:', dbError);
       // Try to delete from S3 if database save fails
       try {
@@ -169,8 +172,8 @@ router.post('/photos', requireAuth, upload.single('photo'), async (req: AuthRequ
       photoUrl,
       photo: {
         id: photo.id,
-        url: photo.photo_url,
-        createdAt: photo.created_at,
+        url: photo.photoUrl,
+        createdAt: photo.createdAt,
       },
     });
   } catch (error) {
@@ -193,15 +196,12 @@ router.delete('/photos', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Verify ownership and get photo record
-    const { data: photo, error: fetchError } = await supabase
-      .from('user_photos')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('photo_url', photoUrl)
-      .single();
+    const [photo] = await db.select().from(userPhotos)
+      .where(and(eq(userPhotos.userId, userId), eq(userPhotos.photoUrl, photoUrl)))
+      .limit(1);
 
-    if (fetchError || !photo) {
-      console.error('Photo not found or unauthorized:', fetchError);
+    if (!photo) {
+      console.error('Photo not found or unauthorized');
       return res.status(404).json({ error: 'Photo not found or unauthorized' });
     }
 
@@ -225,12 +225,9 @@ router.delete('/photos', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Delete from database
-    const { error: deleteError } = await supabase
-      .from('user_photos')
-      .delete()
-      .eq('id', photo.id);
-
-    if (deleteError) {
+    try {
+      await db.delete(userPhotos).where(eq(userPhotos.id, photo.id));
+    } catch (deleteError) {
       console.error('Error deleting photo from database:', deleteError);
       return res.status(500).json({ error: 'Failed to delete photo' });
     }
@@ -256,13 +253,17 @@ router.get('/:userId/photos', requireAuth, async (req: AuthRequest, res) => {
     const { userId } = req.params;
 
     // Fetch photos from database
-    const { data: photos, error } = await supabase
-      .from('user_photos')
-      .select('id, photo_url, created_at')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
+    let photos: { id: string; photo_url: string; created_at: string | null }[]
+    try {
+      photos = await db.select({
+        id: userPhotos.id,
+        photo_url: userPhotos.photoUrl,
+        created_at: userPhotos.createdAt,
+      })
+        .from(userPhotos)
+        .where(eq(userPhotos.userId, userId))
+        .orderBy(desc(userPhotos.createdAt));
+    } catch (error) {
       console.error('Error fetching photos:', error);
       return res.status(500).json({ error: 'Failed to fetch photos' });
     }

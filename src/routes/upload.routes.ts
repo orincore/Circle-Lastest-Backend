@@ -1,7 +1,9 @@
 import { Router, Request } from 'express'
 import { requireAuth, AuthRequest } from '../server/middleware/auth.js'
 import { S3Service } from '../services/s3Service.js'
-import { supabase } from '../server/config/supabase.js'
+import { db } from '../server/config/db.js'
+import { chatMembers, profiles } from '../server/db/schema.js'
+import { and, eq } from 'drizzle-orm'
 import multer from 'multer'
 
 // Extend AuthRequest to include multer file
@@ -46,15 +48,14 @@ router.post(
 
 
       // Update user profile in database
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          profile_photo_url: result.url,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', userId)
-
-      if (updateError) {
+      try {
+        await db.update(profiles)
+          .set({
+            profilePhotoUrl: result.url,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(profiles.id, userId))
+      } catch (updateError) {
         console.error('❌ Failed to update profile:', updateError)
         // Try to delete the uploaded file
         try {
@@ -151,12 +152,10 @@ router.post(
     
 
       // Verify user is part of the chat
-      const { data: chatMember } = await supabase
-        .from('chat_participants')
-        .select('id')
-        .eq('chat_id', chatId)
-        .eq('user_id', userId)
-        .single()
+      const [chatMember] = await db.select({ chatId: chatMembers.chatId })
+        .from(chatMembers)
+        .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId)))
+        .limit(1)
 
       if (!chatMember) {
         return res.status(403).json({ error: 'Not authorized to upload to this chat' })

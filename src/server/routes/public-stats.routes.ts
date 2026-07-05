@@ -4,7 +4,9 @@
  */
 
 import express from 'express'
-import { supabase } from '../config/supabase.js'
+import { db } from '../config/db.js'
+import { friendships, messages, profiles } from '../db/schema.js'
+import { count, eq, isNull } from 'drizzle-orm'
 
 const router = express.Router()
 
@@ -15,21 +17,18 @@ const router = express.Router()
 router.get('/stats', async (req, res) => {
   try {
     // Get total user count (excluding deleted accounts)
-    const { count: totalUsers } = await supabase
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .is('deleted_at', null)
+    const [{ count: totalUsers }] = await db.select({ count: count() })
+      .from(profiles)
+      .where(isNull(profiles.deletedAt))
 
     // Get total matches count
-    const { count: totalMatches } = await supabase
-      .from('friendships')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'active')
+    const [{ count: totalMatches }] = await db.select({ count: count() })
+      .from(friendships)
+      .where(eq(friendships.status, 'active'))
 
     // Get total messages count (optional - can be heavy on large databases)
-    const { count: totalMessages } = await supabase
-      .from('messages')
-      .select('id', { count: 'exact', head: true })
+    const [{ count: totalMessages }] = await db.select({ count: count() })
+      .from(messages)
 
     return res.json({
       success: true,

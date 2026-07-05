@@ -1,7 +1,9 @@
 import { Router } from 'express'
-import { supabase } from '../config/supabase.js'
 import rateLimit from 'express-rate-limit'
 import { z } from 'zod'
+import { and, gte, isNotNull } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { analyticsEvents, appVersions, crashReports } from '../db/schema.js'
 
 const router = Router()
 
@@ -81,19 +83,17 @@ router.post('/track', analyticsLimit, async (req, res) => {
 
     // Store events in database
     const analyticsData = events.map(event => ({
-      event_name: event.event_name,
-      user_id: event.user_id,
-      session_id: event.session_id,
+      eventName: event.event_name,
+      userId: event.user_id,
+      sessionId: event.session_id,
       timestamp: event.timestamp,
       properties: event.properties || {},
-      created_at: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
     }))
 
-    const { error } = await supabase
-      .from('analytics_events')
-      .insert(analyticsData)
-
-    if (error) {
+    try {
+      await db.insert(analyticsEvents).values(analyticsData)
+    } catch (error) {
       console.error('Analytics storage error:', error)
       return res.status(500).json({ error: 'Failed to store analytics data' })
     }
@@ -127,19 +127,17 @@ router.post('/app-version', analyticsLimit, async (req, res) => {
     const versionData = parse.data
 
     // Store version info
-    const { error } = await supabase
-      .from('app_versions')
-      .insert({
+    try {
+      await db.insert(appVersions).values({
         version: versionData.version,
-        build_number: versionData.buildNumber.toString(),
+        buildNumber: versionData.buildNumber.toString(),
         platform: versionData.platform,
-        expo_version: versionData.expoVersion,
-        device_id: versionData.deviceId,
+        expoVersion: versionData.expoVersion,
+        deviceId: versionData.deviceId,
         timestamp: versionData.timestamp,
-        created_at: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
       })
-
-    if (error) {
+    } catch (error) {
       console.error('Version tracking error:', error)
       return res.status(500).json({ error: 'Failed to store version data' })
     }
@@ -173,29 +171,27 @@ router.post('/crash-report', async (req, res) => {
     const crashData = parse.data
 
     // Store crash report
-    const { error } = await supabase
-      .from('crash_reports')
-      .insert({
-        crash_id: crashData.id,
+    try {
+      await db.insert(crashReports).values({
+        crashId: crashData.id,
         timestamp: crashData.timestamp,
         type: crashData.type,
-        is_fatal: crashData.isFatal,
-        user_id: crashData.userId,
-        session_id: crashData.sessionId,
-        error_name: crashData.error.name,
-        error_message: crashData.error.message,
-        error_stack: crashData.error.stack,
-        device_platform: crashData.device.platform,
-        device_version: crashData.device.version.toString(),
-        device_model: crashData.device.model,
-        app_version: crashData.device.appVersion,
-        build_number: crashData.device.buildNumber.toString(),
-        is_device: crashData.app?.isDevice,
-        expo_version: crashData.app?.expoVersion,
-        created_at: new Date().toISOString(),
+        isFatal: crashData.isFatal,
+        userId: crashData.userId,
+        sessionId: crashData.sessionId,
+        errorName: crashData.error.name,
+        errorMessage: crashData.error.message,
+        errorStack: crashData.error.stack,
+        devicePlatform: crashData.device.platform,
+        deviceVersion: crashData.device.version.toString(),
+        deviceModel: crashData.device.model,
+        appVersion: crashData.device.appVersion,
+        buildNumber: crashData.device.buildNumber.toString(),
+        isDevice: crashData.app?.isDevice,
+        expoVersion: crashData.app?.expoVersion,
+        createdAt: new Date().toISOString(),
       })
-
-    if (error) {
+    } catch (error) {
       console.error('Crash report storage error:', error)
       return res.status(500).json({ error: 'Failed to store crash report' })
     }
@@ -218,30 +214,27 @@ router.post('/crash-report', async (req, res) => {
  */
 router.get('/summary', async (req, res) => {
   try {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+
     // Get event counts by type
-    const { data: eventCounts } = await supabase
-      .from('analytics_events')
-      .select('event_name')
-      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()) // Last 7 days
+    const eventCounts = await db.select({ event_name: analyticsEvents.eventName })
+      .from(analyticsEvents)
+      .where(gte(analyticsEvents.createdAt, sevenDaysAgo)) // Last 7 days
 
     // Get unique users
-    const { data: uniqueUsers } = await supabase
-      .from('analytics_events')
-      .select('user_id')
-      .not('user_id', 'is', null)
-      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    const uniqueUsers = await db.select({ user_id: analyticsEvents.userId })
+      .from(analyticsEvents)
+      .where(and(isNotNull(analyticsEvents.userId), gte(analyticsEvents.createdAt, sevenDaysAgo)))
 
     // Get crash counts
-    const { data: crashes } = await supabase
-      .from('crash_reports')
-      .select('is_fatal')
-      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    const crashes = await db.select({ is_fatal: crashReports.isFatal })
+      .from(crashReports)
+      .where(gte(crashReports.createdAt, sevenDaysAgo))
 
     // Get app versions
-    const { data: versions } = await supabase
-      .from('app_versions')
-      .select('version, platform')
-      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    const versions = await db.select({ version: appVersions.version, platform: appVersions.platform })
+      .from(appVersions)
+      .where(gte(appVersions.createdAt, sevenDaysAgo))
 
     // Process data
     const eventSummary: Record<string, number> = eventCounts?.reduce((acc: Record<string, number>, event) => {
