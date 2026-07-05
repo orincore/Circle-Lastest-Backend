@@ -2,7 +2,9 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { env } from '../config/env.js'
 import { findByEmail, findByUsername, createProfile } from '../repos/profiles.repo.js'
-import { supabase } from '../config/supabase.js'
+import { ne, eq, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { profiles } from '../db/schema.js'
 import { signJwt, verifyJwt } from '../utils/jwt.js'
 import { hashPassword, verifyPassword } from '../utils/password.js'
 import { NotificationService } from '../services/notificationService.js'
@@ -139,11 +141,7 @@ router.post('/signup', async (req, res) => {
     
     // Find potential matches for the new user
     // This is a simplified version - you could use the matchmaking algorithm for better matching
-    const { data: potentialMatches } = await supabase
-      .from('profiles')
-      .select('id')
-      .neq('id', profile.id)
-      .limit(50); // Limit to prevent spam
+    const potentialMatches = await db.select({ id: profiles.id }).from(profiles).where(ne(profiles.id, profile.id)).limit(50) // Limit to prevent spam
     
     if (potentialMatches && potentialMatches.length > 0) {
       const matchIds = potentialMatches.map(m => m.id);
@@ -465,11 +463,7 @@ router.post('/google/complete-signup', async (req, res) => {
     try {
       const newUserName = `${profile.first_name} ${profile.last_name}`.trim()
       
-      const { data: potentialMatches } = await supabase
-        .from('profiles')
-        .select('id')
-        .neq('id', profile.id)
-        .limit(50)
+      const potentialMatches = await db.select({ id: profiles.id }).from(profiles).where(ne(profiles.id, profile.id)).limit(50) // Limit to prevent spam
       
       if (potentialMatches && potentialMatches.length > 0) {
         const matchIds = potentialMatches.map(m => m.id)
@@ -545,30 +539,26 @@ router.post('/delete-account', async (req, res) => {
 
     // Soft delete: Set deleted_at timestamp and deletion reason
     const deletionDate = new Date()
-    const { error: updateError } = await supabase
-      .from('profiles')
-      .update({
-        deleted_at: deletionDate.toISOString(),
-        deletion_reason: reason,
-        deletion_feedback: feedback || null,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', user.id)
-
-    if (updateError) {
+    try {
+      await db.update(profiles).set({
+        deletedAt: deletionDate.toISOString(),
+        deletionReason: reason,
+        deletionFeedback: feedback || null,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(profiles.id, user.id))
+    } catch (updateError) {
       console.error('Error soft deleting account:', updateError)
       return res.status(500).json({ error: 'Failed to delete account' })
     }
 
     // Log the deletion activity
+    // NOTE: `user_activity` is not a real table (the schema has `user_activities` and
+    // `user_activity_events`, neither an exact match) - this insert has been silently
+    // failing in production via the catch below even before this migration. Preserved
+    // as-is rather than guessing which real table was intended; that's a product
+    // decision for whoever owns this code, not something to silently change here.
     try {
-      await supabase
-        .from('user_activity')
-        .insert({
-          user_id: user.id,
-          action: 'account_deletion_requested',
-          details: { reason, feedback, scheduled_for: deletionDate.toISOString() }
-        })
+      await db.execute(sql`insert into user_activity (user_id, action, details) values (${user.id}, ${'account_deletion_requested'}, ${JSON.stringify({ reason, feedback, scheduled_for: deletionDate.toISOString() })})`)
     } catch (activityError) {
       console.error('Error logging deletion activity:', activityError)
       // Don't fail the request if activity logging fails
