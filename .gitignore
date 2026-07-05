@@ -29,3 +29,4 @@ python-services/*/*.log
 .env.production.example
 .env.production
 
+scripts/db-migration/dumps/
