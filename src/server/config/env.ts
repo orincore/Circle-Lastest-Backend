@@ -11,6 +11,8 @@ const envSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+  DATABASE_URL: z.string().optional(),
+  SUPABASE_DATABASE_URL: z.string().optional(),
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 chars'),
   AWS_REGION: z.string().optional().default(''),
   AWS_S3_BUCKET: z.string().optional().default(''),
