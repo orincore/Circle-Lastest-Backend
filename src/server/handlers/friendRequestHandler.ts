@@ -1,5 +1,7 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { supabase } from '../config/supabase.js';
+import { and, desc, eq, inArray, ne, or } from 'drizzle-orm';
+import { db } from '../config/db.js';
+import { friendships, profiles } from '../db/schema.js';
 import { NotificationService } from '../services/notificationService.js';
 
 /**
@@ -8,26 +10,36 @@ import { NotificationService } from '../services/notificationService.js';
  * Status values: 'pending', 'accepted', 'blocked', 'inactive'
  */
 
-interface FriendshipRecord {
-  id: string;
-  user1_id: string;
-  user2_id: string;
-  sender_id: string;
-  status: 'pending' | 'accepted' | 'blocked' | 'inactive';
-  created_at: string;
-  updated_at: string;
-}
+type FriendshipRow = typeof friendships.$inferSelect;
 
 // Helper function to get ordered user IDs (smaller ID first)
 function getOrderedUserIds(userId1: string, userId2: string) {
-  return userId1 < userId2 
+  return userId1 < userId2
     ? { user1_id: userId1, user2_id: userId2 }
     : { user1_id: userId2, user2_id: userId1 };
 }
 
 // Helper function to get the other user ID
-function getOtherUserId(friendship: FriendshipRecord, currentUserId: string): string {
-  return friendship.user1_id === currentUserId ? friendship.user2_id : friendship.user1_id;
+function getOtherUserId(friendship: { user1Id: string; user2Id: string }, currentUserId: string): string {
+  return friendship.user1Id === currentUserId ? friendship.user2Id : friendship.user1Id;
+}
+
+// The frontend consumes the raw (snake_case) row shape that supabase-js used to
+// return directly; keep that contract stable across the Drizzle rewrite.
+function toFriendshipRow(f: FriendshipRow) {
+  return {
+    id: f.id,
+    user1_id: f.user1Id,
+    user2_id: f.user2Id,
+    sender_id: f.senderId,
+    status: f.status,
+    created_at: f.createdAt,
+    updated_at: f.updatedAt,
+  };
+}
+
+function toProfilePayload(p?: { id: string; firstName: string | null; lastName: string | null; profilePhotoUrl: string | null }) {
+  return p ? { id: p.id, first_name: p.firstName, last_name: p.lastName, profile_photo_url: p.profilePhotoUrl } : null;
 }
 
 export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, userId: string) {
@@ -40,7 +52,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const senderId = userId;
       const { receiverId } = data;
 
-
       // Validate
       if (!receiverId || senderId === receiverId) {
         socket.emit('friend:request:error', { error: 'Invalid request' });
@@ -48,17 +59,8 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       }
 
       // Verify both users exist in profiles table
-      const { data: senderExists } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', senderId)
-        .maybeSingle();
-
-      const { data: receiverExists } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', receiverId)
-        .maybeSingle();
+      const [senderExists] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.id, senderId)).limit(1);
+      const [receiverExists] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.id, receiverId)).limit(1);
 
       if (!senderExists) {
         console.error('❌ Sender profile not found:', senderId);
@@ -75,20 +77,13 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const { user1_id, user2_id } = getOrderedUserIds(senderId, receiverId);
 
       // Check if friendship record already exists
-      const { data: existing, error: checkError } = await supabase
-        .from('friendships')
-        .select('*')
-        .eq('user1_id', user1_id)
-        .eq('user2_id', user2_id)
-        .maybeSingle();
-
-      if (checkError) {
+      let existing: FriendshipRow | undefined;
+      try {
+        [existing] = await db.select().from(friendships)
+          .where(and(eq(friendships.user1Id, user1_id), eq(friendships.user2Id, user2_id)))
+          .limit(1);
+      } catch (checkError) {
         console.error('❌ Error checking friendship:', checkError);
-        console.error('Error details:', {
-          code: checkError.code,
-          message: checkError.message,
-          details: checkError.details
-        });
         socket.emit('friend:request:error', { error: 'Database error' });
         return;
       }
@@ -108,34 +103,22 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
           return;
         }
         // If inactive, update to pending with new sender
-        const { data: updated, error: updateError } = await supabase
-          .from('friendships')
-          .update({ 
-            status: 'pending', 
-            sender_id: senderId,
-            updated_at: new Date().toISOString() 
-          })
-          .eq('id', existing.id)
-          .select()
-          .single();
-
-        if (updateError) {
+        let updated: FriendshipRow | undefined;
+        try {
+          [updated] = await db.update(friendships)
+            .set({ status: 'pending', senderId, updatedAt: new Date().toISOString() })
+            .where(eq(friendships.id, existing.id))
+            .returning();
+        } catch (updateError) {
           console.error('❌ Error updating friendship:', updateError);
-          console.error('Update error details:', {
-            code: updateError.code,
-            message: updateError.message,
-            details: updateError.details
-          });
           socket.emit('friend:request:error', { error: 'Failed to send request' });
           return;
         }
 
         // Get sender profile
-        const { data: senderProfile } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name, profile_photo_url')
-          .eq('id', senderId)
-          .single();
+        const [senderProfile] = await db
+          .select({ id: profiles.id, firstName: profiles.firstName, lastName: profiles.lastName, profilePhotoUrl: profiles.profilePhotoUrl })
+          .from(profiles).where(eq(profiles.id, senderId)).limit(1);
 
         // Create notification
         await NotificationService.createNotification({
@@ -143,56 +126,44 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
           sender_id: senderId,
           type: 'friend_request',
           title: 'Friend Request',
-          message: `${senderProfile?.first_name || 'Someone'} sent you a friend request`,
+          message: `${senderProfile?.firstName || 'Someone'} sent you a friend request`,
           data: {
-            requestId: updated.id,
+            requestId: updated!.id,
             userId: senderId,
-            userName: senderProfile?.first_name || 'Someone',
-            userAvatar: senderProfile?.profile_photo_url
+            userName: senderProfile?.firstName || 'Someone',
+            userAvatar: senderProfile?.profilePhotoUrl
           }
         });
 
+        const updatedPayload = toFriendshipRow(updated!);
+
         // Notify receiver
         io.to(receiverId).emit('friend:request:received', {
-          request: updated,
-          sender: senderProfile
+          request: updatedPayload,
+          sender: toProfilePayload(senderProfile)
         });
 
         // Confirm to sender
-        socket.emit('friend:request:sent', { request: updated });
+        socket.emit('friend:request:sent', { request: updatedPayload });
         return;
       }
 
       // Create new friend request
-      const { data: newRequest, error: createError } = await supabase
-        .from('friendships')
-        .insert({
-          user1_id,
-          user2_id,
-          sender_id: senderId,
-          status: 'pending'
-        })
-        .select()
-        .single();
-
-      if (createError) {
+      let newRequest: FriendshipRow | undefined;
+      try {
+        [newRequest] = await db.insert(friendships)
+          .values({ user1Id: user1_id, user2Id: user2_id, senderId, status: 'pending' })
+          .returning();
+      } catch (createError) {
         console.error('❌ Error creating friend request:', createError);
-        console.error('Create error details:', {
-          code: createError.code,
-          message: createError.message,
-          details: createError.details,
-          hint: createError.hint
-        });
         socket.emit('friend:request:error', { error: 'Failed to send request' });
         return;
       }
 
       // Get sender profile
-      const { data: senderProfile } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, profile_photo_url')
-        .eq('id', senderId)
-        .single();
+      const [senderProfile] = await db
+        .select({ id: profiles.id, firstName: profiles.firstName, lastName: profiles.lastName, profilePhotoUrl: profiles.profilePhotoUrl })
+        .from(profiles).where(eq(profiles.id, senderId)).limit(1);
 
       // Create notification
       await NotificationService.createNotification({
@@ -200,31 +171,28 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         sender_id: senderId,
         type: 'friend_request',
         title: 'Friend Request',
-        message: `${senderProfile?.first_name || 'Someone'} sent you a friend request`,
+        message: `${senderProfile?.firstName || 'Someone'} sent you a friend request`,
         data: {
-          requestId: newRequest.id,
+          requestId: newRequest!.id,
           userId: senderId,
-          userName: senderProfile?.first_name || 'Someone',
-          userAvatar: senderProfile?.profile_photo_url
+          userName: senderProfile?.firstName || 'Someone',
+          userAvatar: senderProfile?.profilePhotoUrl
         }
       });
 
+      const newRequestPayload = toFriendshipRow(newRequest!);
+
       // Notify receiver
       io.to(receiverId).emit('friend:request:received', {
-        request: newRequest,
-        sender: senderProfile
+        request: newRequestPayload,
+        sender: toProfilePayload(senderProfile)
       });
 
       // Confirm to sender
-      socket.emit('friend:request:sent', { request: newRequest });
+      socket.emit('friend:request:sent', { request: newRequestPayload });
 
     } catch (error: any) {
       console.error('❌ Error sending friend request:', error);
-      console.error('Catch error details:', {
-        message: error?.message,
-        code: error?.code,
-        stack: error?.stack
-      });
       socket.emit('friend:request:error', { error: error?.message || 'Failed to send request' });
     }
   });
@@ -237,20 +205,16 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const { requestId } = data;
 
       // Get the friendship record
-      const { data: friendship, error: fetchError } = await supabase
-        .from('friendships')
-        .select('*')
-        .eq('id', requestId)
-        .single();
+      const [friendship] = await db.select().from(friendships).where(eq(friendships.id, requestId)).limit(1);
 
-      if (fetchError || !friendship) {
-        console.error('Friend request not found:', fetchError);
+      if (!friendship) {
+        console.error('Friend request not found:', requestId);
         socket.emit('friend:request:error', { error: 'Request not found' });
         return;
       }
 
       // Verify user is the receiver (not the sender)
-      if (friendship.sender_id === userId) {
+      if (friendship.senderId === userId) {
         socket.emit('friend:request:error', { error: 'Cannot accept your own request' });
         return;
       }
@@ -262,48 +226,45 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       }
 
       // Update status to accepted
-      const { data: updated, error: updateError } = await supabase
-        .from('friendships')
-        .update({ 
-          status: 'accepted',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', requestId)
-        .select()
-        .single();
-
-      if (updateError) {
+      let updated: FriendshipRow | undefined;
+      try {
+        [updated] = await db.update(friendships)
+          .set({ status: 'accepted', updatedAt: new Date().toISOString() })
+          .where(eq(friendships.id, requestId))
+          .returning();
+      } catch (updateError) {
         console.error('Error accepting request:', updateError);
         socket.emit('friend:request:error', { error: 'Failed to accept request' });
         return;
       }
 
       // Get both user profiles
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, first_name, last_name, profile_photo_url')
-        .in('id', [friendship.user1_id, friendship.user2_id]);
+      const profileRows = await db
+        .select({ id: profiles.id, firstName: profiles.firstName, lastName: profiles.lastName, profilePhotoUrl: profiles.profilePhotoUrl })
+        .from(profiles)
+        .where(inArray(profiles.id, [friendship.user1Id, friendship.user2Id]));
 
-      const senderId = friendship.sender_id;
+      const senderId = friendship.senderId!;
       const receiverId = getOtherUserId(friendship, senderId);
 
-      const senderProfile = profiles?.find(p => p.id === senderId);
-      const receiverProfile = profiles?.find(p => p.id === receiverId);
+      const senderProfile = profileRows.find(p => p.id === senderId);
+      const receiverProfile = profileRows.find(p => p.id === receiverId);
 
       // Delete friend request notifications
       await NotificationService.deleteFriendRequestNotifications(senderId, receiverId);
 
+      const updatedPayload = toFriendshipRow(updated!);
+
       // Notify both users
       io.to(senderId).emit('friend:request:accepted', {
-        friendship: updated,
-        friend: receiverProfile
+        friendship: updatedPayload,
+        friend: toProfilePayload(receiverProfile)
       });
 
       io.to(receiverId).emit('friend:request:accepted', {
-        friendship: updated,
-        friend: senderProfile
+        friendship: updatedPayload,
+        friend: toProfilePayload(senderProfile)
       });
-
 
     } catch (error) {
       console.error('❌ Error accepting friend request:', error);
@@ -319,36 +280,29 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const { requestId } = data;
 
       // Get the friendship record
-      const { data: friendship, error: fetchError } = await supabase
-        .from('friendships')
-        .select('*')
-        .eq('id', requestId)
-        .single();
+      const [friendship] = await db.select().from(friendships).where(eq(friendships.id, requestId)).limit(1);
 
-      if (fetchError || !friendship) {
+      if (!friendship) {
         socket.emit('friend:request:error', { error: 'Request not found' });
         return;
       }
 
       // Verify user is the receiver
-      if (friendship.sender_id === userId) {
+      if (friendship.senderId === userId) {
         socket.emit('friend:request:error', { error: 'Cannot decline your own request' });
         return;
       }
 
       // Delete the request (clean approach)
-      const { error: deleteError } = await supabase
-        .from('friendships')
-        .delete()
-        .eq('id', requestId);
-
-      if (deleteError) {
+      try {
+        await db.delete(friendships).where(eq(friendships.id, requestId));
+      } catch (deleteError) {
         console.error('Error declining request:', deleteError);
         socket.emit('friend:request:error', { error: 'Failed to decline request' });
         return;
       }
 
-      const senderId = friendship.sender_id;
+      const senderId = friendship.senderId!;
       const receiverId = getOtherUserId(friendship, senderId);
 
       // Delete friend request notifications
@@ -377,30 +331,26 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const senderId = userId;
       const { receiverId } = data;
 
-
       const { user1_id, user2_id } = getOrderedUserIds(senderId, receiverId);
 
       // Find and delete the pending request
-      const { data: friendship, error: fetchError } = await supabase
-        .from('friendships')
-        .select('*')
-        .eq('user1_id', user1_id)
-        .eq('user2_id', user2_id)
-        .eq('sender_id', senderId)
-        .eq('status', 'pending')
-        .maybeSingle();
+      const [friendship] = await db.select().from(friendships)
+        .where(and(
+          eq(friendships.user1Id, user1_id),
+          eq(friendships.user2Id, user2_id),
+          eq(friendships.senderId, senderId),
+          eq(friendships.status, 'pending'),
+        ))
+        .limit(1);
 
       if (!friendship) {
         socket.emit('friend:request:error', { error: 'No pending request found' });
         return;
       }
 
-      const { error: deleteError } = await supabase
-        .from('friendships')
-        .delete()
-        .eq('id', friendship.id);
-
-      if (deleteError) {
+      try {
+        await db.delete(friendships).where(eq(friendships.id, friendship.id));
+      } catch (deleteError) {
         console.error('Error cancelling request:', deleteError);
         socket.emit('friend:request:error', { error: 'Failed to cancel request' });
         return;
@@ -416,11 +366,10 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       });
 
       // Confirm to sender
-      socket.emit('friend:request:cancel:confirmed', { 
+      socket.emit('friend:request:cancel:confirmed', {
         requestId: friendship.id,
-        success: true 
+        success: true
       });
-
 
     } catch (error) {
       console.error('❌ Error cancelling friend request:', error);
@@ -433,25 +382,46 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
   // ==========================================
   socket.on('friend:requests:get', async () => {
     try {
-
       // Get all pending requests where user is the receiver
-      const { data: requests, error } = await supabase
-        .from('friendships')
-        .select(`
-          *,
-          sender:profiles!sender_id(id, first_name, last_name, profile_photo_url)
-        `)
-        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-        .eq('status', 'pending')
-        .neq('sender_id', userId); // Only requests where user is receiver
+      const rows = await db
+        .select({
+          id: friendships.id,
+          user1Id: friendships.user1Id,
+          user2Id: friendships.user2Id,
+          senderId: friendships.senderId,
+          status: friendships.status,
+          createdAt: friendships.createdAt,
+          updatedAt: friendships.updatedAt,
+          senderProfileId: profiles.id,
+          senderFirstName: profiles.firstName,
+          senderLastName: profiles.lastName,
+          senderProfilePhotoUrl: profiles.profilePhotoUrl,
+        })
+        .from(friendships)
+        .leftJoin(profiles, eq(profiles.id, friendships.senderId))
+        .where(and(
+          or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId)),
+          eq(friendships.status, 'pending'),
+          ne(friendships.senderId, userId), // Only requests where user is receiver
+        ));
 
-      if (error) {
-        console.error('Error fetching requests:', error);
-        socket.emit('friend:requests:error', { error: 'Failed to fetch requests' });
-        return;
-      }
+      const requests = rows.map(r => ({
+        id: r.id,
+        user1_id: r.user1Id,
+        user2_id: r.user2Id,
+        sender_id: r.senderId,
+        status: r.status,
+        created_at: r.createdAt,
+        updated_at: r.updatedAt,
+        sender: r.senderProfileId ? {
+          id: r.senderProfileId,
+          first_name: r.senderFirstName,
+          last_name: r.senderLastName,
+          profile_photo_url: r.senderProfilePhotoUrl,
+        } : null,
+      }));
 
-      socket.emit('friend:requests:list', { requests: requests || [] });
+      socket.emit('friend:requests:list', { requests });
 
     } catch (error) {
       console.error('❌ Error getting friend requests:', error);
@@ -469,20 +439,24 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
       const { user1_id, user2_id } = getOrderedUserIds(userId, friendId);
 
       // Update status to inactive
-      const { data: updated, error: updateError } = await supabase
-        .from('friendships')
-        .update({ 
-          status: 'inactive',
-          updated_at: new Date().toISOString()
-        })
-        .eq('user1_id', user1_id)
-        .eq('user2_id', user2_id)
-        .eq('status', 'accepted')
-        .select()
-        .single();
-
-      if (updateError) {
+      let updated: FriendshipRow | undefined;
+      try {
+        [updated] = await db.update(friendships)
+          .set({ status: 'inactive', updatedAt: new Date().toISOString() })
+          .where(and(
+            eq(friendships.user1Id, user1_id),
+            eq(friendships.user2Id, user2_id),
+            eq(friendships.status, 'accepted'),
+          ))
+          .returning();
+      } catch (updateError) {
         console.error('Error unfriending:', updateError);
+        socket.emit('friend:unfriend:error', { error: 'Failed to unfriend' });
+        return;
+      }
+
+      if (!updated) {
+        console.error('Error unfriending: no accepted friendship found');
         socket.emit('friend:unfriend:error', { error: 'Failed to unfriend' });
         return;
       }
@@ -498,7 +472,6 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
         success: true
       });
 
-
     } catch (error) {
       console.error('❌ Error unfriending:', error);
       socket.emit('friend:unfriend:error', { error: 'Failed to unfriend' });
@@ -510,49 +483,49 @@ export function setupFriendRequestHandlers(io: SocketIOServer, socket: Socket, u
   // ==========================================
   socket.on('friend:requests:get_pending', async () => {
     try {
-
       // Query friendships table for pending requests where user is the receiver
-      const { data: friendships, error } = await supabase
-        .from('friendships')
-        .select('*')
-        .eq('status', 'pending')
-        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-        .order('created_at', { ascending: false });
-
-      if (error) {
+      let rows: FriendshipRow[] = [];
+      try {
+        rows = await db.select().from(friendships)
+          .where(and(
+            eq(friendships.status, 'pending'),
+            or(eq(friendships.user1Id, userId), eq(friendships.user2Id, userId)),
+          ))
+          .orderBy(desc(friendships.createdAt));
+      } catch (error) {
         console.error('Friend requests query error:', error);
         socket.emit('friend:requests:pending_list', { requests: [] });
         return;
       }
 
       // Filter to only show requests where current user is the receiver (not the sender)
-      const requests = friendships?.filter(f => f.sender_id !== userId) || [];
+      const requests = rows.filter(f => f.senderId !== userId);
 
       // If we have requests, get sender information from profiles
-      if (requests && requests.length > 0) {
-        const senderIds = requests.map(r => r.sender_id);
-        
+      if (requests.length > 0) {
+        const senderIds = requests.map(r => r.senderId!);
+
         // Get sender profiles
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name, username, profile_photo_url')
-          .in('id', senderIds);
+        const profileRows = await db
+          .select({ id: profiles.id, firstName: profiles.firstName, lastName: profiles.lastName, username: profiles.username, profilePhotoUrl: profiles.profilePhotoUrl })
+          .from(profiles)
+          .where(inArray(profiles.id, senderIds));
 
         // Combine requests with sender information
         const requestsWithSenders = requests.map(request => {
-          const senderProfile = profiles?.find(p => p.id === request.sender_id);
-          
+          const senderProfile = profileRows.find(p => p.id === request.senderId);
+
           return {
             id: request.id,
-            sender_id: request.sender_id,
+            sender_id: request.senderId,
             status: request.status,
-            created_at: request.created_at,
+            created_at: request.createdAt,
             sender: {
-              id: request.sender_id,
-              first_name: senderProfile?.first_name || null,
-              last_name: senderProfile?.last_name || null,
+              id: request.senderId,
+              first_name: senderProfile?.firstName || null,
+              last_name: senderProfile?.lastName || null,
               username: senderProfile?.username || null,
-              profile_photo_url: senderProfile?.profile_photo_url || null
+              profile_photo_url: senderProfile?.profilePhotoUrl || null
             }
           };
         });
