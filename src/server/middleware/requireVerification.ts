@@ -1,6 +1,8 @@
 import { Response, NextFunction } from 'express';
+import { eq } from 'drizzle-orm';
 import { AuthRequest } from './auth.js';
-import { supabase } from '../config/supabase.js';
+import { db } from '../config/db.js';
+import { profiles } from '../db/schema.js';
 
 /**
  * Middleware to require face verification
@@ -13,30 +15,30 @@ export async function requireVerification(
 ) {
   try {
     const userId = req.user?.id;
-    
+
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
     // Get user's verification status
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('verification_status, verification_required')
-      .eq('id', userId)
-      .single();
+    const rows = await db.select({
+      verificationStatus: profiles.verificationStatus,
+      verificationRequired: profiles.verificationRequired,
+    }).from(profiles).where(eq(profiles.id, userId)).limit(1);
+    const profile = rows[0];
 
-    if (error) {
-      console.error('Error checking verification status:', error);
+    if (!profile) {
+      console.error('Error checking verification status: profile not found for user', userId);
       return res.status(500).json({ error: 'Failed to check verification status' });
     }
 
     // If verification not required, allow access
-    if (!profile.verification_required) {
+    if (!profile.verificationRequired) {
       return next();
     }
 
     // Check if user is verified
-    if (profile.verification_status === 'verified') {
+    if (profile.verificationStatus === 'verified') {
       return next();
     }
 
@@ -44,7 +46,7 @@ export async function requireVerification(
     return res.status(403).json({
       error: 'Verification required',
       message: 'Please complete face verification to access this feature',
-      verification_status: profile.verification_status,
+      verification_status: profile.verificationStatus,
       verification_required: true
     });
 
@@ -64,17 +66,17 @@ export async function checkVerification(
 ) {
   try {
     const userId = req.user?.id;
-    
+
     if (userId) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('verification_status, verification_required')
-        .eq('id', userId)
-        .single();
+      const rows = await db.select({
+        verificationStatus: profiles.verificationStatus,
+        verificationRequired: profiles.verificationRequired,
+      }).from(profiles).where(eq(profiles.id, userId)).limit(1);
+      const profile = rows[0];
 
       if (profile) {
-        req.verificationStatus = profile.verification_status;
-        req.verificationRequired = profile.verification_required;
+        req.verificationStatus = profile.verificationStatus ?? undefined;
+        req.verificationRequired = profile.verificationRequired ?? undefined;
       }
     }
 
