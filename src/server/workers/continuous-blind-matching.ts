@@ -12,7 +12,6 @@
 import { logger } from '../config/logger.js'
 import { BlindDatingService } from '../services/blind-dating.service.js'
 import { PushNotificationService } from '../services/pushNotificationService.js'
-import { supabase } from '../config/supabase.js'
 
 // Random interval between 4-5 hours (in milliseconds)
 const MIN_INTERVAL = 4 * 60 * 60 * 1000 // 4 hours
