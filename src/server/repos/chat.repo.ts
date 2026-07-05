@@ -1,6 +1,6 @@
-import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
-import { chats, chatMembers, messages, chatDeletions, profiles } from '../db/schema.js'
+import { chats, chatMembers, messages, chatDeletions, profiles, messageReceipts } from '../db/schema.js'
 import { cache, cacheKeys } from '../services/cache.js'
 
 // Cache TTLs (seconds). Short, because invalidation keeps them fresh on writes;
@@ -200,7 +200,6 @@ async function computeUserInbox(userId: string) {
   //     then all of the user's read receipts for those messages, in one round trip each. ---
   const unreadByChat = new Map<string, number>()
   if (visibleChatIds.length) {
-    const { messageReceipts } = await import('../db/schema.js')
     const candidateMsgs = await db.select({ id: messages.id, chatId: messages.chatId, createdAt: messages.createdAt })
       .from(messages)
       .where(and(inArray(messages.chatId, visibleChatIds), eq(messages.isDeleted, false), ne(messages.senderId, userId)))
@@ -282,7 +281,6 @@ async function computeUserInbox(userId: string) {
 
   if (userMessageIds.length > 0) {
     try {
-      const { messageReceipts } = await import('../db/schema.js')
       // Get all receipts for user's messages in a single query
       const receipts = await db.select({ messageId: messageReceipts.messageId, status: messageReceipts.status })
         .from(messageReceipts)
@@ -332,71 +330,66 @@ export async function getChatMessages(chatId: string, limit = 30, before?: strin
     if (hit) return hit as (ChatMessage & { reactions: MessageReaction[]; receipts: { user_id: string; status: string }[] })[]
   }
 
-  let q = supabase
-    .from('messages')
-    .select(`
-      *,
-      reactions:message_reactions(
-        id,
-        user_id,
-        emoji,
-        created_at
-      ),
-      receipts:message_receipts(
-        user_id,
-        status
-      )
-    `)
-    .eq('chat_id', chatId)
-    .eq('is_deleted', false) // Only return non-deleted messages
-    .order('created_at', { ascending: false })
-    .limit(limit)
-  
-  if (before) q = q.lt('created_at', before)
-  
   // If userId is provided, filter out messages that were sent before the user cleared the chat
+  let deletedAfter: string | undefined
   if (userId) {
-    // Get the user's chat deletion record to see when they cleared the chat
-    const { data: deletion } = await supabase
-      .from('chat_deletions')
-      .select('deleted_at')
-      .eq('chat_id', chatId)
-      .eq('user_id', userId)
-      .maybeSingle()
-    
-    if (deletion) {
-      // Only show messages created after the user cleared the chat
-      q = q.gt('created_at', deletion.deleted_at)
-    }
+    const delRows = await db.select({ deletedAt: chatDeletions.deletedAt }).from(chatDeletions)
+      .where(and(eq(chatDeletions.chatId, chatId), eq(chatDeletions.userId, userId))).limit(1)
+    deletedAfter = delRows[0]?.deletedAt
   }
-  
-  const { data, error } = await q
-  if (error) throw error
 
-  const rows = ((data || []) as (ChatMessage & { reactions: MessageReaction[]; receipts: { user_id: string; status: string }[] })[])
+  const whereConditions = [eq(messages.chatId, chatId), eq(messages.isDeleted, false)]
+  if (before) whereConditions.push(lt(messages.createdAt, before))
+  if (deletedAfter) whereConditions.push(gt(messages.createdAt, deletedAfter))
+
+  const rowsRaw = await db.query.messages.findMany({
+    where: and(...whereConditions),
+    orderBy: desc(messages.createdAt),
+    limit,
+    with: {
+      messageReactions: {
+        columns: { id: true, userId: true, emoji: true, createdAt: true },
+      },
+      messageReceipts: {
+        columns: { userId: true, status: true },
+      },
+    },
+  })
+
+  const rows = rowsRaw
+    .map((m) => ({
+      ...rowToChatMessage(m),
+      reactions: m.messageReactions.map((r) => ({
+        id: r.id,
+        message_id: m.id,
+        user_id: r.userId,
+        emoji: r.emoji,
+        created_at: r.createdAt ?? '',
+      })),
+      receipts: m.messageReceipts.map((r) => ({ user_id: r.userId, status: r.status })),
+    }))
     .map(stripViewOnceMedia)
+
   if (cacheable) await cache.setJSON(histKey, rows, HISTORY_TTL)
   return rows
 }
 
 export async function getRecentChatTextMessagesForModeration(chatId: string, limit = 10) {
-  const { data, error } = await supabase
-    .from('messages')
-    .select('id, chat_id, sender_id, text, created_at, is_deleted, media_url, media_type')
-    .eq('chat_id', chatId)
-    .eq('is_deleted', false)
-    .order('created_at', { ascending: false })
+  const rows = await db.select({
+    id: messages.id, chatId: messages.chatId, senderId: messages.senderId, text: messages.text,
+    createdAt: messages.createdAt, isDeleted: messages.isDeleted, mediaUrl: messages.mediaUrl, mediaType: messages.mediaType,
+  }).from(messages)
+    .where(and(eq(messages.chatId, chatId), eq(messages.isDeleted, false)))
+    .orderBy(desc(messages.createdAt))
     .limit(limit)
 
-  if (error) throw error
-
   // Return only text messages (ignore media-only messages for context)
-  return (data || [])
-    .filter((m: any) => typeof m.text === 'string' && m.text.trim().length > 0)
-    .map((m: any) => ({
-      sender_id: m.sender_id,
+  return rows
+    .filter((m) => typeof m.text === 'string' && m.text.trim().length > 0)
+    .map((m) => ({
+      sender_id: m.senderId,
       text: String(m.text),
-      created_at: m.created_at,
+      created_at: m.createdAt,
     }))
 }
 
@@ -411,46 +404,31 @@ export async function insertMessage(
   isViewOnce?: boolean
 ): Promise<ChatMessage> {
   // Insert the message
-  const messageData: any = {
-    chat_id: chatId,
-    sender_id: senderId,
+  const messageData: typeof messages.$inferInsert = {
+    chatId,
+    senderId,
     text: text || '' // Allow empty text for media messages
   }
 
   // Add media fields if provided
-  if (mediaUrl) messageData.media_url = mediaUrl
-  if (mediaType) messageData.media_type = mediaType
+  if (mediaUrl) messageData.mediaUrl = mediaUrl
+  if (mediaType) messageData.mediaType = mediaType
   if (thumbnail) messageData.thumbnail = thumbnail
-  if (replyToId) messageData.reply_to_id = replyToId
-  if (isViewOnce) messageData.is_view_once = true
+  if (replyToId) messageData.replyToId = replyToId
+  if (isViewOnce) messageData.isViewOnce = true
 
-  //console.log('📝 Inserting message with data:', messageData)
-
-  const { data, error } = await supabase
-    .from('messages')
-    .insert(messageData)
-    .select('*')
-    .single()
-
-  if (error) {
-    console.error('❌ Message insert error:', error)
-    throw error
-  }
-  
-  //console.log('✅ Message inserted successfully:', data)
+  const insertedRows = await db.insert(messages).values(messageData).returning()
+  const data = rowToChatMessage(insertedRows[0])
 
   // Update chat last_message_at (best-effort)
   try {
-    await supabase
-      .from('chats')
-      .update({ last_message_at: (data as any)?.created_at ?? new Date().toISOString() })
-      .eq('id', chatId)
+    await db.update(chats).set({ lastMessageAt: data.created_at ?? new Date().toISOString() }).where(eq(chats.id, chatId))
   } catch {}
 
   // A new message changes both the chat history and every member's inbox.
   await invalidateChatCaches(chatId)
 
-  return stripViewOnceMedia(data as ChatMessage)
+  return stripViewOnceMedia(data)
 }
 
 export type ConsumeViewOnceResult =
@@ -471,78 +449,42 @@ export async function consumeViewOnceMessage(
   chatId: string,
   requestingUserId: string
 ): Promise<ConsumeViewOnceResult> {
-  const { data: existing, error: fetchError } = await supabase
-    .from('messages')
-    .select('id, chat_id, sender_id, media_url, media_type, is_view_once, view_once_viewed_at')
-    .eq('id', messageId)
-    .eq('chat_id', chatId)
-    .maybeSingle()
+  const existingRows = await db.select().from(messages)
+    .where(and(eq(messages.id, messageId), eq(messages.chatId, chatId))).limit(1)
+  const existing = existingRows[0]
 
-  if (fetchError || !existing || !existing.is_view_once) return { ok: false, reason: 'not_found' }
-  if (existing.sender_id === requestingUserId) return { ok: false, reason: 'sender_cannot_view' }
-  if (existing.view_once_viewed_at) return { ok: false, reason: 'already_viewed' }
+  if (!existing || !existing.isViewOnce) return { ok: false, reason: 'not_found' }
+  if (existing.senderId === requestingUserId) return { ok: false, reason: 'sender_cannot_view' }
+  if (existing.viewOnceViewedAt) return { ok: false, reason: 'already_viewed' }
 
-  const { data: updated, error: updateError } = await supabase
-    .from('messages')
-    .update({ view_once_viewed_at: new Date().toISOString() })
-    .eq('id', messageId)
-    .is('view_once_viewed_at', null) // conditional — only the first caller wins the race
-    .select('media_url, media_type, sender_id')
-    .maybeSingle()
+  const updatedRows = await db.update(messages)
+    .set({ viewOnceViewedAt: new Date().toISOString() })
+    .where(and(eq(messages.id, messageId), isNull(messages.viewOnceViewedAt))) // conditional — only the first caller wins the race
+    .returning({ mediaUrl: messages.mediaUrl, mediaType: messages.mediaType, senderId: messages.senderId })
 
-  if (updateError || !updated) return { ok: false, reason: 'already_viewed' } // lost the race
+  const updated = updatedRows[0]
+  if (!updated) return { ok: false, reason: 'already_viewed' } // lost the race
 
   return {
     ok: true,
-    mediaUrl: (existing as any).media_url ?? null,
-    mediaType: (existing as any).media_type ?? null,
-    senderId: (existing as any).sender_id,
+    mediaUrl: existing.mediaUrl ?? null,
+    mediaType: existing.mediaType ?? null,
+    senderId: existing.senderId,
   }
 }
 
 export async function insertReceipt(messageId: string, userId: string, status: 'delivered' | 'read') {
   try {
-    //console.log(`📝 Inserting ${status} receipt for message ${messageId} by user ${userId}`);
-    
-    // Use upsert to handle duplicates gracefully without errors
-    const { error } = await supabase
-      .from('message_receipts')
-      .upsert(
-        { message_id: messageId, user_id: userId, status },
-        { 
-          onConflict: 'message_id,user_id,status',
-          ignoreDuplicates: true 
-        }
-      )
-      .select('id')
-    
-    if (error) {
-      console.error(`❌ Receipt insert failed:`, error);
+    // Use onConflictDoNothing to handle duplicates gracefully without errors
+    await db.insert(messageReceipts)
+      .values({ messageId, userId, status })
+      .onConflictDoNothing({ target: [messageReceipts.messageId, messageReceipts.userId, messageReceipts.status] })
 
-      // For network errors (fetch failed), don't throw - just log and continue
-      if (error.message?.includes('fetch failed') || error.message?.includes('TypeError: fetch failed')) {
-        console.warn(`🌐 Network error inserting receipt - continuing without throwing`);
-        return; // Don't throw, just return
-      }
-
-      throw error;
-    } else {
-      // A 'read' receipt clears unread for this user — refresh their inbox cache.
-      if (status === 'read') {
-        await invalidateInbox(userId)
-      }
+    // A 'read' receipt clears unread for this user — refresh their inbox cache.
+    if (status === 'read') {
+      await invalidateInbox(userId)
     }
   } catch (error) {
-    // Handle network errors gracefully
-    if (error instanceof TypeError && error.message?.includes('fetch failed')) {
-      console.warn(`🌐 Network connectivity issue inserting ${status} receipt - skipping:`, {
-        messageId,
-        userId,
-        error: error.message
-      });
-      return; // Don't throw for network errors
-    }
-    
     console.error(`❌ Failed to insert ${status} receipt:`, {
       messageId,
       userId,
@@ -558,43 +500,32 @@ export async function insertReceipt(messageId: string, userId: string, status: '
 
 export async function editMessage(messageId: string, userId: string, newText: string): Promise<ChatMessage> {
   // Ensure ownership
-  const { data: msg, error: findErr } = await supabase
-    .from('messages')
-    .select('id, sender_id, chat_id')
-    .eq('id', messageId)
-    .maybeSingle()
-  if (findErr) throw findErr
-  if (!msg || msg.sender_id !== userId) {
+  const msgRows = await db.select({ id: messages.id, senderId: messages.senderId, chatId: messages.chatId })
+    .from(messages).where(eq(messages.id, messageId)).limit(1)
+  const msg = msgRows[0]
+  if (!msg || msg.senderId !== userId) {
     const e: any = new Error('Forbidden')
     e.status = 403
     throw e
   }
 
   // Update the message
-  const { data, error } = await supabase
-    .from('messages')
-    .update({
-      text: newText,
-      updated_at: new Date().toISOString(),
-      is_edited: true
-    })
-    .eq('id', messageId)
-    .select('*')
-    .single()
-  if (error) throw error
-  await invalidateChatCaches((msg as any).chat_id)
-  return data as ChatMessage
+  const updatedRows = await db.update(messages).set({
+    text: newText,
+    updatedAt: new Date().toISOString(),
+    isEdited: true,
+  }).where(eq(messages.id, messageId)).returning()
+  const data = rowToChatMessage(updatedRows[0])
+  await invalidateChatCaches(msg.chatId)
+  return data
 }
 
 export async function deleteMessage(chatId: string, messageId: string, userId: string) {
   // ensure ownership
-  const { data: msg, error: findErr } = await supabase
-    .from('messages')
-    .select('id, chat_id, sender_id')
-    .eq('id', messageId)
-    .maybeSingle()
-  if (findErr) throw findErr
-  if (!msg || msg.chat_id !== chatId || msg.sender_id !== userId) {
+  const msgRows = await db.select({ id: messages.id, chatId: messages.chatId, senderId: messages.senderId })
+    .from(messages).where(eq(messages.id, messageId)).limit(1)
+  const msg = msgRows[0]
+  if (!msg || msg.chatId !== chatId || msg.senderId !== userId) {
     const e: any = new Error('Forbidden')
     e.status = 403
     throw e
@@ -602,14 +533,10 @@ export async function deleteMessage(chatId: string, messageId: string, userId: s
 
   // Soft delete by marking as deleted instead of hard delete
   // Keep original text intact - only mark as deleted
-  const { error } = await supabase
-    .from('messages')
-    .update({
-      is_deleted: true,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', messageId)
-  if (error) throw error
+  await db.update(messages).set({
+    isDeleted: true,
+    updatedAt: new Date().toISOString(),
+  }).where(eq(messages.id, messageId))
   await invalidateChatCaches(chatId)
 }
 
