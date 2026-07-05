@@ -1,6 +1,16 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { and, eq, inArray, ne, notExists, or, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import {
+  blindDateMatches,
+  chatDeletions,
+  chatMembers,
+  friendships,
+  messageReceipts,
+  messages,
+  profiles,
+} from '../db/schema.js'
 import { CirclePointsService } from '../services/circle-points.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { 
@@ -25,46 +35,47 @@ const router = Router()
 // Helper function to calculate and emit unread count for a specific chat
 async function emitUnreadCountUpdate(chatId: string, userId: string) {
   try {
-    // Get unread count for this specific chat and user
-    const { data: msgs, error: msgsErr } = await supabase
-      .from('messages')
-      .select('id,sender_id')
-      .eq('chat_id', chatId)
-      .eq('is_deleted', false)
-      .not('sender_id', 'eq', userId)
-    
-    if (msgsErr) {
-      console.error('Error fetching messages for unread count:', msgsErr)
-      return
-    }
-    
-    const msgIds = (msgs || []).map(m => m.id)
-    let readIds: string[] = []
-    
-    if (msgIds.length) {
-      const { data: reads, error: rErr } = await supabase
-        .from('message_receipts')
-        .select('message_id')
-        .eq('status', 'read')
-        .eq('user_id', userId)
-        .in('message_id', msgIds)
-      
-      if (rErr) {
-        console.error('Error fetching read receipts:', rErr)
-        return
-      }
-      
-      readIds = (reads || []).map(r => r.message_id)
-    }
-    
-    const unreadCount = msgIds.filter(id => !readIds.includes(id)).length
-    
-    //console.log(`📊 Emitting unread count update: chat ${chatId}, user ${userId}, count ${unreadCount}`)
+    // Messages from others in this chat that this user has no 'read' receipt for
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(messages)
+      .where(and(
+        eq(messages.chatId, chatId),
+        eq(messages.isDeleted, false),
+        ne(messages.senderId, userId),
+        notExists(
+          db.select({ one: sql`1` })
+            .from(messageReceipts)
+            .where(and(
+              eq(messageReceipts.messageId, messages.id),
+              eq(messageReceipts.userId, userId),
+              eq(messageReceipts.status, 'read'),
+            ))
+        ),
+      ))
+
+    const unreadCount = row?.count ?? 0
     emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
-    
   } catch (error) {
     console.error('Error calculating/emitting unread count:', error)
   }
+}
+
+// Two users are friends if a friendship row exists in either direction with an
+// accepted-equivalent status ('active' and 'accepted' both count, for compatibility)
+async function areFriends(userA: string, userB: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: friendships.id })
+    .from(friendships)
+    .where(and(
+      or(
+        and(eq(friendships.user1Id, userA), eq(friendships.user2Id, userB)),
+        and(eq(friendships.user1Id, userB), eq(friendships.user2Id, userA)),
+      ),
+      inArray(friendships.status, ['active', 'accepted']),
+    ))
+    .limit(1)
+  return rows.length > 0
 }
 
 router.get('/inbox', requireAuth, async (req: AuthRequest, res) => {
@@ -89,29 +100,26 @@ router.post('/with-user/:userId', requireAuth, async (req: AuthRequest, res) => 
     
     // Check if users are friends (required for messaging)
     // Accept both 'active' and 'accepted' status for compatibility
-    const { data: friendshipCheck } = await supabase
-      .from('friendships')
-      .select('id')
-      .or(`and(user1_id.eq.${currentUserId},user2_id.eq.${userId}),and(user1_id.eq.${userId},user2_id.eq.${currentUserId})`)
-      .in('status', ['active', 'accepted'])
-      .limit(1)
-      .maybeSingle()
-    
-    if (!friendshipCheck) {
-      return res.status(403).json({ 
+    if (!(await areFriends(currentUserId, userId))) {
+      return res.status(403).json({
         error: 'Cannot create chat',
         reason: 'not_friends',
         message: 'You can only chat with friends. Send a friend request first.'
       })
     }
-    
+
     // Get user profile for the other user
-    const { data: userProfile } = await supabase
-      .from('profiles')
-      .select('id, first_name, last_name, profile_photo_url')
-      .eq('id', userId)
-      .single()
-    
+    const [userProfile] = await db
+      .select({
+        id: profiles.id,
+        firstName: profiles.firstName,
+        lastName: profiles.lastName,
+        profilePhotoUrl: profiles.profilePhotoUrl,
+      })
+      .from(profiles)
+      .where(eq(profiles.id, userId))
+      .limit(1)
+
     if (!userProfile) {
       return res.status(404).json({ error: 'User not found' })
     }
@@ -119,12 +127,12 @@ router.post('/with-user/:userId', requireAuth, async (req: AuthRequest, res) => 
     // Create or get existing chat
     const chat = await ensureChatForUsers(currentUserId, userId)
     
-    res.json({ 
+    res.json({
       chat,
       otherUser: {
         id: userProfile.id,
-        name: `${userProfile.first_name || ''} ${userProfile.last_name || ''}`.trim(),
-        profilePhoto: userProfile.profile_photo_url
+        name: `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim(),
+        profilePhoto: userProfile.profilePhotoUrl
       }
     })
   } catch (error) {
@@ -156,15 +164,15 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
   
   try {
     // Get chat members to check friendship status
-    const { data: members } = await supabase
-      .from('chat_members')
-      .select('user_id')
-      .eq('chat_id', chatId)
-    
-    if (!members || members.length !== 2) {
+    const members = await db
+      .select({ userId: chatMembers.userId })
+      .from(chatMembers)
+      .where(eq(chatMembers.chatId, chatId))
+
+    if (members.length !== 2) {
       return res.status(400).json({ error: 'Invalid chat' })
     }
-    const otherUserId = members.find((m: { user_id: string }) => m.user_id !== userId)?.user_id
+    const otherUserId = members.find((m) => m.userId !== userId)?.userId
     if (!otherUserId) {
       return res.status(400).json({ error: 'Invalid chat members' })
     }
@@ -175,16 +183,8 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     
     // Only check friendship if it's NOT a blind date chat
     if (!isBlindDate) {
-      const { data: friendshipCheck } = await supabase
-        .from('friendships')
-        .select('id')
-        .or(`and(user1_id.eq.${userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${userId})`)
-        .in('status', ['active', 'accepted'])
-        .limit(1)
-        .maybeSingle()
-      
-      if (!friendshipCheck) {
-        return res.status(403).json({ 
+      if (!(await areFriends(userId, otherUserId))) {
+        return res.status(403).json({
           error: 'Messaging not allowed',
           reason: 'not_friends',
           message: 'You can only send messages to friends. Send a friend request first.'
@@ -239,20 +239,25 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     // Emit real-time message to other user for chat list updates
     try {
       // Get sender info for notifications
-      const { data: senderInfo } = await supabase
-        .from('profiles')
-        .select('first_name, last_name, username, email, profile_photo_url')
-        .eq('id', userId)
-        .single()
-      
+      const [senderInfo] = await db
+        .select({
+          firstName: profiles.firstName,
+          lastName: profiles.lastName,
+          username: profiles.username,
+          email: profiles.email,
+          profilePhotoUrl: profiles.profilePhotoUrl,
+        })
+        .from(profiles)
+        .where(eq(profiles.id, userId))
+        .limit(1)
+
       // Check if this is a blind date chat (active, not revealed)
-      const { data: blindMatch } = await supabase
-        .from('blind_date_matches')
-        .select('id, status')
-        .eq('chat_id', chatId)
-        .eq('status', 'active')
-        .maybeSingle()
-      
+      const [blindMatch] = await db
+        .select({ id: blindDateMatches.id })
+        .from(blindDateMatches)
+        .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
+        .limit(1)
+
       const isBlindDateChat = !!blindMatch
       
       // Helper function to mask name for blind date
@@ -269,18 +274,18 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         return maskedLast ? `${maskedFirst} ${maskedLast}` : maskedFirst
       }
       
-      const realName = senderInfo 
-        ? (senderInfo.first_name && senderInfo.last_name 
-            ? `${senderInfo.first_name} ${senderInfo.last_name}`.trim()
+      const realName = senderInfo
+        ? (senderInfo.firstName && senderInfo.lastName
+            ? `${senderInfo.firstName} ${senderInfo.lastName}`.trim()
             : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
         : 'Someone'
-      
+
       // Use masked name for blind date chats
-      const senderName = isBlindDateChat 
-        ? maskName(senderInfo?.first_name || null, senderInfo?.last_name || null)
+      const senderName = isBlindDateChat
+        ? maskName(senderInfo?.firstName || null, senderInfo?.lastName || null)
         : realName
-      
-      const senderAvatar = senderInfo?.profile_photo_url || null
+
+      const senderAvatar = senderInfo?.profilePhotoUrl || null
       
       const messagePayload = {
         id: msg.id,
@@ -392,65 +397,47 @@ router.delete('/:chatId', requireAuth, async (req: AuthRequest, res) => {
     
     if (isBlindDate) {
       // For blind date chats, verify user is part of the match
-      const { data: match } = await supabase
-        .from('blind_date_matches')
-        .select('user_a, user_b')
-        .eq('chat_id', chatId)
-        .in('status', ['active', 'revealed'])
-        .maybeSingle()
-      
-      if (!match || (match.user_a !== userId && match.user_b !== userId)) {
+      const [match] = await db
+        .select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
+        .from(blindDateMatches)
+        .where(and(
+          eq(blindDateMatches.chatId, chatId),
+          inArray(blindDateMatches.status, ['active', 'revealed']),
+        ))
+        .limit(1)
+
+      if (!match || (match.userA !== userId && match.userB !== userId)) {
         return res.status(403).json({ error: 'Not authorized to clear this chat' })
       }
       // User is part of the blind date match, allow deletion
     } else {
       // For regular chats, verify membership or at least message presence by user as fallback
-      const { data: membership } = await supabase
-        .from('chat_members')
-        .select('id')
-        .eq('chat_id', chatId)
-        .eq('user_id', userId)
-        .maybeSingle()
+      const [membership] = await db
+        .select({ userId: chatMembers.userId })
+        .from(chatMembers)
+        .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId)))
+        .limit(1)
 
       if (!membership) {
-        const { data: userMessages } = await supabase
-          .from('messages')
-          .select('id')
-          .eq('chat_id', chatId)
-          .eq('sender_id', userId)
+        const userMessages = await db
+          .select({ id: messages.id })
+          .from(messages)
+          .where(and(eq(messages.chatId, chatId), eq(messages.senderId, userId)))
           .limit(1)
-        if (!userMessages || userMessages.length === 0) {
+        if (userMessages.length === 0) {
           return res.status(403).json({ error: 'Not authorized to clear this chat' })
         }
       }
     }
 
-    // Upsert user-specific deletion record
-    const { data: existingDeletion } = await supabase
-      .from('chat_deletions')
-      .select('id')
-      .eq('chat_id', chatId)
-      .eq('user_id', userId)
-      .maybeSingle()
-
-    if (existingDeletion) {
-      const { error: updateError } = await supabase
-        .from('chat_deletions')
-        .update({ deleted_at: new Date().toISOString() })
-        .eq('id', existingDeletion.id)
-      if (updateError) {
-        console.error('Error updating chat deletion record:', updateError)
-        return res.status(500).json({ error: 'Failed to clear chat' })
-      }
-    } else {
-      const { error: insertError } = await supabase
-        .from('chat_deletions')
-        .insert({ chat_id: chatId, user_id: userId, deleted_at: new Date().toISOString() })
-      if (insertError) {
-        console.error('Error creating chat deletion record:', insertError)
-        return res.status(500).json({ error: 'Failed to clear chat' })
-      }
-    }
+    // Upsert user-specific deletion record (chat_deletions has unique(chat_id, user_id))
+    await db
+      .insert(chatDeletions)
+      .values({ chatId, userId, deletedAt: new Date().toISOString() })
+      .onConflictDoUpdate({
+        target: [chatDeletions.chatId, chatDeletions.userId],
+        set: { deletedAt: new Date().toISOString() },
+      })
 
     // Clearing changes this user's inbox + message history — drop caches.
     await invalidateChatCaches(chatId)
@@ -550,52 +537,39 @@ router.get('/:chatId/members', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
 
     // Verify user is a member of this chat
-    const { data: membership, error: membershipError } = await supabase
-      .from('chat_members')
-      .select('user_id')
-      .eq('chat_id', chatId)
-      .eq('user_id', userId)
-      .maybeSingle()
-
-    if (membershipError) {
-      console.error('Error checking chat membership:', membershipError)
-      return res.status(500).json({ error: 'Failed to verify chat membership' })
-    }
+    const [membership] = await db
+      .select({ userId: chatMembers.userId })
+      .from(chatMembers)
+      .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId)))
+      .limit(1)
 
     if (!membership) {
       return res.status(403).json({ error: 'You are not a member of this chat' })
     }
 
     // Get all members of the chat with their profile info
-    const { data: members, error: membersError } = await supabase
-      .from('chat_members')
-      .select(`
-        user_id,
-        joined_at,
-        profiles:user_id (
-          id,
-          first_name,
-          last_name,
-          profile_photo_url,
-          instagram_username
-        )
-      `)
-      .eq('chat_id', chatId)
+    const members = await db
+      .select({
+        userId: chatMembers.userId,
+        joinedAt: chatMembers.joinedAt,
+        firstName: profiles.firstName,
+        lastName: profiles.lastName,
+        profilePhotoUrl: profiles.profilePhotoUrl,
+        instagramUsername: profiles.instagramUsername,
+      })
+      .from(chatMembers)
+      .leftJoin(profiles, eq(profiles.id, chatMembers.userId))
+      .where(eq(chatMembers.chatId, chatId))
 
-    if (membersError) {
-      console.error('Error fetching chat members:', membersError)
-      return res.status(500).json({ error: 'Failed to fetch chat members' })
-    }
-
-    // Format the response
-    const formattedMembers = members?.map(member => ({
-      user_id: member.user_id,
-      joined_at: member.joined_at,
-      first_name: member.profiles?.[0]?.first_name,
-      last_name: member.profiles?.[0]?.last_name,
-      profile_photo_url: member.profiles?.[0]?.profile_photo_url,
-      username: member.profiles?.[0]?.instagram_username
-    })) || []
+    // Format the response (same keys as before)
+    const formattedMembers = members.map((member) => ({
+      user_id: member.userId,
+      joined_at: member.joinedAt,
+      first_name: member.firstName ?? undefined,
+      last_name: member.lastName ?? undefined,
+      profile_photo_url: member.profilePhotoUrl ?? undefined,
+      username: member.instagramUsername ?? undefined,
+    }))
 
     res.json({ members: formattedMembers })
   } catch (error) {
