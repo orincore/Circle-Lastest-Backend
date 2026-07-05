@@ -1409,17 +1409,11 @@ export async function initOptimizedSocket(server: Server) {
       
       // Also send to all chat members individually (for chat list updates)
       try {
-        const { data: members } = await supabase
-          .from('chat_members')
-          .select('user_id')
-          .eq('chat_id', chatId)
-        
-        if (members) {
-          members.forEach((member: { user_id: string }) => {
-            if (member.user_id !== userId) { // Don't send to sender
-              io.to(member.user_id).emit('chat:typing', { chatId, users: getTyping(chatId) })
-            }
-          })
+        const memberIds = await fetchChatMemberIds(chatId)
+        for (const memberId of memberIds) {
+          if (memberId !== userId) { // Don't send to sender
+            io.to(memberId).emit('chat:typing', { chatId, users: getTyping(chatId) })
+          }
         }
       } catch (error) {
         logger.error({ error, chatId, userId }, 'Failed to send typing indicator to members')
@@ -1593,24 +1587,33 @@ export async function initOptimizedSocket(server: Server) {
         
         // Also send to all chat members individually (for background delivery)
         try {
-          const { data: senderInfo, error: senderError } = await supabase
-            .from('profiles')
-            .select('first_name, last_name, username, email, profile_photo_url')
-            .eq('id', userId)
-            .single()
-          
-          if (senderError) {
+          let senderInfo:
+            | { firstName: string | null; lastName: string | null; username: string | null; email: string | null; profilePhotoUrl: string | null }
+            | undefined
+          try {
+            const rows = await db
+              .select({
+                firstName: profiles.firstName,
+                lastName: profiles.lastName,
+                username: profiles.username,
+                email: profiles.email,
+                profilePhotoUrl: profiles.profilePhotoUrl,
+              })
+              .from(profiles)
+              .where(eq(profiles.id, userId))
+              .limit(1)
+            senderInfo = rows[0]
+          } catch (senderError) {
             logger.error({ error: senderError, userId }, 'Error fetching sender info')
           }
-          
+
           // Check if this is a blind date chat (active, not revealed)
-          const { data: blindMatch } = await supabase
-            .from('blind_date_matches')
-            .select('id, status')
-            .eq('chat_id', chatId)
-            .eq('status', 'active')
-            .maybeSingle()
-          
+          const [blindMatch] = await db
+            .select({ id: blindDateMatches.id })
+            .from(blindDateMatches)
+            .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
+            .limit(1)
+
           const isBlindDateChat = !!blindMatch
           
           // Helper function to mask name for blind date
@@ -1628,17 +1631,17 @@ export async function initOptimizedSocket(server: Server) {
           }
           
           // Use masked name for blind date chats, real name otherwise
-          const realName = senderInfo 
-            ? (senderInfo.first_name && senderInfo.last_name 
-                ? `${senderInfo.first_name} ${senderInfo.last_name}`.trim()
+          const realName = senderInfo
+            ? (senderInfo.firstName && senderInfo.lastName
+                ? `${senderInfo.firstName} ${senderInfo.lastName}`.trim()
                 : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
             : 'Someone'
-          
-          const senderName = isBlindDateChat 
-            ? maskName(senderInfo?.first_name || null, senderInfo?.last_name || null)
+
+          const senderName = isBlindDateChat
+            ? maskName(senderInfo?.firstName || null, senderInfo?.lastName || null)
             : realName
-          
-          const senderAvatar = senderInfo?.profile_photo_url || null
+
+          const senderAvatar = senderInfo?.profilePhotoUrl || null
           
           if (memberIds && memberIds.length > 0) {
             // Process each member (parallel for better performance)
