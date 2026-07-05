@@ -2,6 +2,9 @@ import type { NextFunction, Request, Response } from 'express'
 import { StatusCodes } from 'http-status-codes'
 import { verifyJwt, signJwt, shouldRenewToken } from '../utils/jwt.js'
 import { logger } from '../config/logger.js'
+import { eq } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { adminRoles } from '../db/schema.js'
 
 export interface AuthRequest extends Request {
   user?: { id: string; email: string; username: string; role?: string }
@@ -131,21 +134,17 @@ export async function requireAdmin(req: AuthRequest, res: Response, next: NextFu
     }
 
     // Check if user has admin role
-    const { supabase } = await import('../config/supabase.js')
-    const { data: adminRole, error } = await supabase
-      .from('admin_roles')
-      .select('role')
-      .eq('user_id', req.user.id)
-      .single()
+    const rows = await db.select({ role: adminRoles.role }).from(adminRoles).where(eq(adminRoles.userId, req.user.id)).limit(1)
+    const adminRole = rows[0]
 
-    if (error || !adminRole) {
+    if (!adminRole) {
       logger.warn(`Unauthorized admin access attempt by user: ${req.user.id}`)
       return res.status(StatusCodes.FORBIDDEN).json({ error: 'Admin access required' })
     }
 
     // Attach admin role to request
     req.user = { ...req.user, role: adminRole.role }
-    
+
     //console.log('✅ Admin auth successful - User ID:', req.user.id, 'Role:', adminRole.role)
     return next()
   } catch (e) {

@@ -4,7 +4,9 @@
  */
 
 import { Request, Response, NextFunction } from 'express'
-import { supabase } from '../config/supabase.js'
+import { and, eq, isNull } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { adminRoles, adminAuditLogs } from '../db/schema.js'
 
 // Extend Express Request to include admin info
 export interface AdminRequest extends Request {
@@ -40,15 +42,19 @@ export const requireAdmin = async (
     const userId = req.user.id
 
     // Check if user has admin role
-    const { data: adminRole, error } = await supabase
-      .from('admin_roles')
-      .select('id, role, granted_at, is_active')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    const rows = await db.select({
+      id: adminRoles.id,
+      role: adminRoles.role,
+      grantedAt: adminRoles.grantedAt,
+      isActive: adminRoles.isActive,
+    }).from(adminRoles).where(and(
+      eq(adminRoles.userId, userId),
+      eq(adminRoles.isActive, true),
+      isNull(adminRoles.revokedAt),
+    )).limit(1)
+    const adminRole = rows[0]
 
-    if (error || !adminRole) {
+    if (!adminRole) {
       // Log unauthorized access attempt
       await logAdminAction(userId, 'unauthorized_access_attempt', 'admin_panel', null, {
         ip: req.ip,
@@ -64,8 +70,8 @@ export const requireAdmin = async (
     // Attach admin info to request
     req.admin = {
       id: adminRole.id,
-      role: adminRole.role,
-      grantedAt: adminRole.granted_at
+      role: adminRole.role as 'super_admin' | 'moderator' | 'support',
+      grantedAt: adminRole.grantedAt || new Date().toISOString()
     }
 
     // Log admin access
@@ -136,21 +142,15 @@ export const logAdminAction = async (
   details: any = {}
 ) => {
   try {
-    const { error } = await supabase
-      .from('admin_audit_logs')
-      .insert({
-        admin_id: adminId,
-        action,
-        target_type: targetType,
-        target_id: targetId,
-        details,
-        ip_address: details.ip || null,
-        user_agent: details.userAgent || null
-      })
-
-    if (error) {
-      console.error('Failed to log admin action:', error)
-    }
+    await db.insert(adminAuditLogs).values({
+      adminId,
+      action,
+      targetType,
+      targetId,
+      details,
+      ipAddress: details.ip || null,
+      userAgent: details.userAgent || null,
+    })
   } catch (error) {
     console.error('Error logging admin action:', error)
   }
@@ -178,15 +178,13 @@ export const requireAnyAdmin = requireRole(['super_admin', 'moderator', 'support
  */
 export const isAdmin = async (userId: string): Promise<boolean> => {
   try {
-    const { data, error } = await supabase
-      .from('admin_roles')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    const rows = await db.select({ id: adminRoles.id }).from(adminRoles).where(and(
+      eq(adminRoles.userId, userId),
+      eq(adminRoles.isActive, true),
+      isNull(adminRoles.revokedAt),
+    )).limit(1)
 
-    return !error && !!data
+    return rows.length > 0
   } catch (error) {
     console.error('Error checking admin status:', error)
     return false
@@ -200,19 +198,17 @@ export const getAdminRole = async (
   userId: string
 ): Promise<'super_admin' | 'moderator' | 'support' | null> => {
   try {
-    const { data, error } = await supabase
-      .from('admin_roles')
-      .select('role')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('revoked_at', null)
-      .single()
+    const rows = await db.select({ role: adminRoles.role }).from(adminRoles).where(and(
+      eq(adminRoles.userId, userId),
+      eq(adminRoles.isActive, true),
+      isNull(adminRoles.revokedAt),
+    )).limit(1)
 
-    if (error || !data) {
+    if (!rows[0]) {
       return null
     }
 
-    return data.role
+    return rows[0].role as 'super_admin' | 'moderator' | 'support'
   } catch (error) {
     console.error('Error getting admin role:', error)
     return null
@@ -248,15 +244,13 @@ export const grantAdminRole = async (
     }
 
     // Grant the role
-    const { error } = await supabase
-      .from('admin_roles')
-      .insert({
-        user_id: userId,
+    try {
+      await db.insert(adminRoles).values({
+        userId,
         role,
-        granted_by: grantedBy
+        grantedBy,
       })
-
-    if (error) {
+    } catch (error) {
       console.error('Error granting admin role:', error)
       return {
         success: false,
@@ -307,15 +301,12 @@ export const revokeAdminRole = async (
     }
 
     // Revoke the role
-    const { error } = await supabase
-      .from('admin_roles')
-      .update({
-        is_active: false,
-        revoked_at: new Date().toISOString()
-      })
-      .eq('user_id', userId)
-
-    if (error) {
+    try {
+      await db.update(adminRoles).set({
+        isActive: false,
+        revokedAt: new Date().toISOString(),
+      }).where(eq(adminRoles.userId, userId))
+    } catch (error) {
       console.error('Error revoking admin role:', error)
       return {
         success: false,
