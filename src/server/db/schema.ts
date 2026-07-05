@@ -9,7 +9,8 @@ export const verificationStatus = pgEnum("verification_status", ['pending', 'ver
 // `auth.users` table. drizzle-kit itself expects this table to be named `usersInAuth` (see
 // the import list in the generated `relations.ts`), but it never emitted the actual table
 // definition into this file, leaving a dangling reference. The local Postgres restore
-// (Task 5) created a minimal `auth.users` stub (just `id uuid primary key`, 0 rows) so that
+// (Task 4's restore-prerequisites fix) created a minimal `auth.users` stub (just `id uuid
+// primary key`, 0 rows) so that
 // FK constraint could be restored; this mirrors that stub under drizzle-kit's own intended
 // name so both this file's foreign keys and relations.ts resolve instead of throwing
 // `ReferenceError: users is not defined` / `usersInAuth is not defined` when Drizzle builds
