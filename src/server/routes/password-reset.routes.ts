@@ -1,5 +1,7 @@
 import { Router } from 'express'
-import { supabase } from '../config/supabase.js'
+import { and, eq, gte, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { emailOtps, profiles } from '../db/schema.js'
 import emailService from '../services/emailService.js'
 import rateLimit from 'express-rate-limit'
 import bcrypt from 'bcryptjs'
@@ -61,11 +63,7 @@ router.post('/forgot-password', resetRequestLimit, async (req, res) => {
     const { email } = parse.data
 
     // Check if user exists
-    const { data: user } = await supabase
-      .from('profiles')
-      .select('id, email, first_name')
-      .eq('email', email)
-      .single()
+    const [user] = await db.select({ id: profiles.id, email: profiles.email, first_name: profiles.firstName }).from(profiles).where(eq(profiles.email, email)).limit(1)
 
     if (!user) {
       // Don't reveal if email exists or not for security
@@ -76,8 +74,8 @@ router.post('/forgot-password', resetRequestLimit, async (req, res) => {
     }
 
     // Check rate limiting for this email
-    const { data: canResend } = await supabase
-      .rpc('can_resend_otp', { user_email: email })
+    const canResendResult = await db.execute(sql`select can_resend_otp(${email}) as result`)
+    const canResend = Boolean((canResendResult.rows[0] as any)?.result)
 
     if (!canResend) {
       return res.status(429).json({ 
@@ -141,13 +139,11 @@ router.post('/verify-reset-otp', resetVerifyLimit, async (req, res) => {
     }
 
     // Double-check that the OTP is marked as verified in the database
-    const { data: verifiedRecord } = await supabase
-      .from('email_otps')
-      .select('*')
-      .eq('email', email)
-      .eq('otp', otp)
-      .eq('verified', true)
-      .single()
+    const [verifiedRecord] = await db.select().from(emailOtps).where(and(
+      eq(emailOtps.email, email),
+      eq(emailOtps.otp, otp),
+      eq(emailOtps.verified, true),
+    )).limit(1)
 
     //console.log('🔍 Verified record in database:', verifiedRecord)
 
@@ -179,24 +175,20 @@ router.post('/reset-password', async (req, res) => {
     const { email, resetToken, newPassword } = parse.data
 
     // Verify the reset token is still valid (check if OTP was recently verified)
-    const { data: otpRecord, error: otpError } = await supabase
-      .from('email_otps')
-      .select('*')
-      .eq('email', email)
-      .eq('otp', resetToken)
-      .eq('verified', true)
-      .gte('verified_at', new Date(Date.now() - 30 * 60 * 1000).toISOString()) // Valid for 30 minutes (increased)
-      .single()
+    const [otpRecord] = await db.select().from(emailOtps).where(and(
+      eq(emailOtps.email, email),
+      eq(emailOtps.otp, resetToken),
+      eq(emailOtps.verified, true),
+      gte(emailOtps.verifiedAt, new Date(Date.now() - 30 * 60 * 1000).toISOString()), // Valid for 30 minutes (increased)
+    )).limit(1)
 
 
     if (!otpRecord) {
       // Try to find any OTP record for debugging
-      const { data: anyOtpRecord } = await supabase
-        .from('email_otps')
-        .select('*')
-        .eq('email', email)
-        .eq('otp', resetToken)
-        .single()
+      const [anyOtpRecord] = await db.select().from(emailOtps).where(and(
+        eq(emailOtps.email, email),
+        eq(emailOtps.otp, resetToken),
+      )).limit(1)
 
       //console.log('🔍 Any OTP record for debugging:', anyOtpRecord)
 
@@ -214,7 +206,7 @@ router.post('/reset-password', async (req, res) => {
             debug: process.env.NODE_ENV === 'development' ? {
               foundRecord: !!anyOtpRecord,
               recordVerified: anyOtpRecord?.verified,
-              recordVerifiedAt: anyOtpRecord?.verified_at,
+              recordVerifiedAt: anyOtpRecord?.verifiedAt,
               reverifyResult: verifyResult
             } : undefined
           })
@@ -225,18 +217,14 @@ router.post('/reset-password', async (req, res) => {
           debug: process.env.NODE_ENV === 'development' ? {
             foundRecord: !!anyOtpRecord,
             recordVerified: anyOtpRecord?.verified,
-            recordVerifiedAt: anyOtpRecord?.verified_at
+            recordVerifiedAt: anyOtpRecord?.verifiedAt
           } : undefined
         })
       }
     }
 
     // Get user
-    const { data: user } = await supabase
-      .from('profiles')
-      .select('id, email, first_name')
-      .eq('email', email)
-      .single()
+    const [user] = await db.select({ id: profiles.id, email: profiles.email, first_name: profiles.firstName }).from(profiles).where(eq(profiles.email, email)).limit(1)
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' })
@@ -247,25 +235,18 @@ router.post('/reset-password', async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds)
 
     // Update password in database
-    const { error: updateError } = await supabase
-      .from('profiles')
-      .update({ 
-        password_hash: hashedPassword,
-        updated_at: new Date().toISOString()
-      })
-      .eq('email', email)
-
-    if (updateError) {
+    try {
+      await db.update(profiles).set({
+        passwordHash: hashedPassword,
+        updatedAt: new Date().toISOString()
+      }).where(eq(profiles.email, email))
+    } catch (updateError) {
       console.error('Password update error:', updateError)
       return res.status(500).json({ error: 'Failed to update password' })
     }
 
     // Invalidate the reset token by deleting the OTP record
-    await supabase
-      .from('email_otps')
-      .delete()
-      .eq('email', email)
-      .eq('otp', resetToken)
+    await db.delete(emailOtps).where(and(eq(emailOtps.email, email), eq(emailOtps.otp, resetToken)))
 
     // Send password reset confirmation email
     try {

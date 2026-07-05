@@ -1,12 +1,34 @@
 import { Router, Response } from 'express';
 import { AuthRequest, requireAuth } from '../middleware/auth.js';
-import { supabase } from '../config/supabase.js';
+import { desc, eq } from 'drizzle-orm';
+import { db } from '../config/db.js';
+import { adminRoles, faceVerifications, profiles, verificationAttempts } from '../db/schema.js';
 import axios from 'axios';
 import FormData from 'form-data';
 import multer from 'multer';
 import { NotificationService } from '../services/notificationService.js';
 
 const router = Router();
+
+// Column selection mapping faceVerifications' camelCase Drizzle fields back to
+// the snake_case shape the frontend has always consumed from this file.
+const faceVerificationColumns = {
+  id: faceVerifications.id,
+  user_id: faceVerifications.userId,
+  status: faceVerifications.status,
+  video_s3_key: faceVerifications.videoS3Key,
+  verification_data: faceVerifications.verificationData,
+  confidence: faceVerifications.confidence,
+  movements_detected: faceVerifications.movementsDetected,
+  submitted_at: faceVerifications.submittedAt,
+  verified_at: faceVerifications.verifiedAt,
+  expires_at: faceVerifications.expiresAt,
+  reviewed_by: faceVerifications.reviewedBy,
+  review_notes: faceVerifications.reviewNotes,
+  reviewed_at: faceVerifications.reviewedAt,
+  created_at: faceVerifications.createdAt,
+  updated_at: faceVerifications.updatedAt,
+}
 
 // Configure multer for video upload
 const upload = multer({
@@ -33,25 +55,20 @@ router.get('/status', requireAuth, async (req: AuthRequest, res: Response) => {
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
     // Get profile verification status
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('verification_status, verified_at, verification_required')
-      .eq('id', userId)
-      .single();
-
-    if (profileError) {
+    let profile
+    try {
+      [profile] = await db.select({
+        verification_status: profiles.verificationStatus,
+        verified_at: profiles.verifiedAt,
+        verification_required: profiles.verificationRequired,
+      }).from(profiles).where(eq(profiles.id, userId)).limit(1);
+    } catch (profileError) {
       console.error('Error fetching profile:', profileError);
       return res.status(500).json({ error: 'Failed to fetch verification status' });
     }
 
     // Get latest verification attempt
-    const { data: latestVerification } = await supabase
-      .from('face_verifications')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    const [latestVerification] = await db.select(faceVerificationColumns).from(faceVerifications).where(eq(faceVerifications.userId, userId)).orderBy(desc(faceVerifications.createdAt)).limit(1);
 
     return res.json({
       status: profile.verification_status,
@@ -76,11 +93,7 @@ router.post('/submit', requireAuth, upload.single('video'), async (req: AuthRequ
     }
 
     // Check if user already verified
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('verification_status')
-      .eq('id', userId)
-      .single();
+    const [profile] = await db.select({ verification_status: profiles.verificationStatus }).from(profiles).where(eq(profiles.id, userId)).limit(1);
 
     if (profile?.verification_status === 'verified') {
       return res.status(400).json({ error: 'User already verified' });
@@ -89,20 +102,20 @@ router.post('/submit', requireAuth, upload.single('video'), async (req: AuthRequ
     // Validate video file size (minimum check)
     const minFileSize = 100 * 1024; // 100KB minimum
     if (req.file.size < minFileSize) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Video file too small',
         reason: 'Video appears to be corrupted or too short. Please record at least 5 seconds.'
       });
     }
 
     // Log attempt
-    await supabase.from('verification_attempts').insert({
-      user_id: userId,
+    const [attempt] = await db.insert(verificationAttempts).values({
+      userId,
       success: false,
-      ip_address: req.ip,
-      user_agent: req.get('User-Agent'),
-      device_info: req.body.device_info ? JSON.parse(req.body.device_info) : null
-    });
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent'),
+      deviceInfo: req.body.device_info ? JSON.parse(req.body.device_info) : null,
+    }).returning({ id: verificationAttempts.id });
 
     // Prepare form data for Python service
     const formData = new FormData();
@@ -136,55 +149,46 @@ router.post('/submit', requireAuth, upload.single('video'), async (req: AuthRequ
     console.log('✅ Verification result:', verificationResult);
 
     // Create verification record
-    const { data: verification, error: insertError } = await supabase
-      .from('face_verifications')
-      .insert({
-        user_id: userId,
+    let verification
+    try {
+      [verification] = await db.insert(faceVerifications).values({
+        userId,
         status: verificationResult.verified ? 'verified' : 'rejected',
-        video_s3_key: verificationResult.video_s3_key || null,
-        verification_data: verificationResult,
+        videoS3Key: verificationResult.video_s3_key || null,
+        verificationData: verificationResult,
         confidence: verificationResult.confidence,
-        movements_detected: verificationResult.movements_detected,
-        verified_at: verificationResult.verified ? new Date().toISOString() : null,
-        ip_address: req.ip,
-        user_agent: req.get('User-Agent'),
-        device_info: req.body.device_info ? JSON.parse(req.body.device_info) : null
-      })
-      .select()
-      .single();
-
-    if (insertError) {
+        movementsDetected: verificationResult.movements_detected,
+        verifiedAt: verificationResult.verified ? new Date().toISOString() : null,
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent'),
+        deviceInfo: req.body.device_info ? JSON.parse(req.body.device_info) : null,
+      }).returning();
+    } catch (insertError) {
       console.error('Error creating verification record:', insertError);
       return res.status(500).json({ error: 'Failed to save verification' });
     }
 
-    // Update attempt log
-    await supabase
-      .from('verification_attempts')
-      .update({
+    // Update attempt log (the row logged just above, by id — order/limit on an
+    // update has no effect via the DB driver, so target the specific row instead)
+    if (attempt) {
+      await db.update(verificationAttempts).set({
         success: verificationResult.verified,
-        failure_reason: verificationResult.reason,
-        verification_id: verification.id
-      })
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1);
+        failureReason: verificationResult.reason,
+        verificationId: verification.id,
+      }).where(eq(verificationAttempts.id, attempt.id));
+    }
 
     // Update profile verification status
     if (verificationResult.verified) {
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          verification_status: 'verified',
-          verified_at: new Date().toISOString(),
-          verification_required: false
-        })
-        .eq('id', userId);
-
-      if (updateError) {
-        console.error('Error updating profile verification status:', updateError);
-      } else {
+      try {
+        await db.update(profiles).set({
+          verificationStatus: 'verified',
+          verifiedAt: new Date().toISOString(),
+          verificationRequired: false,
+        }).where(eq(profiles.id, userId));
         console.log('✅ Profile verification status updated for user:', userId);
+      } catch (updateError) {
+        console.error('Error updating profile verification status:', updateError);
       }
 
       // Send notification if verified
@@ -195,12 +199,7 @@ router.post('/submit', requireAuth, upload.single('video'), async (req: AuthRequ
       }
     } else {
       // Update profile to rejected status
-      await supabase
-        .from('profiles')
-        .update({
-          verification_status: 'rejected'
-        })
-        .eq('id', userId);
+      await db.update(profiles).set({ verificationStatus: 'rejected' }).where(eq(profiles.id, userId));
     }
 
     return res.json({
@@ -236,16 +235,7 @@ router.get('/history', requireAuth, async (req: AuthRequest, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { data, error } = await supabase
-      .from('face_verifications')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error fetching verification history:', error);
-      return res.status(500).json({ error: 'Failed to fetch history' });
-    }
+    const data = await db.select(faceVerificationColumns).from(faceVerifications).where(eq(faceVerifications.userId, userId)).orderBy(desc(faceVerifications.createdAt));
 
     return res.json({ verifications: data });
   } catch (error) {
@@ -260,32 +250,29 @@ router.get('/admin/pending', requireAuth, async (req: AuthRequest, res: Response
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    // Check if user is admin
-    const { data: adminCheck } = await supabase
-      .from('admins')
-      .select('id')
-      .eq('user_id', userId)
-      .single();
+    // Check if user is admin (admin_roles table — `admins` has no backing table in this schema)
+    const [adminCheck] = await db.select({ id: adminRoles.id }).from(adminRoles).where(eq(adminRoles.userId, userId)).limit(1);
 
     if (!adminCheck) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    const { data, error } = await supabase
-      .from('face_verifications')
-      .select(`
-        *,
-        user:profiles!user_id(id, first_name, last_name, email, username)
-      `)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false });
+    const rows = await db.select({
+      ...faceVerificationColumns,
+      user: {
+        id: profiles.id,
+        first_name: profiles.firstName,
+        last_name: profiles.lastName,
+        email: profiles.email,
+        username: profiles.username,
+      },
+    })
+      .from(faceVerifications)
+      .leftJoin(profiles, eq(profiles.id, faceVerifications.userId))
+      .where(eq(faceVerifications.status, 'pending'))
+      .orderBy(desc(faceVerifications.createdAt));
 
-    if (error) {
-      console.error('Error fetching pending verifications:', error);
-      return res.status(500).json({ error: 'Failed to fetch verifications' });
-    }
-
-    return res.json({ verifications: data });
+    return res.json({ verifications: rows });
   } catch (error) {
     console.error('Error getting pending verifications:', error);
     return res.status(500).json({ error: 'Failed to get verifications' });
@@ -301,12 +288,8 @@ router.post('/admin/:id/review', requireAuth, async (req: AuthRequest, res: Resp
 
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    // Check if user is admin
-    const { data: adminCheck } = await supabase
-      .from('admins')
-      .select('id')
-      .eq('user_id', userId)
-      .single();
+    // Check if user is admin (admin_roles table — `admins` has no backing table in this schema)
+    const [adminCheck] = await db.select({ id: adminRoles.id }).from(adminRoles).where(eq(adminRoles.userId, userId)).limit(1);
 
     if (!adminCheck) {
       return res.status(403).json({ error: 'Admin access required' });
@@ -317,29 +300,29 @@ router.post('/admin/:id/review', requireAuth, async (req: AuthRequest, res: Resp
     }
 
     // Update verification
-    const { data: verification, error } = await supabase
-      .from('face_verifications')
-      .update({
+    let verification
+    try {
+      [verification] = await db.update(faceVerifications).set({
         status: action === 'approve' ? 'verified' : 'rejected',
-        reviewed_by: userId,
-        review_notes: notes,
-        reviewed_at: new Date().toISOString(),
-        verified_at: action === 'approve' ? new Date().toISOString() : null
-      })
-      .eq('id', verificationId)
-      .select()
-      .single();
-
-    if (error) {
+        reviewedBy: userId,
+        reviewNotes: notes,
+        reviewedAt: new Date().toISOString(),
+        verifiedAt: action === 'approve' ? new Date().toISOString() : null,
+      }).where(eq(faceVerifications.id, verificationId)).returning();
+    } catch (error) {
       console.error('Error updating verification:', error);
       return res.status(500).json({ error: 'Failed to update verification' });
     }
 
+    if (!verification) {
+      return res.status(404).json({ error: 'Verification not found' });
+    }
+
     // If approved and video exists, delete it
-    if (action === 'approve' && verification.video_s3_key) {
+    if (action === 'approve' && verification.videoS3Key) {
       try {
         await axios.post(`${PYTHON_SERVICE_URL}/delete-video`, {
-          s3_key: verification.video_s3_key
+          s3_key: verification.videoS3Key
         });
       } catch (deleteError) {
         console.error('Failed to delete video:', deleteError);
@@ -349,10 +332,10 @@ router.post('/admin/:id/review', requireAuth, async (req: AuthRequest, res: Resp
     // Send notification
     try {
       if (action === 'approve') {
-        await NotificationService.notifyVerificationSuccess(verification.user_id);
+        await NotificationService.notifyVerificationSuccess(verification.userId);
       } else {
         await NotificationService.notifyVerificationRejected(
-          verification.user_id,
+          verification.userId,
           notes || 'Verification failed. Please try again.'
         );
       }
@@ -362,7 +345,23 @@ router.post('/admin/:id/review', requireAuth, async (req: AuthRequest, res: Resp
 
     return res.json({
       success: true,
-      verification
+      verification: {
+        id: verification.id,
+        user_id: verification.userId,
+        status: verification.status,
+        video_s3_key: verification.videoS3Key,
+        verification_data: verification.verificationData,
+        confidence: verification.confidence,
+        movements_detected: verification.movementsDetected,
+        submitted_at: verification.submittedAt,
+        verified_at: verification.verifiedAt,
+        expires_at: verification.expiresAt,
+        reviewed_by: verification.reviewedBy,
+        review_notes: verification.reviewNotes,
+        reviewed_at: verification.reviewedAt,
+        created_at: verification.createdAt,
+        updated_at: verification.updatedAt,
+      }
     });
 
   } catch (error) {

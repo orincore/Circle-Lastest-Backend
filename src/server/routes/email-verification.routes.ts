@@ -1,5 +1,7 @@
 import { Router } from 'express'
-import { supabase } from '../config/supabase.js'
+import { eq, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { profiles } from '../db/schema.js'
 import emailService from '../services/emailService.js'
 import rateLimit from 'express-rate-limit'
 
@@ -26,6 +28,16 @@ const otpVerifyLimit = rateLimit({
   legacyHeaders: false,
 })
 
+async function canResendOtp(email: string): Promise<boolean> {
+  const result = await db.execute(sql`select can_resend_otp(${email}) as result`)
+  return Boolean((result.rows[0] as any)?.result)
+}
+
+async function getOtpStatus(email: string) {
+  const result = await db.execute(sql`select * from get_otp_status(${email})`)
+  return (result.rows[0] as any) || null
+}
+
 /**
  * Send OTP for email verification
  * POST /api/auth/send-otp
@@ -45,21 +57,16 @@ router.post('/send-otp', otpRequestLimit, async (req, res) => {
     }
 
     // Check if email is already registered and verified
-    const { data: existingUser } = await supabase
-      .from('profiles')
-      .select('email, email_verified')
-      .eq('email', email)
-      .single()
+    const [existingUser] = await db.select({ email: profiles.email, email_verified: profiles.emailVerified }).from(profiles).where(eq(profiles.email, email)).limit(1)
 
     if (existingUser?.email_verified) {
-      return res.status(400).json({ 
-        error: 'Email is already verified and registered' 
+      return res.status(400).json({
+        error: 'Email is already verified and registered'
       })
     }
 
     // Check rate limiting for this email
-    const { data: canResend } = await supabase
-      .rpc('can_resend_otp', { user_email: email })
+    const canResend = await canResendOtp(email)
 
     if (!canResend) {
       return res.status(429).json({ 
@@ -82,14 +89,13 @@ router.post('/send-otp', otpRequestLimit, async (req, res) => {
     }
 
     // Get OTP status for response
-    const { data: otpStatus } = await supabase
-      .rpc('get_otp_status', { user_email: email })
+    const otpStatus = await getOtpStatus(email)
 
     return res.json({
       success: true,
       message: 'Verification code sent to your email',
       expiresInMinutes: 10,
-      timeRemaining: otpStatus?.[0]?.time_remaining_minutes || 10,
+      timeRemaining: otpStatus?.time_remaining_minutes || 10,
     })
   } catch (error) {
     console.error('Send OTP error:', error)
@@ -121,11 +127,7 @@ router.post('/verify-otp', otpVerifyLimit, async (req, res) => {
     }
 
     // Check if user profile exists
-    const { data: userProfile } = await supabase
-      .from('profiles')
-      .select('id, email, first_name')
-      .eq('email', email)
-      .single()
+    const [userProfile] = await db.select({ id: profiles.id, email: profiles.email, first_name: profiles.firstName }).from(profiles).where(eq(profiles.email, email)).limit(1)
 
     let welcomeEmailSent = false
     if (userProfile) {
@@ -162,10 +164,9 @@ router.get('/otp-status/:email', async (req, res) => {
     }
 
     // Get OTP status
-    const { data: otpStatus } = await supabase
-      .rpc('get_otp_status', { user_email: email })
+    const otpStatus = await getOtpStatus(email)
 
-    const status = otpStatus?.[0] || {
+    const status = otpStatus || {
       has_otp: false,
       is_verified: false,
       is_expired: false,
@@ -174,11 +175,7 @@ router.get('/otp-status/:email', async (req, res) => {
     }
 
     // Check if email is already verified in profiles
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('email_verified')
-      .eq('email', email)
-      .single()
+    const [profile] = await db.select({ email_verified: profiles.emailVerified }).from(profiles).where(eq(profiles.email, email)).limit(1)
 
     return res.json({
       hasOTP: status.has_otp,
@@ -214,12 +211,11 @@ router.post('/resend-otp', otpRequestLimit, async (req, res) => {
     }
 
     // Check rate limiting
-    const { data: canResend } = await supabase
-      .rpc('can_resend_otp', { user_email: email })
+    const canResend = await canResendOtp(email)
 
     if (!canResend) {
-      return res.status(429).json({ 
-        error: 'Please wait at least 1 minute before requesting another OTP' 
+      return res.status(429).json({
+        error: 'Please wait at least 1 minute before requesting another OTP'
       })
     }
 
@@ -261,11 +257,7 @@ router.get('/check-email/:email', async (req, res) => {
     }
 
     // Check if email exists in profiles
-    const { data: existingUser } = await supabase
-      .from('profiles')
-      .select('email, email_verified')
-      .eq('email', email)
-      .single()
+    const [existingUser] = await db.select({ email: profiles.email, email_verified: profiles.emailVerified }).from(profiles).where(eq(profiles.email, email)).limit(1)
 
     if (existingUser) {
       return res.json({

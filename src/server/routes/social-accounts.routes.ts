@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
-import { supabase } from '../config/supabase.js'
+import { and, eq, ne } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { profiles } from '../db/schema.js'
 import axios from 'axios'
 import crypto from 'crypto'
 const router = Router()
@@ -37,14 +39,9 @@ router.get('/linked-accounts', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id
 
     // Get Instagram username from profiles table
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('instagram_username, created_at')
-      .eq('id', userId)
-      .single()
+    const [profile] = await db.select({ instagram_username: profiles.instagramUsername, created_at: profiles.createdAt }).from(profiles).where(eq(profiles.id, userId)).limit(1)
 
-    if (error) {
-      console.error('Error fetching profile:', error)
+    if (!profile) {
       return res.status(500).json({ error: 'Failed to fetch linked accounts' })
     }
 
@@ -75,22 +72,9 @@ router.get('/user/:userId/linked-accounts', requireAuth, async (req: AuthRequest
     const { userId } = req.params
 
     // Get Instagram username from profiles table
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('instagram_username, created_at')
-      .eq('id', userId)
-      .single()
+    const [profile] = await db.select({ instagram_username: profiles.instagramUsername, created_at: profiles.createdAt }).from(profiles).where(eq(profiles.id, userId)).limit(1)
 
-    if (error) {
-      console.error('Error fetching user profile:', error)
-      // If user not found, return empty accounts array instead of error
-      if (error.code === 'PGRST116') {
-        return res.json({ accounts: [] })
-      }
-      return res.status(500).json({ error: 'Failed to fetch linked accounts' })
-    }
-    
-    // If no profile found, return empty accounts
+    // If no profile found, return empty accounts (user doesn't exist)
     if (!profile) {
       return res.json({ accounts: [] })
     }
@@ -194,12 +178,7 @@ router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, r
     }
 
     // Check if this Instagram username is already used by another user
-    const { data: existingUser } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('instagram_username', username)
-      .neq('id', userId)
-      .maybeSingle()
+    const [existingUser] = await db.select({ id: profiles.id }).from(profiles).where(and(eq(profiles.instagramUsername, username), ne(profiles.id, userId))).limit(1)
 
     if (existingUser) {
       return res.status(400).json({ error: 'This Instagram account is already linked to another user' })
@@ -207,14 +186,9 @@ router.post('/verify/instagram-session', requireAuth, async (req: AuthRequest, r
 
     // Update the user's profile with the Instagram username
     //console.log('💾 Updating profile with Instagram username:', username);
-    const { error: updateError } = await supabase
-      .from('profiles')
-      .update({
-        instagram_username: username
-      })
-      .eq('id', userId)
-
-    if (updateError) {
+    try {
+      await db.update(profiles).set({ instagramUsername: username }).where(eq(profiles.id, userId))
+    } catch (updateError) {
       console.error('Error updating Instagram username:', updateError)
       return res.status(500).json({ error: 'Failed to link Instagram account' })
     }
@@ -262,12 +236,7 @@ router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Check if this Instagram username is already used by another user
-    const { data: existingUser } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('instagram_username', username)
-      .neq('id', userId)
-      .maybeSingle()
+    const [existingUser] = await db.select({ id: profiles.id }).from(profiles).where(and(eq(profiles.instagramUsername, username), ne(profiles.id, userId))).limit(1)
 
     if (existingUser) {
       return res.status(400).json({ error: 'This Instagram username is already linked to another user' })
@@ -275,14 +244,9 @@ router.post('/verify/instagram', requireAuth, async (req: AuthRequest, res) => {
 
     // Update the user's profile with the Instagram username
     //console.log('💾 Updating profile with Instagram username:', username);
-    const { error: updateError } = await supabase
-      .from('profiles')
-      .update({
-        instagram_username: username
-      })
-      .eq('id', userId)
-
-    if (updateError) {
+    try {
+      await db.update(profiles).set({ instagramUsername: username }).where(eq(profiles.id, userId))
+    } catch (updateError) {
       console.error('Error updating Instagram username:', updateError)
       return res.status(500).json({ error: 'Failed to link Instagram account' })
     }
@@ -502,31 +466,14 @@ router.post('/callback/spotify', async (req, res) => {
       last_updated: new Date().toISOString()
     }
 
-    // Store in database
-    const { error: dbError } = await supabase
-      .from('linked_social_accounts')
-      .upsert({
-        user_id: stateData.userId,
-        platform: 'spotify',
-        platform_user_id: spotifyProfile.id,
-        platform_username: spotifyProfile.id,
-        platform_display_name: spotifyProfile.display_name || spotifyProfile.id,
-        platform_profile_url: spotifyProfile.external_urls?.spotify,
-        platform_avatar_url: spotifyProfile.images?.[0]?.url,
-        access_token, // In production, encrypt this
-        refresh_token, // In production, encrypt this
-        token_expires_at: new Date(Date.now() + expires_in * 1000).toISOString(),
-        platform_data: platformData,
-        is_verified: true,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id,platform'
-      })
-
-    if (dbError) {
-      console.error('Error storing Spotify account:', dbError)
-      return res.status(500).json({ error: 'Failed to link Spotify account' })
-    }
+    // Store in database — `linked_social_accounts` has no backing table in the
+    // current schema (multi-platform account linking was never fully provisioned
+    // here; only Instagram-by-username lives on profiles.instagram_username).
+    console.error('Cannot store Spotify account: linked_social_accounts table does not exist in this schema', {
+      userId: stateData.userId,
+      spotifyId: spotifyProfile.id,
+    })
+    return res.status(503).json({ error: 'Spotify account linking is not available' })
 
     res.json({ 
       success: true, 
@@ -659,28 +606,14 @@ router.post('/callback/instagram', async (req, res) => {
       verified_at: new Date().toISOString()
     }
 
-    // Store in database
-    const { error: dbError } = await supabase
-      .from('linked_social_accounts')
-      .upsert({
-        user_id: stateData.userId,
-        platform: 'instagram',
-        platform_user_id: igProfile.ig_id || igUserId,
-        platform_username: igProfile.username,
-        platform_display_name: igProfile.username,
-        platform_profile_url: `https://instagram.com/${igProfile.username}`,
-        access_token, // In production, encrypt this
-        platform_data: platformData,
-        is_verified: true,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id,platform'
-      })
-
-    if (dbError) {
-      console.error('Error storing Instagram account:', dbError)
-      return res.status(500).json({ error: 'Failed to link Instagram account' })
-    }
+    // Store in database — `linked_social_accounts` has no backing table in the
+    // current schema (this Facebook-Login-based flow was never fully provisioned
+    // here; only Instagram-by-username lives on profiles.instagram_username).
+    console.error('Cannot store Instagram account: linked_social_accounts table does not exist in this schema', {
+      userId: stateData.userId,
+      igUserId,
+    })
+    return res.status(503).json({ error: 'Instagram account linking is not available' })
 
     res.json({ 
       success: true, 
@@ -711,89 +644,23 @@ router.post('/callback/instagram', async (req, res) => {
 })
 
 // Unlink a social account (soft delete)
+// NOTE: `linked_social_accounts` has no backing table in the current schema -
+// this endpoint only ever supported Instagram, which is stored as a plain
+// profiles.instagram_username column with no per-account row to unlink.
 router.delete('/unlink/:platform', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const { platform } = req.params
-    const userId = req.user!.id
+  const { platform } = req.params
 
-    if (platform !== 'instagram') {
-      return res.status(400).json({ error: 'Invalid platform' })
-    }
-
-    // Check if account exists and is active
-    const { data: existingAccount } = await supabase
-      .from('linked_social_accounts')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('platform', platform)
-      .is('deleted_at', null)
-      .maybeSingle()
-
-    if (!existingAccount) {
-      return res.status(404).json({ error: `No active ${platform} account found to unlink` })
-    }
-
-    // Soft delete the account
-    const { error } = await supabase
-      .from('linked_social_accounts')
-      .update({
-        deleted_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        platform_data: {
-          ...existingAccount.platform_data,
-          unlinked_at: new Date().toISOString(),
-          unlink_reason: 'user_requested'
-        }
-      })
-      .eq('user_id', userId)
-      .eq('platform', platform)
-      .is('deleted_at', null)
-
-    if (error) {
-      console.error('Error unlinking account:', error)
-      return res.status(500).json({ error: 'Failed to unlink account' })
-    }
-
-    //console.log(`🗑️ Soft deleted ${platform} account for user ${userId}:`, existingAccount.platform_username);
-
-    res.json({ 
-      success: true, 
-      message: `${platform} account unlinked successfully`,
-      unlinked_account: {
-        platform: platform,
-        username: existingAccount.platform_username,
-        can_reactivate: true
-      }
-    })
-  } catch (error) {
-    console.error('Error in unlink account:', error)
-    res.status(500).json({ error: 'Internal server error' })
+  if (platform !== 'instagram') {
+    return res.status(400).json({ error: 'Invalid platform' })
   }
+
+  return res.status(503).json({ error: `${platform} account unlinking is not available` })
 })
 
 // Update account visibility
+// NOTE: `linked_social_accounts` has no backing table in the current schema.
 router.patch('/account/:accountId/visibility', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const { accountId } = req.params
-    const { isPublic } = req.body
-    const userId = req.user!.id
-
-    const { error } = await supabase
-      .from('linked_social_accounts')
-      .update({ is_public: isPublic })
-      .eq('id', accountId)
-      .eq('user_id', userId)
-
-    if (error) {
-      console.error('Error updating account visibility:', error)
-      return res.status(500).json({ error: 'Failed to update account visibility' })
-    }
-
-    res.json({ success: true, message: 'Account visibility updated' })
-  } catch (error) {
-    console.error('Error in update account visibility:', error)
-    res.status(500).json({ error: 'Internal server error' })
-  }
+  return res.status(503).json({ error: 'Account visibility settings are not available' })
 })
 
 // Instagram webhook verification endpoint (optional - only if Instagram requires it)
