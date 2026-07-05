@@ -1,5 +1,5 @@
 import { findById, type Profile } from '../repos/profiles.repo.js'
-import { emitToUser } from '../sockets/index.js'
+import { emitToUser } from '../sockets/optimized-socket.js'
 import { supabase } from '../config/supabase.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 

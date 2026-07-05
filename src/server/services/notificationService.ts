@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js';
-import { emitToUser } from '../sockets/index.js';
+import { emitToUser } from '../sockets/optimized-socket.js';
 import { invalidateNotificationsCache } from './cache.js';
 
 export interface NotificationData {
