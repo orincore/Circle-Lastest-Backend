@@ -165,6 +165,7 @@ export async function updatePreferences(id: string, preferences: {
 }
 
 interface NearbyUserRow {
+  [key: string]: unknown
   id: string; email: string; username: string; first_name: string; last_name: string
   age: number; gender: string; phone_number: string | null; about: string
   interests: string[]; needs: string[]; profile_photo_url: string | null
@@ -200,7 +201,7 @@ export async function findNearbyUsers({
 
     // Filter out users without complete profiles and invisible users (matches original RPC-path filtering)
     return result.rows
-      .filter((u) => u.first_name && u.last_name && (!u.invisible_mode || u.invisible_mode === false))
+      .filter((u) => u.first_name && u.last_name && !u.invisible_mode)
       .map((u) => ({
         id: u.id,
         email: u.email,
