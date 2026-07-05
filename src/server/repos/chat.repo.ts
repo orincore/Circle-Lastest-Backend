@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
-import { chats, chatMembers, messages, chatDeletions, profiles, messageReceipts } from '../db/schema.js'
+import { chats, chatMembers, messages, chatDeletions, profiles, messageReceipts, messageReactions, chatMuteSettings } from '../db/schema.js'
 import { cache, cacheKeys } from '../services/cache.js'
 
 // Cache TTLs (seconds). Short, because invalidation keeps them fresh on writes;
@@ -542,33 +542,20 @@ export async function deleteMessage(chatId: string, messageId: string, userId: s
 
 export async function toggleReaction(messageId: string, userId: string, emoji: string): Promise<{ action: 'added' | 'removed', reaction?: MessageReaction }> {
   // Check if reaction already exists
-  const { data: existing, error: checkErr } = await supabase
-    .from('message_reactions')
-    .select('*')
-    .eq('message_id', messageId)
-    .eq('user_id', userId)
-    .eq('emoji', emoji)
-    .maybeSingle()
-  if (checkErr) throw checkErr
+  const existingRows = await db.select().from(messageReactions)
+    .where(and(eq(messageReactions.messageId, messageId), eq(messageReactions.userId, userId), eq(messageReactions.emoji, emoji)))
+    .limit(1)
+  const existing = existingRows[0]
 
   if (existing) {
     // Reaction exists, remove it
-    const { error: deleteErr } = await supabase
-      .from('message_reactions')
-      .delete()
-      .eq('id', existing.id)
-    if (deleteErr) throw deleteErr
-    return { action: 'removed', reaction: existing as MessageReaction }
+    await db.delete(messageReactions).where(eq(messageReactions.id, existing.id))
+    return { action: 'removed', reaction: rowToMessageReaction(existing) }
   }
 
   // Add new reaction
-  const { data, error } = await supabase
-    .from('message_reactions')
-    .insert({ message_id: messageId, user_id: userId, emoji })
-    .select('*')
-    .single()
-  if (error) throw error
-  return { action: 'added', reaction: data as MessageReaction }
+  const insertedRows = await db.insert(messageReactions).values({ messageId, userId, emoji }).returning()
+  return { action: 'added', reaction: rowToMessageReaction(insertedRows[0]) }
 }
 
 // Keep the old function for backward compatibility
@@ -581,13 +568,19 @@ export async function addReaction(messageId: string, userId: string, emoji: stri
 }
 
 export async function removeReaction(messageId: string, userId: string, emoji: string) {
-  const { error } = await supabase
-    .from('message_reactions')
-    .delete()
-    .eq('message_id', messageId)
-    .eq('user_id', userId)
-    .eq('emoji', emoji)
-  if (error) throw error
+  await db.delete(messageReactions).where(
+    and(eq(messageReactions.messageId, messageId), eq(messageReactions.userId, userId), eq(messageReactions.emoji, emoji))
+  )
+}
+
+function rowToMessageReaction(row: typeof messageReactions.$inferSelect): MessageReaction {
+  return {
+    id: row.id,
+    message_id: row.messageId,
+    user_id: row.userId,
+    emoji: row.emoji,
+    created_at: row.createdAt ?? '',
+  }
 }
 
 // Chat mute settings functions
@@ -601,25 +594,24 @@ export interface ChatMuteSetting {
   updated_at: string
 }
 
+function rowToChatMuteSetting(row: typeof chatMuteSettings.$inferSelect): ChatMuteSetting {
+  return {
+    id: row.id,
+    user_id: row.userId,
+    chat_id: row.chatId,
+    is_muted: row.isMuted ?? false,
+    muted_until: row.mutedUntil,
+    created_at: row.createdAt ?? '',
+    updated_at: row.updatedAt ?? '',
+  }
+}
+
 export async function getChatMuteSetting(userId: string, chatId: string): Promise<ChatMuteSetting | null> {
   try {
-    const { data, error } = await supabase
-      .from('chat_mute_settings')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('chat_id', chatId)
-      .maybeSingle()
-    
-    if (error) {
-      console.error('Error getting chat mute setting:', error)
-      // If table doesn't exist, return null (not muted)
-      if (error.code === '42P01') { // Table doesn't exist
-        //console.log('chat_mute_settings table does not exist, treating as not muted')
-        return null
-      }
-      throw error
-    }
-    return data as ChatMuteSetting | null
+    const rows = await db.select().from(chatMuteSettings)
+      .where(and(eq(chatMuteSettings.userId, userId), eq(chatMuteSettings.chatId, chatId)))
+      .limit(1)
+    return rows[0] ? rowToChatMuteSetting(rows[0]) : null
   } catch (error) {
     console.error('Failed to get chat mute setting:', error)
     return null // Default to not muted if there's an error
@@ -628,28 +620,21 @@ export async function getChatMuteSetting(userId: string, chatId: string): Promis
 
 export async function setChatMuteSetting(userId: string, chatId: string, isMuted: boolean, mutedUntil?: string): Promise<ChatMuteSetting> {
   try {
-    const { data, error } = await supabase
-      .from('chat_mute_settings')
-      .upsert({
-        user_id: userId,
-        chat_id: chatId,
-        is_muted: isMuted,
-        muted_until: mutedUntil || null,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id,chat_id'
-      })
-      .select('*')
-      .single()
-    
-    if (error) {
-      console.error('Error setting chat mute setting:', error)
-      if (error.code === '42P01') { // Table doesn't exist
-        throw new Error('chat_mute_settings table does not exist. Please run the database migration.')
-      }
-      throw error
-    }
-    return data as ChatMuteSetting
+    const rows = await db.insert(chatMuteSettings).values({
+      userId,
+      chatId,
+      isMuted,
+      mutedUntil: mutedUntil || null,
+      updatedAt: new Date().toISOString(),
+    }).onConflictDoUpdate({
+      target: [chatMuteSettings.userId, chatMuteSettings.chatId],
+      set: {
+        isMuted,
+        mutedUntil: mutedUntil || null,
+        updatedAt: new Date().toISOString(),
+      },
+    }).returning()
+    return rowToChatMuteSetting(rows[0])
   } catch (error) {
     console.error('Failed to set chat mute setting:', error)
     throw error
@@ -657,37 +642,29 @@ export async function setChatMuteSetting(userId: string, chatId: string, isMuted
 }
 
 export async function isChatMuted(userId: string, chatId: string): Promise<boolean> {
-  //console.log('Checking if chat is muted:', { userId, chatId })
   const setting = await getChatMuteSetting(userId, chatId)
-  //console.log('Retrieved mute setting:', setting)
-  
+
   if (!setting) {
-    //console.log('No mute setting found, chat is not muted')
     return false
   }
-  
+
   // Check if temporarily muted and time has expired
   if (setting.muted_until) {
     const mutedUntil = new Date(setting.muted_until)
     const now = new Date()
     if (now > mutedUntil) {
       // Mute period expired, update setting
-      //console.log('Mute period expired, updating setting')
       await setChatMuteSetting(userId, chatId, false)
       return false
     }
   }
-  
-  //console.log('Final mute status:', setting.is_muted)
+
   return setting.is_muted
 }
 
 export async function getMessageReactions(messageId: string): Promise<MessageReaction[]> {
-  const { data, error } = await supabase
-    .from('message_reactions')
-    .select('*')
-    .eq('message_id', messageId)
-    .order('created_at', { ascending: true })
-  if (error) throw error
-  return (data || []) as MessageReaction[]
+  const rows = await db.select().from(messageReactions)
+    .where(eq(messageReactions.messageId, messageId))
+    .orderBy(messageReactions.createdAt)
+  return rows.map(rowToMessageReaction)
 }
