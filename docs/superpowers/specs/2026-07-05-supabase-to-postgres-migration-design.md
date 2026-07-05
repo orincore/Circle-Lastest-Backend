@@ -91,8 +91,12 @@ the next batch once the current one behaves correctly.
 
 1. **Auth & profiles** — `middleware/auth.ts`, `middleware/adminAuth.ts`,
    `middleware/requireVerification.ts`, `repos/profiles.repo.ts`,
-   `graphql/resolvers.ts` (its `profiles` resolver folds in here). Nearly
-   every request depends on this, so it goes first.
+   `graphql/resolvers.ts` (its `profiles` resolver folds in here), and
+   `routes/auth.routes.ts` (signup/login/Google OAuth/account-deletion route
+   handlers — has direct `supabase.from(...)` calls of its own beyond what it
+   gets from `profiles.repo.ts`; missed in this list's first pass, added when
+   the batch 1 plan was written). Nearly every request depends on this, so it
+   goes first.
 2. **Chat** — `repos/chat.repo.ts`, `routes/chat.routes.ts`,
    `routes/chat-list.routes.ts`, `sockets/index.ts`,
    `sockets/optimized-socket.ts`. The largest/most complex data-access file
