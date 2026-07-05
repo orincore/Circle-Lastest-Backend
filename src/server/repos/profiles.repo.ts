@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js'
+import { and, eq, gte, ilike, isNotNull, isNull, lte, ne, or, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { profiles } from '../db/schema.js'
 
 export interface Profile {
   id: string
@@ -41,45 +43,89 @@ export interface Profile {
   created_at?: string
 }
 
-const TABLE = 'profiles'
+type ProfileRow = typeof profiles.$inferSelect
+
+/**
+ * Bridges Drizzle's camelCase row shape back to the snake_case `Profile` shape
+ * every other file in the codebase expects (unchanged since the supabase-js days).
+ * Every future migration batch's repo file follows this same pattern.
+ */
+export function rowToProfile(row: ProfileRow): Profile {
+  return {
+    id: row.id,
+    email: row.email,
+    username: row.username,
+    first_name: row.firstName,
+    last_name: row.lastName,
+    age: row.age,
+    gender: row.gender,
+    phone_number: row.phoneNumber,
+    about: row.about,
+    interests: row.interests,
+    needs: row.needs,
+    profile_photo_url: row.profilePhotoUrl,
+    instagram_username: row.instagramUsername,
+    password_hash: row.passwordHash,
+    email_verified: row.emailVerified,
+    email_verified_at: row.emailVerifiedAt,
+    verification_status: row.verificationStatus,
+    verified_at: row.verifiedAt,
+    latitude: row.latitude !== null ? Number(row.latitude) : null,
+    longitude: row.longitude !== null ? Number(row.longitude) : null,
+    location_address: row.locationAddress,
+    location_city: row.locationCity,
+    location_country: row.locationCountry,
+    location_updated_at: row.locationUpdatedAt,
+    location_preference: row.locationPreference,
+    age_preference: row.agePreference,
+    friendship_location_priority: row.friendshipLocationPriority,
+    relationship_distance_flexible: row.relationshipDistanceFlexible,
+    preferences_updated_at: row.preferencesUpdatedAt,
+    invisible_mode: row.invisibleMode,
+    is_suspended: row.isSuspended,
+    suspension_reason: row.suspensionReason,
+    suspended_at: row.suspendedAt,
+    suspension_ends_at: row.suspensionEndsAt,
+    deleted_at: row.deletedAt,
+    deletion_reason: row.deletionReason,
+    deletion_feedback: row.deletionFeedback,
+    created_at: row.createdAt ?? undefined,
+  }
+}
 
 export async function findByEmail(email: string): Promise<Profile | null> {
-  const { data, error } = await supabase.from(TABLE).select('*').eq('email', email).maybeSingle()
-  if (error) throw error
-  return data as Profile | null
+  const rows = await db.select().from(profiles).where(eq(profiles.email, email)).limit(1)
+  return rows[0] ? rowToProfile(rows[0]) : null
 }
 
 export async function findByUsername(username: string): Promise<Profile | null> {
-  // Search case-insensitively using ilike
-  const { data, error } = await supabase.from(TABLE).select('*').ilike('username', username).maybeSingle()
-  if (error) throw error
-  return data as Profile | null
+  // Search case-insensitively, same as the original `.ilike('username', username)`
+  const rows = await db.select().from(profiles).where(ilike(profiles.username, username)).limit(1)
+  return rows[0] ? rowToProfile(rows[0]) : null
 }
 
 export async function createProfile(p: Omit<Profile, 'id' | 'created_at'>): Promise<Profile> {
-  const { data, error } = await supabase.from(TABLE).insert({
+  const rows = await db.insert(profiles).values({
     email: p.email,
     username: p.username,
-    first_name: p.first_name,
-    last_name: p.last_name,
+    firstName: p.first_name,
+    lastName: p.last_name,
     age: p.age,
     gender: p.gender,
-    phone_number: p.phone_number ?? null,
+    phoneNumber: p.phone_number ?? null,
     about: p.about,
     interests: p.interests,
     needs: p.needs,
-    profile_photo_url: p.profile_photo_url ?? null,
-    instagram_username: p.instagram_username ?? null,
-    password_hash: p.password_hash
-  }).select('*').single()
-  if (error) throw error
-  return data as Profile
+    profilePhotoUrl: p.profile_photo_url ?? null,
+    instagramUsername: p.instagram_username ?? null,
+    passwordHash: p.password_hash,
+  }).returning()
+  return rowToProfile(rows[0])
 }
 
 export async function findById(id: string): Promise<Profile | null> {
-  const { data, error } = await supabase.from(TABLE).select('*').eq('id', id).maybeSingle()
-  if (error) throw error
-  return data as Profile | null
+  const rows = await db.select().from(profiles).where(eq(profiles.id, id)).limit(1)
+  return rows[0] ? rowToProfile(rows[0]) : null
 }
 
 export async function updateLocation(id: string, location: {
@@ -89,22 +135,15 @@ export async function updateLocation(id: string, location: {
   city?: string
   country?: string
 }): Promise<Profile> {
-  const { data, error } = await supabase
-    .from(TABLE)
-    .update({
-      latitude: location.latitude,
-      longitude: location.longitude,
-      location_address: location.address || null,
-      location_city: location.city || null,
-      location_country: location.country || null,
-      location_updated_at: new Date().toISOString()
-    })
-    .eq('id', id)
-    .select('*')
-    .single()
-  
-  if (error) throw error
-  return data as Profile
+  const rows = await db.update(profiles).set({
+    latitude: String(location.latitude),
+    longitude: String(location.longitude),
+    locationAddress: location.address || null,
+    locationCity: location.city || null,
+    locationCountry: location.country || null,
+    locationUpdatedAt: new Date().toISOString(),
+  }).where(eq(profiles.id, id)).returning()
+  return rowToProfile(rows[0])
 }
 
 export async function updatePreferences(id: string, preferences: {
@@ -113,32 +152,31 @@ export async function updatePreferences(id: string, preferences: {
   friendshipLocationPriority?: boolean
   relationshipDistanceFlexible?: boolean
 }): Promise<Profile> {
-  const updateData: any = {
-    preferences_updated_at: new Date().toISOString()
+  const updateData: Record<string, unknown> = {
+    preferencesUpdatedAt: new Date().toISOString(),
   }
-  
-  if (preferences.locationPreference !== undefined) {
-    updateData.location_preference = preferences.locationPreference
-  }
-  if (preferences.agePreference !== undefined) {
-    updateData.age_preference = preferences.agePreference
-  }
-  if (preferences.friendshipLocationPriority !== undefined) {
-    updateData.friendship_location_priority = preferences.friendshipLocationPriority
-  }
-  if (preferences.relationshipDistanceFlexible !== undefined) {
-    updateData.relationship_distance_flexible = preferences.relationshipDistanceFlexible
-  }
+  if (preferences.locationPreference !== undefined) updateData.locationPreference = preferences.locationPreference
+  if (preferences.agePreference !== undefined) updateData.agePreference = preferences.agePreference
+  if (preferences.friendshipLocationPriority !== undefined) updateData.friendshipLocationPriority = preferences.friendshipLocationPriority
+  if (preferences.relationshipDistanceFlexible !== undefined) updateData.relationshipDistanceFlexible = preferences.relationshipDistanceFlexible
 
-  const { data, error } = await supabase
-    .from(TABLE)
-    .update(updateData)
-    .eq('id', id)
-    .select('*')
-    .single()
-  
-  if (error) throw error
-  return data as Profile
+  const rows = await db.update(profiles).set(updateData).where(eq(profiles.id, id)).returning()
+  return rowToProfile(rows[0])
+}
+
+interface NearbyUserRow {
+  id: string; email: string; username: string; first_name: string; last_name: string
+  age: number; gender: string; phone_number: string | null; about: string
+  interests: string[]; needs: string[]; profile_photo_url: string | null
+  instagram_username: string | null; password_hash: string
+  email_verified: boolean | null; email_verified_at: string | null
+  verification_status: string | null; verification_required: boolean | null
+  verified_at: string | null; latitude: string | null; longitude: string | null
+  location_address: string | null; location_city: string | null; location_country: string | null
+  location_updated_at: string | null; location_preference: string | null; age_preference: string | null
+  friendship_location_priority: boolean | null; relationship_distance_flexible: boolean | null
+  preferences_updated_at: string | null; invisible_mode: boolean | null
+  created_at: string | null; distance: string
 }
 
 // Find nearby users within a radius (in kilometers)
@@ -155,48 +193,68 @@ export async function findNearbyUsers({
   excludeUserId?: string
   limit?: number
 }): Promise<(Profile & { distance: number })[]> {
-  // Using Haversine formula for distance calculation
-  // This is a simplified version - for production, consider using PostGIS
-  const { data, error } = await supabase.rpc('find_nearby_users', {
-    user_lat: latitude,
-    user_lng: longitude,
-    radius_km: radiusKm,
-    exclude_user_id: excludeUserId || null,
-    result_limit: limit
-  })
-  
-  if (error) {
-    // Fallback to basic query if RPC function doesn't exist
-    const { data: fallbackData, error: fallbackError } = await supabase
-      .from(TABLE)
-      .select('*')
-      .not('latitude', 'is', null)
-      .not('longitude', 'is', null)
-      .not('first_name', 'is', null)
-      .not('last_name', 'is', null)
-      .neq('id', excludeUserId || '')
-      .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
-      .eq('is_suspended', false) // Exclude suspended users
-      .is('deleted_at', null) // Exclude deleted users
-      .limit(limit)
-    
-    if (fallbackError) throw fallbackError
-    
-    // Calculate distance client-side for fallback
-    return (fallbackData || []).map(user => ({
-      ...user,
-      distance: calculateDistance(latitude, longitude, user.latitude!, user.longitude!)
-    })).filter(user => user.distance <= radiusKm)
+  try {
+    const result = await db.execute<NearbyUserRow>(
+      sql`select * from find_nearby_users(${latitude}, ${longitude}, ${radiusKm}, ${excludeUserId ?? null}, ${limit})`
+    )
+
+    // Filter out users without complete profiles and invisible users (matches original RPC-path filtering)
+    return result.rows
+      .filter((u) => u.first_name && u.last_name && (!u.invisible_mode || u.invisible_mode === false))
+      .map((u) => ({
+        id: u.id,
+        email: u.email,
+        username: u.username,
+        first_name: u.first_name,
+        last_name: u.last_name,
+        age: u.age,
+        gender: u.gender,
+        phone_number: u.phone_number,
+        about: u.about,
+        interests: u.interests,
+        needs: u.needs,
+        profile_photo_url: u.profile_photo_url,
+        instagram_username: u.instagram_username,
+        password_hash: u.password_hash,
+        email_verified: u.email_verified,
+        email_verified_at: u.email_verified_at,
+        verification_status: u.verification_status,
+        verified_at: u.verified_at,
+        latitude: u.latitude !== null ? Number(u.latitude) : null,
+        longitude: u.longitude !== null ? Number(u.longitude) : null,
+        location_address: u.location_address,
+        location_city: u.location_city,
+        location_country: u.location_country,
+        location_updated_at: u.location_updated_at,
+        location_preference: u.location_preference,
+        age_preference: u.age_preference,
+        friendship_location_priority: u.friendship_location_priority,
+        relationship_distance_flexible: u.relationship_distance_flexible,
+        preferences_updated_at: u.preferences_updated_at,
+        invisible_mode: u.invisible_mode,
+        created_at: u.created_at ?? undefined,
+        distance: Number(u.distance),
+      }))
+  } catch {
+    // Fallback to basic query if the RPC function doesn't exist (matches original fallback behavior)
+    const rows = await db.select().from(profiles).where(and(
+      isNotNull(profiles.latitude),
+      isNotNull(profiles.longitude),
+      isNotNull(profiles.firstName),
+      isNotNull(profiles.lastName),
+      ne(profiles.id, excludeUserId || ''),
+      or(isNull(profiles.invisibleMode), eq(profiles.invisibleMode, false)),
+      eq(profiles.isSuspended, false),
+      isNull(profiles.deletedAt),
+    )).limit(limit)
+
+    return rows
+      .map((row) => {
+        const p = rowToProfile(row)
+        return { ...p, distance: calculateDistance(latitude, longitude, p.latitude!, p.longitude!) }
+      })
+      .filter((user) => user.distance <= radiusKm)
   }
-  
-  // Filter out users without complete profiles, invisible users, suspended users, and deleted users
-  return (data || []).filter((user: any) => 
-    user.first_name && 
-    user.last_name && 
-    (!user.invisible_mode || user.invisible_mode === false) &&
-    !user.is_suspended &&
-    !user.deleted_at
-  )
 }
 
 // Find users within a bounding box (for map viewport)
@@ -211,27 +269,21 @@ export async function findUsersInArea({
   excludeUserId?: string
   limit?: number
 }): Promise<Profile[]> {
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('*')
-    .gte('latitude', southWest.latitude)
-    .lte('latitude', northEast.latitude)
-    .gte('longitude', southWest.longitude)
-    .lte('longitude', northEast.longitude)
-    .not('latitude', 'is', null)
-    .not('longitude', 'is', null)
-    .neq('id', excludeUserId || '')
-    .or('invisible_mode.is.null,invisible_mode.eq.false') // Exclude invisible users
-    .eq('is_suspended', false) // Exclude suspended users
-    .is('deleted_at', null) // Exclude deleted users
-    .limit(limit)
-  
-  if (error) throw error
-  
-  // Additional filter for safety
-  return (data || []).filter((user: any) => 
-    !user.is_suspended && !user.deleted_at
-  )
+  const rows = await db.select().from(profiles).where(and(
+    gte(profiles.latitude, String(southWest.latitude)),
+    lte(profiles.latitude, String(northEast.latitude)),
+    gte(profiles.longitude, String(southWest.longitude)),
+    lte(profiles.longitude, String(northEast.longitude)),
+    isNotNull(profiles.latitude),
+    isNotNull(profiles.longitude),
+    ne(profiles.id, excludeUserId || ''),
+    or(isNull(profiles.invisibleMode), eq(profiles.invisibleMode, false)),
+    eq(profiles.isSuspended, false),
+    isNull(profiles.deletedAt),
+  )).limit(limit)
+
+  // Additional filter for safety (matches original)
+  return rows.map(rowToProfile).filter((user) => !user.is_suspended && !user.deleted_at)
 }
 
 // Helper function to calculate distance between two points
@@ -244,7 +296,7 @@ function calculateDistance(
   const R = 6371 // Earth's radius in kilometers
   const dLat = (lat2 - lat1) * Math.PI / 180
   const dLon = (lon2 - lon1) * Math.PI / 180
-  const a = 
+  const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
     Math.sin(dLon / 2) * Math.sin(dLon / 2)
