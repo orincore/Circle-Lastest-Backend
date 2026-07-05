@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js';
+import { and, desc, eq, sql } from 'drizzle-orm';
+import { db } from '../config/db.js';
+import { notifications, profiles } from '../db/schema.js';
 import { emitToUser } from '../sockets/optimized-socket.js';
 import { invalidateNotificationsCache } from './cache.js';
 
@@ -42,17 +44,9 @@ export class NotificationService {
       //console.log('📬 Creating notification:', JSON.stringify(notificationData, null, 2));
 
       // Validate that recipient exists in profiles table
-      const { data: recipientProfile, error: recipientError } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', notificationData.recipient_id)
-        .maybeSingle();
-      
-      if (recipientError) {
-        console.error('Error validating recipient profile:', recipientError);
-        return null;
-      }
-      
+      const [recipientProfile] = await db.select({ id: profiles.id })
+        .from(profiles).where(eq(profiles.id, notificationData.recipient_id)).limit(1);
+
       if (!recipientProfile) {
         console.warn(`Notification skipped: Recipient not found. Recipient ID: ${notificationData.recipient_id}`);
         return null;
@@ -60,59 +54,55 @@ export class NotificationService {
 
       // Validate sender if provided
       if (notificationData.sender_id) {
-        const { data: senderProfile, error: senderError } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('id', notificationData.sender_id)
-          .maybeSingle();
-        
-        if (senderError) {
-          console.error('Error validating sender profile:', senderError);
-          return null;
-        }
-        
+        const [senderProfile] = await db.select({ id: profiles.id })
+          .from(profiles).where(eq(profiles.id, notificationData.sender_id)).limit(1);
+
         if (!senderProfile) {
           console.warn(`Notification skipped: Sender not found. Sender ID: ${notificationData.sender_id}`);
           return null;
         }
       }
 
-      const insertData = {
-        recipient_id: notificationData.recipient_id,
-        sender_id: notificationData.sender_id,
-        type: notificationData.type,
-        title: notificationData.title,
-        message: notificationData.message,
-        data: notificationData.data || {},
-        read: false
-      };
-      
-      //console.log('📝 Inserting notification data:', JSON.stringify(insertData, null, 2));
-
-      const { data: notification, error } = await supabase
-        .from('notifications')
-        .insert(insertData)
-        .select('*')
-        .single();
-        
-      // Get sender information separately to avoid schema cache issues
-      let senderInfo = null;
-      if (notification && notification.sender_id) {
-        const { data: sender } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name, profile_photo_url')
-          .eq('id', notification.sender_id)
-          .single();
-        senderInfo = sender;
-      }
-
-      if (error) {
+      let notification: typeof notifications.$inferSelect;
+      try {
+        [notification] = await db.insert(notifications).values({
+          recipientId: notificationData.recipient_id,
+          senderId: notificationData.sender_id,
+          type: notificationData.type,
+          title: notificationData.title,
+          message: notificationData.message,
+          data: notificationData.data || {},
+          read: false,
+        }).returning();
+      } catch (error) {
         console.error('❌ Error creating notification:', error);
-        console.error('❌ Error details:', JSON.stringify(error, null, 2));
         return null;
       }
 
+      // Get sender information separately to avoid schema cache issues
+      let senderInfo: { id: string; first_name: string | null; last_name: string | null; profile_photo_url: string | null } | null = null;
+      if (notification && notification.senderId) {
+        const [sender] = await db.select({
+          id: profiles.id, first_name: profiles.firstName, last_name: profiles.lastName, profile_photo_url: profiles.profilePhotoUrl,
+        }).from(profiles).where(eq(profiles.id, notification.senderId)).limit(1);
+        senderInfo = sender ?? null;
+      }
+
       //console.log('✅ Notification inserted successfully:', JSON.stringify(notification, null, 2));
+
+      // Preserve the original snake_case row shape the rest of the codebase expects.
+      const notificationRow = {
+        id: notification.id,
+        recipient_id: notification.recipientId,
+        sender_id: notification.senderId,
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        data: notification.data,
+        read: notification.read,
+        created_at: notification.createdAt,
+        updated_at: notification.updatedAt,
+      };
 
       // New notification for the recipient — drop their cached list + count.
       await invalidateNotificationsCache(notificationData.recipient_id);
@@ -121,9 +111,9 @@ export class NotificationService {
       try {
         emitToUser(notificationData.recipient_id, 'notification:new', {
           notification: {
-            ...notification,
+            ...notificationRow,
             sender: senderInfo,
-            timestamp: new Date(notification.created_at)
+            timestamp: new Date(notificationRow.created_at as string)
           }
         });
         //console.log('✅ Real-time notification emitted to user:', notificationData.recipient_id);
@@ -132,7 +122,7 @@ export class NotificationService {
       }
 
       //console.log('✅ Notification created successfully:', notification.id);
-      return { ...notification, sender: senderInfo };
+      return { ...notificationRow, sender: senderInfo };
     } catch (error) {
       console.error('❌ Failed to create notification:', error);
       console.error('❌ Stack trace:', (error as Error).stack);
@@ -145,33 +135,37 @@ export class NotificationService {
    */
   static async getUserNotifications(userId: string, limit: number = 50): Promise<any[]> {
     try {
-      const { data: notifications, error } = await supabase
-        .from('notifications')
-        .select('*')
-        .eq('recipient_id', userId)
-        .order('created_at', { ascending: false })
+      const rows = await db.select().from(notifications)
+        .where(eq(notifications.recipientId, userId))
+        .orderBy(desc(notifications.createdAt))
         .limit(limit);
-        
+
+      const results: any[] = [];
       // Get sender information separately for each notification
-      if (notifications && notifications.length > 0) {
-        for (const notification of notifications) {
-          if (notification.sender_id) {
-            const { data: sender } = await supabase
-              .from('profiles')
-              .select('id, first_name, last_name, profile_photo_url')
-              .eq('id', notification.sender_id)
-              .single();
-            notification.sender = sender;
-          }
+      for (const notification of rows) {
+        let sender = null;
+        if (notification.senderId) {
+          const [senderRow] = await db.select({
+            id: profiles.id, first_name: profiles.firstName, last_name: profiles.lastName, profile_photo_url: profiles.profilePhotoUrl,
+          }).from(profiles).where(eq(profiles.id, notification.senderId)).limit(1);
+          sender = senderRow ?? null;
         }
+        results.push({
+          id: notification.id,
+          recipient_id: notification.recipientId,
+          sender_id: notification.senderId,
+          type: notification.type,
+          title: notification.title,
+          message: notification.message,
+          data: notification.data,
+          read: notification.read,
+          created_at: notification.createdAt,
+          updated_at: notification.updatedAt,
+          sender,
+        });
       }
 
-      if (error) {
-        console.error('❌ Error fetching notifications:', error);
-        return [];
-      }
-
-      return notifications || [];
+      return results;
     } catch (error) {
       console.error('❌ Failed to fetch notifications:', error);
       return [];
@@ -183,16 +177,8 @@ export class NotificationService {
    */
   static async markAsRead(notificationId: string, userId: string): Promise<boolean> {
     try {
-      const { error } = await supabase
-        .from('notifications')
-        .update({ read: true })
-        .eq('id', notificationId)
-        .eq('recipient_id', userId);
-
-      if (error) {
-        console.error('❌ Error marking notification as read:', error);
-        return false;
-      }
+      await db.update(notifications).set({ read: true })
+        .where(and(eq(notifications.id, notificationId), eq(notifications.recipientId, userId)));
 
       await invalidateNotificationsCache(userId);
       return true;
@@ -207,16 +193,8 @@ export class NotificationService {
    */
   static async deleteNotification(notificationId: string, userId: string): Promise<boolean> {
     try {
-      const { error } = await supabase
-        .from('notifications')
-        .delete()
-        .eq('id', notificationId)
-        .eq('recipient_id', userId);
-
-      if (error) {
-        console.error('❌ Error deleting notification:', error);
-        return false;
-      }
+      await db.delete(notifications)
+        .where(and(eq(notifications.id, notificationId), eq(notifications.recipientId, userId)));
 
       await invalidateNotificationsCache(userId);
 
@@ -236,27 +214,20 @@ export class NotificationService {
   static async deleteFriendRequestNotifications(userId1: string, userId2: string): Promise<boolean> {
     try {
       //console.log(`🗑️ Deleting friend request notifications between ${userId1} and ${userId2}`);
-      
+
       // Delete notifications where userId1 is recipient and userId2 is sender
-      const { error: error1 } = await supabase
-        .from('notifications')
-        .delete()
-        .eq('recipient_id', userId1)
-        .eq('sender_id', userId2)
-        .eq('type', 'friend_request');
+      await db.delete(notifications).where(and(
+        eq(notifications.recipientId, userId1),
+        eq(notifications.senderId, userId2),
+        eq(notifications.type, 'friend_request'),
+      ));
 
       // Delete notifications where userId2 is recipient and userId1 is sender
-      const { error: error2 } = await supabase
-        .from('notifications')
-        .delete()
-        .eq('recipient_id', userId2)
-        .eq('sender_id', userId1)
-        .eq('type', 'friend_request');
-
-      if (error1 || error2) {
-        console.error('❌ Error deleting friend request notifications:', error1 || error2);
-        return false;
-      }
+      await db.delete(notifications).where(and(
+        eq(notifications.recipientId, userId2),
+        eq(notifications.senderId, userId1),
+        eq(notifications.type, 'friend_request'),
+      ));
 
       await invalidateNotificationsCache(userId1);
       await invalidateNotificationsCache(userId2);
@@ -278,16 +249,9 @@ export class NotificationService {
    */
   static async getUnreadCount(userId: string): Promise<number> {
     try {
-      const { count, error } = await supabase
-        .from('notifications')
-        .select('*', { count: 'exact', head: true })
-        .eq('recipient_id', userId)
-        .eq('read', false);
-
-      if (error) {
-        console.error('❌ Error getting unread count:', error);
-        return 0;
-      }
+      const [{ count }] = await db.select({ count: sql<number>`count(*)::int` })
+        .from(notifications)
+        .where(and(eq(notifications.recipientId, userId), eq(notifications.read, false)));
 
       return count || 0;
     } catch (error) {
@@ -394,9 +358,9 @@ export class NotificationService {
    * Notify users about new user signup (for potential matches)
    */
   static async notifyNewUserSignup(newUserId: string, newUserName: string, potentialMatchIds: string[]): Promise<void> {
-    const notifications = potentialMatchIds.map(userId => ({
-      recipient_id: userId,
-      sender_id: newUserId,
+    const newNotifications = potentialMatchIds.map(userId => ({
+      recipientId: userId,
+      senderId: newUserId,
       type: 'new_user_suggestion' as NotificationType,
       title: 'New User Alert',
       message: `${newUserName} just joined Circle and might be a great match for you!`,
@@ -405,14 +369,7 @@ export class NotificationService {
 
     // Batch create notifications
     try {
-      const { error } = await supabase
-        .from('notifications')
-        .insert(notifications);
-
-      if (error) {
-        console.error('❌ Error creating new user notifications:', error);
-        return;
-      }
+      await db.insert(notifications).values(newNotifications);
 
       // Invalidate each recipient's notification cache.
       await Promise.all(potentialMatchIds.map(userId => invalidateNotificationsCache(userId)));
@@ -429,7 +386,7 @@ export class NotificationService {
         });
       });
 
-      //console.log(`✅ Created ${notifications.length} new user notifications`);
+      //console.log(`✅ Created ${newNotifications.length} new user notifications`);
     } catch (error) {
       console.error('❌ Failed to create new user notifications:', error);
     }

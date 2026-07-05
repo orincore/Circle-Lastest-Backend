@@ -1,5 +1,7 @@
 import nodemailer from 'nodemailer'
-import { supabase } from '../config/supabase.js'
+import { eq, lt } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { emailOtps } from '../db/schema.js'
 
 interface EmailOTP {
   email: string
@@ -87,42 +89,33 @@ class EmailService {
       expiresAt.setMinutes(expiresAt.getMinutes() + 10) // OTP expires in 10 minutes
 
       // Check if there's an existing OTP for this email
-      const { data: existingOTP } = await supabase
-        .from('email_otps')
-        .select('*')
-        .eq('email', email)
-        .single()
+      const [existingOTP] = await db.select().from(emailOtps).where(eq(emailOtps.email, email)).limit(1)
 
       if (existingOTP) {
         // Update existing OTP
-        const { error } = await supabase
-          .from('email_otps')
-          .update({
+        try {
+          await db.update(emailOtps).set({
             otp,
-            expires_at: expiresAt.toISOString(),
+            expiresAt: expiresAt.toISOString(),
             attempts: 0,
             verified: false,
-            created_at: new Date().toISOString(),
-          })
-          .eq('email', email)
-
-        if (error) {
+            createdAt: new Date().toISOString(),
+          }).where(eq(emailOtps.email, email))
+        } catch (error) {
           console.error('Failed to update OTP:', error)
           return { success: false, error: 'Failed to generate OTP' }
         }
       } else {
         // Insert new OTP
-        const { error } = await supabase
-          .from('email_otps')
-          .insert({
+        try {
+          await db.insert(emailOtps).values({
             email,
             otp,
-            expires_at: expiresAt.toISOString(),
+            expiresAt: expiresAt.toISOString(),
             attempts: 0,
             verified: false,
           })
-
-        if (error) {
+        } catch (error) {
           console.error('Failed to insert OTP:', error)
           return { success: false, error: 'Failed to generate OTP' }
         }
@@ -141,13 +134,9 @@ class EmailService {
   async verifyOTP(email: string, inputOTP: string): Promise<{ success: boolean; error?: string }> {
     try {
       // Get OTP record
-      const { data: otpRecord, error: fetchError } = await supabase
-        .from('email_otps')
-        .select('*')
-        .eq('email', email)
-        .single()
+      const [otpRecord] = await db.select().from(emailOtps).where(eq(emailOtps.email, email)).limit(1)
 
-      if (fetchError || !otpRecord) {
+      if (!otpRecord) {
         return { success: false, error: 'OTP not found. Please request a new one.' }
       }
 
@@ -157,31 +146,25 @@ class EmailService {
       }
 
       // Check if expired
-      if (new Date() > new Date(otpRecord.expires_at)) {
+      if (new Date() > new Date(otpRecord.expiresAt)) {
         return { success: false, error: 'OTP has expired. Please request a new one.' }
       }
 
       // Check attempts limit
-      if (otpRecord.attempts >= 5) {
+      if ((otpRecord.attempts ?? 0) >= 5) {
         return { success: false, error: 'Too many failed attempts. Please request a new OTP.' }
       }
 
       // Verify OTP
       if (otpRecord.otp !== inputOTP) {
         // Increment attempts
-        await supabase
-          .from('email_otps')
-          .update({ attempts: otpRecord.attempts + 1 })
-          .eq('email', email)
+        await db.update(emailOtps).set({ attempts: (otpRecord.attempts ?? 0) + 1 }).where(eq(emailOtps.email, email))
 
         return { success: false, error: 'Invalid OTP. Please try again.' }
       }
 
       // Mark as verified
-      await supabase
-        .from('email_otps')
-        .update({ verified: true })
-        .eq('email', email)
+      await db.update(emailOtps).set({ verified: true }).where(eq(emailOtps.email, email))
 
       return { success: true }
     } catch (error) {
@@ -195,13 +178,9 @@ class EmailService {
    */
   async isEmailVerified(email: string): Promise<boolean> {
     try {
-      const { data } = await supabase
-        .from('email_otps')
-        .select('verified')
-        .eq('email', email)
-        .single()
+      const [row] = await db.select({ verified: emailOtps.verified }).from(emailOtps).where(eq(emailOtps.email, email)).limit(1)
 
-      return data?.verified || false
+      return row?.verified || false
     } catch (error) {
       return false
     }
@@ -212,16 +191,8 @@ class EmailService {
    */
   async cleanupExpiredOTPs(): Promise<void> {
     try {
-      const { error } = await supabase
-        .from('email_otps')
-        .delete()
-        .lt('expires_at', new Date().toISOString())
-
-      if (error) {
-        console.error('Failed to cleanup expired OTPs:', error)
-      } else {
-        //console.log('✅ Expired OTPs cleaned up')
-      }
+      await db.delete(emailOtps).where(lt(emailOtps.expiresAt, new Date().toISOString()))
+      //console.log('✅ Expired OTPs cleaned up')
     } catch (error) {
       console.error('Cleanup OTPs error:', error)
     }

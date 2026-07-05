@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { activityFeed } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 import { emitToAll, emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
@@ -234,19 +236,13 @@ export async function createActivity(activityData: ActivityData): Promise<void> 
 
     // Store in database for persistence (optional, for analytics)
     try {
-      const { error: dbError } = await supabase
-        .from('activity_feed')
-        .insert({
-          id: activity.id,
-          type: activity.type,
-          data: activity.data,
-          timestamp: activity.timestamp,
-          user_id: activity.user_id,
-        })
-      
-      if (dbError) {
-        logger.warn({ error: dbError, activity }, 'Failed to store activity in database')
-      }
+      await db.insert(activityFeed).values({
+        id: activity.id,
+        type: activity.type,
+        data: activity.data,
+        timestamp: activity.timestamp,
+        userId: activity.user_id,
+      })
     } catch (dbError) {
       // Don't fail the whole operation if DB insert fails
       logger.warn({ error: dbError, activity }, 'Failed to store activity in database')
@@ -278,26 +274,19 @@ export function getRecentActivities(limit: number = 20): ActivityEvent[] {
 // Load activities from database on server startup
 export async function loadActivitiesFromDatabase(): Promise<void> {
   try {
-    const { data: activities, error } = await supabase
-      .from('activity_feed')
-      .select('*')
-      .order('timestamp', { ascending: false })
+    const activities = await db.select().from(activityFeed)
+      .orderBy(desc(activityFeed.timestamp))
       .limit(MAX_RECENT_ACTIVITIES)
-
-    if (error) {
-      logger.warn({ error }, 'Failed to load activities from database')
-      return
-    }
 
     if (activities && activities.length > 0) {
       recentActivities = activities.map(activity => ({
         id: activity.id,
         type: activity.type,
-        data: activity.data,
+        data: activity.data as Record<string, any>,
         timestamp: activity.timestamp,
-        user_id: activity.user_id,
+        user_id: activity.userId ?? undefined,
       }))
-      
+
       logger.info({ count: activities.length }, 'Loaded activities from database')
     }
   } catch (error) {
@@ -440,20 +429,21 @@ export async function trackLocationUpdated(user: any, location: string): Promise
     // instead of in-memory state — an in-memory Map resets on every server
     // restart/deploy and is per-instance under horizontal scaling, so it
     // couldn't reliably suppress a duplicate broadcast across those cases.
-    const { data: lastActivity, error: lookupError } = await supabase
-      .from('activity_feed')
-      .select('data, timestamp')
-      .eq('user_id', user.id)
-      .eq('type', ACTIVITY_TYPES.LOCATION_UPDATED)
-      .order('timestamp', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (lookupError) {
+    let lastActivity: { data: unknown; timestamp: string | null } | undefined
+    try {
+      const rows = await db.select({ data: activityFeed.data, timestamp: activityFeed.timestamp })
+        .from(activityFeed)
+        .where(and(eq(activityFeed.userId, user.id), eq(activityFeed.type, ACTIVITY_TYPES.LOCATION_UPDATED)))
+        .orderBy(desc(activityFeed.timestamp))
+        .limit(1)
+      lastActivity = rows[0]
+    } catch (lookupError) {
       logger.warn({ error: lookupError, userId: user.id }, 'Failed to look up last location broadcast, proceeding anyway')
-    } else if (lastActivity) {
+    }
+
+    if (lastActivity) {
       const sameLocation = (lastActivity.data as any)?.location === location
-      const withinCooldown = Date.now() - new Date(lastActivity.timestamp).getTime() < LOCATION_BROADCAST_COOLDOWN_MS
+      const withinCooldown = Date.now() - new Date(lastActivity.timestamp as string).getTime() < LOCATION_BROADCAST_COOLDOWN_MS
       if (sameLocation || withinCooldown) {
         logger.debug({ userId: user.id, sameLocation, withinCooldown }, 'Skipping location updated activity - unchanged or within cooldown')
         return
@@ -521,34 +511,8 @@ export async function trackInterestUpdated(user: any, newInterests: string[]): P
 // Initialize activity feed table if it doesn't exist
 export async function initializeActivityFeed(): Promise<void> {
   try {
-    // Check if table exists and create if needed
-    const { error } = await supabase
-      .from('activity_feed')
-      .select('id')
-      .limit(1)
-
-    if (error && error.message.includes('does not exist')) {
-      logger.info('Activity feed table does not exist, creating...')
-      
-      // Create table via SQL (you might want to add this to migrations instead)
-      const createTableSQL = `
-        CREATE TABLE IF NOT EXISTS activity_feed (
-          id TEXT PRIMARY KEY,
-          type TEXT NOT NULL,
-          data JSONB NOT NULL,
-          timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-          created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_activity_feed_timestamp ON activity_feed(timestamp DESC);
-        CREATE INDEX IF NOT EXISTS idx_activity_feed_type ON activity_feed(type);
-        CREATE INDEX IF NOT EXISTS idx_activity_feed_user_id ON activity_feed(user_id);
-      `
-      
-      // Note: You'll need to run this SQL manually or add to migrations
-      logger.info('Activity feed table creation SQL prepared (run manually if needed)')
-    }
+    // Sanity-check that the table is reachable (table itself is managed by Drizzle migrations).
+    await db.select({ id: activityFeed.id }).from(activityFeed).limit(1)
   } catch (error) {
     logger.warn({ error }, 'Could not initialize activity feed table')
   }

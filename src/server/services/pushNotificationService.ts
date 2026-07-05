@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../config/db.js';
+import { profiles, pushTokens } from '../db/schema.js';
 import { logger } from '../config/logger.js';
 // Import ioRef dynamically to avoid circular dependency
 let getIoRef: (() => any) | null = null;
@@ -57,36 +59,32 @@ export class PushNotificationService {
   ): Promise<boolean> {
     try {
       // First verify user account is active and not deleted/suspended
-      const { data: userProfile, error: userError } = await supabase
-        .from('profiles')
-        .select('id, deleted_at, is_suspended')
-        .eq('id', userId)
-        .maybeSingle();
+      const [userProfile] = await db.select({ id: profiles.id, deletedAt: profiles.deletedAt, isSuspended: profiles.isSuspended })
+        .from(profiles).where(eq(profiles.id, userId)).limit(1);
 
-      if (userError || !userProfile) {
-        logger.warn({ userId, error: userError }, 'User profile not found for push notification');
+      if (!userProfile) {
+        logger.warn({ userId }, 'User profile not found for push notification');
         return false;
       }
 
       // Don't send notifications to deleted or suspended accounts
-      if (userProfile.deleted_at || userProfile.is_suspended) {
-        logger.info({ userId, deleted: !!userProfile.deleted_at, suspended: userProfile.is_suspended }, 'Skipping push notification for inactive account');
+      if (userProfile.deletedAt || userProfile.isSuspended) {
+        logger.info({ userId, deleted: !!userProfile.deletedAt, suspended: userProfile.isSuspended }, 'Skipping push notification for inactive account');
         return false;
       }
 
       // Get user's push tokens
-      const { data: pushTokens, error } = await supabase
-        .from('push_tokens')
-        .select('token, device_type, enabled')
-        .eq('user_id', userId)
-        .eq('enabled', true);
-
-      if (error) {
+      let userPushTokens: { token: string; device_type: string | null; enabled: boolean | null }[];
+      try {
+        userPushTokens = await db.select({ token: pushTokens.token, device_type: pushTokens.deviceType, enabled: pushTokens.enabled })
+          .from(pushTokens)
+          .where(and(eq(pushTokens.userId, userId), eq(pushTokens.enabled, true)));
+      } catch (error) {
         logger.error({ error, userId }, 'Error fetching push tokens');
         return false;
       }
 
-      if (!pushTokens || pushTokens.length === 0) {
+      if (!userPushTokens || userPushTokens.length === 0) {
         logger.debug({ userId }, 'No push tokens found for user');
         return false;
       }
@@ -94,7 +92,7 @@ export class PushNotificationService {
       let successCount = 0;
 
       // Send to each token
-      for (const tokenData of pushTokens) {
+      for (const tokenData of userPushTokens) {
         try {
           if (tokenData.device_type === 'web') {
             // Web Push API - handled by service worker

@@ -1,5 +1,7 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { supabase } from '../config/supabase.js';
+import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
+import { db } from '../config/db.js';
+import { friendships, profiles, voiceCalls } from '../db/schema.js';
 
 interface CallData {
   callId: string;
@@ -24,28 +26,36 @@ interface VoiceCallRecord {
   end_reason?: 'completed' | 'declined' | 'missed' | 'disconnected' | 'error';
 }
 
+// Map a Drizzle voice_calls row (camelCase) to the snake_case VoiceCallRecord shape
+// consumed throughout this file and by the frontend.
+function toVoiceCallRecord(row: typeof voiceCalls.$inferSelect): VoiceCallRecord {
+  return {
+    id: row.id,
+    call_id: row.callId,
+    caller_id: row.callerId,
+    receiver_id: row.receiverId,
+    call_type: row.callType as 'webrtc' | 'audio-fallback',
+    status: row.status as VoiceCallRecord['status'],
+    started_at: row.startedAt as string,
+    connected_at: row.connectedAt ?? undefined,
+    ended_at: row.endedAt ?? undefined,
+    duration_seconds: row.durationSeconds ?? 0,
+    end_reason: row.endReason as VoiceCallRecord['end_reason'],
+  };
+}
+
 // Helper function to create call record in database
 async function createCallRecord(callId: string, callerId: string, receiverId: string, callType: 'webrtc' | 'audio-fallback'): Promise<VoiceCallRecord | null> {
   try {
-    
-    const { data, error } = await supabase
-      .from('voice_calls')
-      .insert({
-        call_id: callId,
-        caller_id: callerId,
-        receiver_id: receiverId,
-        call_type: callType,
-        status: 'initiated'
-      })
-      .select()
-      .single();
+    const [row] = await db.insert(voiceCalls).values({
+      callId,
+      callerId,
+      receiverId,
+      callType,
+      status: 'initiated',
+    }).returning();
 
-    if (error) {
-      console.error('❌ Error creating call record:', error);
-      return null;
-    }
-
-    return data;
+    return row ? toVoiceCallRecord(row) : null;
   } catch (error) {
     console.error('❌ Exception creating call record:', error);
     return null;
@@ -56,25 +66,17 @@ async function createCallRecord(callId: string, callerId: string, receiverId: st
 async function updateCallStatus(callId: string, status: VoiceCallRecord['status'], endReason?: string): Promise<boolean> {
   try {
     const updateData: any = { status };
-    
+
     if (status === 'connected') {
-      updateData.connected_at = new Date().toISOString();
+      updateData.connectedAt = new Date().toISOString();
     } else if (status === 'ended' || status === 'declined' || status === 'missed') {
-      updateData.ended_at = new Date().toISOString();
+      updateData.endedAt = new Date().toISOString();
       if (endReason) {
-        updateData.end_reason = endReason;
+        updateData.endReason = endReason;
       }
     }
 
-    const { error } = await supabase
-      .from('voice_calls')
-      .update(updateData)
-      .eq('call_id', callId);
-
-    if (error) {
-      console.error('❌ Error updating call status:', error);
-      return false;
-    }
+    await db.update(voiceCalls).set(updateData).where(eq(voiceCalls.callId, callId));
 
     return true;
   } catch (error) {
@@ -86,19 +88,14 @@ async function updateCallStatus(callId: string, status: VoiceCallRecord['status'
 // Helper function to get active calls from database
 async function getActiveCallsFromDB(userId: string): Promise<VoiceCallRecord[]> {
   try {
-    const { data, error } = await supabase
-      .from('voice_calls')
-      .select('*')
-      .or(`caller_id.eq.${userId},receiver_id.eq.${userId}`)
-      .in('status', ['initiated', 'ringing', 'connected'])
-      .order('started_at', { ascending: false });
+    const rows = await db.select().from(voiceCalls)
+      .where(and(
+        or(eq(voiceCalls.callerId, userId), eq(voiceCalls.receiverId, userId)),
+        inArray(voiceCalls.status, ['initiated', 'ringing', 'connected']),
+      ))
+      .orderBy(desc(voiceCalls.startedAt));
 
-    if (error) {
-      console.error('❌ Error getting active calls:', error);
-      return [];
-    }
-
-    return data || [];
+    return rows.map(toVoiceCallRecord);
   } catch (error) {
     console.error('❌ Exception getting active calls:', error);
     return [];
@@ -135,14 +132,15 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
 
       // Check if users are friends (optional - you might want to allow calls to non-friends)
       // Accept both 'active' and 'accepted' status for compatibility
-      const { data: friendship, error: friendshipError } = await supabase
-        .from('friendships')
-        .select('id')
-        .or(`and(user1_id.eq.${userId},user2_id.eq.${data.receiverId}),and(user1_id.eq.${data.receiverId},user2_id.eq.${userId})`)
-        .in('status', ['active', 'accepted'])
-        .limit(1)
-        .maybeSingle();
-
+      const [friendship] = await db.select({ id: friendships.id }).from(friendships)
+        .where(and(
+          or(
+            and(eq(friendships.user1Id, userId), eq(friendships.user2Id, data.receiverId)),
+            and(eq(friendships.user1Id, data.receiverId), eq(friendships.user2Id, userId)),
+          ),
+          inArray(friendships.status, ['active', 'accepted']),
+        ))
+        .limit(1);
 
       if (!friendship) {
         console.warn('⚠️ No active friendship found between users');
@@ -152,11 +150,8 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
 
 
       // Get caller info from profiles table
-      const { data: callerInfo } = await supabase
-        .from('profiles')
-        .select('first_name, last_name, profile_photo_url')
-        .eq('id', userId)
-        .single();
+      const [callerInfo] = await db.select({ first_name: profiles.firstName, last_name: profiles.lastName, profile_photo_url: profiles.profilePhotoUrl })
+        .from(profiles).where(eq(profiles.id, userId)).limit(1);
 
       const callId = `call_${userId}_${data.receiverId}_${Date.now()}`;
       const callType = (data.callType as 'webrtc' | 'audio-fallback') || 'webrtc';
@@ -254,17 +249,12 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
     try {
     
       // Get call from database
-      const { data: call, error } = await supabase
-        .from('voice_calls')
-        .select('*')
-        .eq('call_id', data.callId)
-        .single();
+      const [callRow] = await db.select().from(voiceCalls).where(eq(voiceCalls.callId, data.callId)).limit(1);
+      const call = callRow ? toVoiceCallRecord(callRow) : null;
 
-
-      if (error || !call) {
+      if (!call) {
         console.error('❌ Call not found in database:', {
           callId: data.callId,
-          error: error?.message,
           userId: userId
         });
         socket.emit('voice:error', { error: 'Call not found or expired' });
@@ -318,13 +308,10 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
     try {
 
       // Get call from database
-      const { data: call, error } = await supabase
-        .from('voice_calls')
-        .select('*')
-        .eq('call_id', data.callId)
-        .single();
+      const [declineCallRow] = await db.select().from(voiceCalls).where(eq(voiceCalls.callId, data.callId)).limit(1);
+      const call = declineCallRow ? toVoiceCallRecord(declineCallRow) : null;
 
-      if (error || !call) {
+      if (!call) {
         socket.emit('voice:error', { error: 'Call not found' });
         return;
       }
@@ -375,13 +362,10 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
     try {
 
       // Get call from database
-      const { data: call, error } = await supabase
-        .from('voice_calls')
-        .select('*')
-        .eq('call_id', data.callId)
-        .single();
+      const [endCallRow] = await db.select().from(voiceCalls).where(eq(voiceCalls.callId, data.callId)).limit(1);
+      const call = endCallRow ? toVoiceCallRecord(endCallRow) : null;
 
-      if (error || !call) {
+      if (!call) {
         socket.emit('voice:error', { error: 'Call not found' });
         return;
       }
@@ -418,13 +402,10 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
     try {
       //console.log('📨 WebRTC offer received:', data.callId, 'from user:', userId);
       
-      const { data: call, error } = await supabase
-        .from('voice_calls')
-        .select('caller_id, receiver_id')
-        .eq('call_id', data.callId)
-        .single();
+      const [call] = await db.select({ caller_id: voiceCalls.callerId, receiver_id: voiceCalls.receiverId })
+        .from(voiceCalls).where(eq(voiceCalls.callId, data.callId)).limit(1);
 
-      //console.log('📞 Call lookup for offer:', { call, error, callId: data.callId });
+      //console.log('📞 Call lookup for offer:', { call, callId: data.callId });
 
       if (call && call.caller_id === userId) {
         //console.log('📨 Forwarding offer to receiver:', call.receiver_id);
@@ -444,12 +425,8 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
     try {
       //console.log('📨 WebRTC answer received:', data.callId, 'from user:', userId);
       
-      const { data: call, error } = await supabase
-        .from('voice_calls')
-        .select('caller_id, receiver_id')
-        .eq('call_id', data.callId)
-        .single();
-
+      const [call] = await db.select({ caller_id: voiceCalls.callerId, receiver_id: voiceCalls.receiverId })
+        .from(voiceCalls).where(eq(voiceCalls.callId, data.callId)).limit(1);
 
       if (call && call.receiver_id === userId) {
         io.to(call.caller_id).emit('voice:answer', {
@@ -467,12 +444,8 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   socket.on('voice:ice-candidate', async (data: { callId: string; candidate: any }) => {
     try {
       
-      const { data: call, error } = await supabase
-        .from('voice_calls')
-        .select('caller_id, receiver_id')
-        .eq('call_id', data.callId)
-        .single();
-
+      const [call] = await db.select({ caller_id: voiceCalls.callerId, receiver_id: voiceCalls.receiverId })
+        .from(voiceCalls).where(eq(voiceCalls.callId, data.callId)).limit(1);
 
       if (call) {
         const otherUserId = call.caller_id === userId ? call.receiver_id : call.caller_id;
@@ -491,11 +464,8 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
   // Audio chunk for Expo Go fallback
   socket.on('voice:audio-chunk', async (data: { callId: string; audioUri: string; timestamp: number }) => {
     try {
-      const { data: call } = await supabase
-        .from('voice_calls')
-        .select('caller_id, receiver_id, status')
-        .eq('call_id', data.callId)
-        .single();
+      const [call] = await db.select({ caller_id: voiceCalls.callerId, receiver_id: voiceCalls.receiverId, status: voiceCalls.status })
+        .from(voiceCalls).where(eq(voiceCalls.callId, data.callId)).limit(1);
 
       if (call && call.status === 'connected') {
         const otherUserId = call.caller_id === userId ? call.receiver_id : call.caller_id;
@@ -539,18 +509,11 @@ export function setupVoiceCallHandlers(io: SocketIOServer, socket: Socket, userI
 // Helper function to get all active calls (for debugging)
 export async function getAllActiveCalls(): Promise<VoiceCallRecord[]> {
   try {
-    const { data, error } = await supabase
-      .from('voice_calls')
-      .select('*')
-      .in('status', ['initiated', 'ringing', 'connected'])
-      .order('started_at', { ascending: false });
+    const rows = await db.select().from(voiceCalls)
+      .where(inArray(voiceCalls.status, ['initiated', 'ringing', 'connected']))
+      .orderBy(desc(voiceCalls.startedAt));
 
-    if (error) {
-      console.error('❌ Error getting all active calls:', error);
-      return [];
-    }
-
-    return data || [];
+    return rows.map(toVoiceCallRecord);
   } catch (error) {
     console.error('❌ Exception getting all active calls:', error);
     return [];
@@ -562,26 +525,19 @@ export async function cleanupOldCalls(): Promise<number> {
   try {
     // End calls that have been active for more than 2 hours
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    
-    const { data, error } = await supabase
-      .from('voice_calls')
-      .update({ 
-        status: 'ended', 
-        end_reason: 'timeout',
-        ended_at: new Date().toISOString()
-      })
-      .in('status', ['initiated', 'ringing', 'connected'])
-      .lt('started_at', twoHoursAgo)
-      .select('call_id');
 
-    if (error) {
-      console.error('❌ Error cleaning up old calls:', error);
-      return 0;
-    }
+    const rows = await db.update(voiceCalls).set({
+      status: 'ended',
+      endReason: 'timeout',
+      endedAt: new Date().toISOString(),
+    })
+      .where(and(
+        inArray(voiceCalls.status, ['initiated', 'ringing', 'connected']),
+        lt(voiceCalls.startedAt, twoHoursAgo),
+      ))
+      .returning({ callId: voiceCalls.callId });
 
-    const cleanedCount = data?.length || 0;
-    if (cleanedCount > 0) {
-    }
+    const cleanedCount = rows?.length || 0;
 
     return cleanedCount;
   } catch (error) {

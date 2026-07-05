@@ -1,7 +1,9 @@
 import { Router } from 'express';
+import { and, eq, ne } from 'drizzle-orm';
 import { AuthRequest, requireAuth } from '../middleware/auth.js';
 import { NotificationService } from '../services/notificationService.js';
-import { supabase } from '../config/supabase.js';
+import { db } from '../config/db.js';
+import { notifications, pushTokens } from '../db/schema.js';
 import { cache, cacheKeys, NOTIFICATIONS_TTL, invalidateNotificationsCache } from '../services/cache.js';
 
 const router = Router();
@@ -22,52 +24,41 @@ router.post('/register-token', requireAuth, async (req: AuthRequest, res) => {
 
     // Ensure this token is not active for any other users
     try {
-      await supabase
-        .from('push_tokens')
-        .update({ enabled: false, updated_at: new Date().toISOString() })
-        .eq('token', token)
-        .neq('user_id', userId);
+      await db.update(pushTokens)
+        .set({ enabled: false, updatedAt: new Date().toISOString() })
+        .where(and(eq(pushTokens.token, token), ne(pushTokens.userId, userId)));
     } catch (cleanupError) {
       console.error('Error disabling token for other users:', cleanupError);
       // Continue; not fatal for the current user registration
     }
 
     // Check if token already exists for this user
-    const { data: existingToken } = await supabase
-      .from('push_tokens')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('token', token)
-      .maybeSingle();
+    const [existingToken] = await db.select({ id: pushTokens.id })
+      .from(pushTokens)
+      .where(and(eq(pushTokens.userId, userId), eq(pushTokens.token, token)))
+      .limit(1);
 
     if (existingToken) {
       // Update existing token
-      const { error: updateError } = await supabase
-        .from('push_tokens')
-        .update({
+      await db.update(pushTokens)
+        .set({
           enabled: true,
-          device_type: deviceType,
-          device_name: deviceName,
-          updated_at: new Date().toISOString(),
-          last_used_at: new Date().toISOString(),
+          deviceType,
+          deviceName,
+          updatedAt: new Date().toISOString(),
+          lastUsedAt: new Date().toISOString(),
         })
-        .eq('id', existingToken.id);
-
-      if (updateError) throw updateError;
+        .where(eq(pushTokens.id, existingToken.id));
       //console.log('✅ Push token updated');
     } else {
       // Insert new token
-      const { error: insertError } = await supabase
-        .from('push_tokens')
-        .insert({
-          user_id: userId,
-          token,
-          device_type: deviceType,
-          device_name: deviceName,
-          enabled: true,
-        });
-
-      if (insertError) throw insertError;
+      await db.insert(pushTokens).values({
+        userId,
+        token,
+        deviceType,
+        deviceName,
+        enabled: true,
+      });
       //console.log('✅ Push token registered');
     }
 
@@ -88,17 +79,13 @@ router.post('/unregister-token', requireAuth, async (req: AuthRequest, res) => {
     const userId = req.user!.id;
     const { token } = req.body as { token?: string };
 
-    const query = supabase
-      .from('push_tokens')
-      .update({ enabled: false, updated_at: new Date().toISOString() })
-      .eq('user_id', userId);
+    const condition = token
+      ? and(eq(pushTokens.userId, userId), eq(pushTokens.token, token))
+      : eq(pushTokens.userId, userId);
 
-    if (token) {
-      query.eq('token', token);
-    }
-
-    const { error } = await query;
-    if (error) throw error;
+    await db.update(pushTokens)
+      .set({ enabled: false, updatedAt: new Date().toISOString() })
+      .where(condition);
 
     res.json({ success: true, message: 'Push token(s) unregistered successfully' });
   } catch (error) {
@@ -246,15 +233,8 @@ router.patch('/mark-all-read', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
 
-    const { error } = await supabase
-      .from('notifications')
-      .update({ read: true })
-      .eq('recipient_id', userId)
-      .eq('read', false);
-
-    if (error) {
-      throw error;
-    }
+    await db.update(notifications).set({ read: true })
+      .where(and(eq(notifications.recipientId, userId), eq(notifications.read, false)));
 
     // This route updates the DB directly (not via the service), so invalidate here.
     await invalidateNotificationsCache(userId);
