@@ -5,7 +5,20 @@ import { logger } from '../config/logger.js'
 import { verifyJwt } from '../utils/jwt.js'
 import { setTyping, getTyping } from '../services/chat.js'
 import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction, invalidateChatCaches, consumeViewOnceMessage } from '../repos/chat.repo.js'
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, gt, inArray, ne, notExists, notInArray, or, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import {
+  blindDateMatches,
+  blocks,
+  chatDeletions,
+  chatMembers,
+  friendRequestsView,
+  friendships,
+  matchmakingProposals,
+  messageReceipts,
+  messages,
+  profiles,
+} from '../db/schema.js'
 import { getStatus } from '../services/matchmaking-optimized.js'
 import { NotificationService } from '../services/notificationService.js'
 import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, trackProfileVisited } from '../services/activityService.js'
@@ -18,60 +31,40 @@ import { Redis } from 'ioredis'
 // Helper function to calculate and emit unread count for a specific chat
 async function emitUnreadCountUpdate(chatId: string, userId: string) {
   try {
-    // Use a more efficient query with LEFT JOIN to get unread count directly
-    const { data, error } = await supabase.rpc('get_unread_count', {
-      p_chat_id: chatId,
-      p_user_id: userId
-    })
-    
-    if (error) {
-      // Fallback to the original method if RPC fails
-      console.warn('RPC failed, using fallback method:', error)
-      
-      // Get unread count for this specific chat and user
-      const { data: msgs, error: msgsErr } = await supabase
-        .from('messages')
-        .select('id,sender_id')
-        .eq('chat_id', chatId)
-        .eq('is_deleted', false)
-        .not('sender_id', 'eq', userId)
-      
-      if (msgsErr) {
-        console.error('Error fetching messages for unread count:', msgsErr)
-        return
-      }
-      
-      const msgIds = (msgs || []).map(m => m.id)
-      let readIds: string[] = []
-      
-      if (msgIds.length) {
-        const { data: reads, error: rErr } = await supabase
-          .from('message_receipts')
-          .select('message_id')
-          .eq('status', 'read')
-          .eq('user_id', userId)
-          .in('message_id', msgIds)
-        
-        if (rErr) {
-          console.error('Error fetching read receipts:', rErr)
-          return
-        }
-        
-        readIds = (reads || []).map(r => r.message_id)
-      }
-      
-      const unreadCount = msgIds.filter(id => !readIds.includes(id)).length
-      emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
-      return
-    }
-    
-    const unreadCount = data || 0
-    //console.log(`📊 Emitting unread count update: chat ${chatId}, user ${userId}, count ${unreadCount}`)
+    // Messages from others in this chat that this user has no 'read' receipt for
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(messages)
+      .where(and(
+        eq(messages.chatId, chatId),
+        eq(messages.isDeleted, false),
+        ne(messages.senderId, userId),
+        notExists(
+          db.select({ one: sql`1` })
+            .from(messageReceipts)
+            .where(and(
+              eq(messageReceipts.messageId, messages.id),
+              eq(messageReceipts.userId, userId),
+              eq(messageReceipts.status, 'read'),
+            ))
+        ),
+      ))
+
+    const unreadCount = row?.count ?? 0
     emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
-    
   } catch (error) {
     console.error('Error calculating/emitting unread count:', error)
   }
+}
+
+// All member user-ids of a chat, straight from Postgres (no cache).
+// Shared by handlers that fan events out to every member.
+async function fetchChatMemberIds(chatId: string): Promise<string[]> {
+  const rows = await db
+    .select({ userId: chatMembers.userId })
+    .from(chatMembers)
+    .where(eq(chatMembers.chatId, chatId))
+  return rows.map((r) => r.userId)
 }
 
 // When a user (re)connects, mark every message they received while offline as
@@ -80,34 +73,38 @@ async function emitUnreadCountUpdate(chatId: string, userId: string) {
 // WhatsApp behaviour. Idempotent: messages already delivered/read are skipped.
 async function flushPendingDeliveries(userId: string) {
   try {
-    const { data: memberships } = await supabase
-      .from('chat_members')
-      .select('chat_id')
-      .eq('user_id', userId)
-    const chatIds = (memberships || []).map(m => m.chat_id)
+    const memberships = await db
+      .select({ chatId: chatMembers.chatId })
+      .from(chatMembers)
+      .where(eq(chatMembers.userId, userId))
+    const chatIds = memberships.map(m => m.chatId)
     if (chatIds.length === 0) return
 
     // Recent messages from OTHERS across the user's chats.
-    const { data: msgs } = await supabase
-      .from('messages')
-      .select('id, sender_id, chat_id')
-      .in('chat_id', chatIds)
-      .neq('sender_id', userId)
-      .eq('is_deleted', false)
-      .order('created_at', { ascending: false })
+    const msgs = await db
+      .select({ id: messages.id, senderId: messages.senderId, chatId: messages.chatId })
+      .from(messages)
+      .where(and(
+        inArray(messages.chatId, chatIds),
+        ne(messages.senderId, userId),
+        eq(messages.isDeleted, false),
+      ))
+      .orderBy(desc(messages.createdAt))
       .limit(500)
-    if (!msgs || msgs.length === 0) return
+    if (msgs.length === 0) return
 
     const msgIds = msgs.map(m => m.id)
 
     // Skip any that already have a delivered/read receipt by this user.
-    const { data: receipts } = await supabase
-      .from('message_receipts')
-      .select('message_id')
-      .eq('user_id', userId)
-      .in('status', ['delivered', 'read'])
-      .in('message_id', msgIds)
-    const alreadyDone = new Set((receipts || []).map(r => r.message_id))
+    const receipts = await db
+      .select({ messageId: messageReceipts.messageId })
+      .from(messageReceipts)
+      .where(and(
+        eq(messageReceipts.userId, userId),
+        inArray(messageReceipts.status, ['delivered', 'read']),
+        inArray(messageReceipts.messageId, msgIds),
+      ))
+    const alreadyDone = new Set(receipts.map(r => r.messageId))
 
     const pending = msgs.filter(m => !alreadyDone.has(m.id))
     if (pending.length === 0) return
@@ -117,11 +114,11 @@ async function flushPendingDeliveries(userId: string) {
         await insertReceipt(m.id, userId, 'delivered')
         // chatId is required so the conversation screen's receipt handler
         // (which filters by chatId) actually applies the update.
-        emitToUser(m.sender_id, 'chat:message:delivery_receipt', {
+        emitToUser(m.senderId, 'chat:message:delivery_receipt', {
           messageId: m.id,
           userId,
           status: 'delivered',
-          chatId: m.chat_id,
+          chatId: m.chatId,
         })
       } catch (e) {
         logger.error({ error: e, messageId: m.id, userId }, 'Failed to flush delivery for message')
@@ -138,22 +135,21 @@ async function flushPendingDeliveries(userId: string) {
 // conversation can reflect it. "Online" = the user has >=1 live socket.
 async function broadcastPresenceToPartners(userId: string, isOnline: boolean) {
   try {
-    const { data: memberships } = await supabase
-      .from('chat_members')
-      .select('chat_id')
-      .eq('user_id', userId)
-    const chatIds = (memberships || []).map(m => m.chat_id)
+    const memberships = await db
+      .select({ chatId: chatMembers.chatId })
+      .from(chatMembers)
+      .where(eq(chatMembers.userId, userId))
+    const chatIds = memberships.map(m => m.chatId)
     if (chatIds.length === 0) return
 
-    const { data: others } = await supabase
-      .from('chat_members')
-      .select('chat_id, user_id')
-      .in('chat_id', chatIds)
-      .neq('user_id', userId)
+    const others = await db
+      .select({ chatId: chatMembers.chatId, userId: chatMembers.userId })
+      .from(chatMembers)
+      .where(and(inArray(chatMembers.chatId, chatIds), ne(chatMembers.userId, userId)))
 
-    for (const o of (others || [])) {
-      emitToUser(o.user_id, 'chat:presence', {
-        chatId: o.chat_id,
+    for (const o of others) {
+      emitToUser(o.userId, 'chat:presence', {
+        chatId: o.chatId,
         userId,           // who this presence is about
         isOnline,
         online: isOnline, // legacy field
@@ -212,15 +208,10 @@ async function getCachedChatMembers(chatId: string): Promise<string[] | null> {
       return JSON.parse(cached)
     }
     
-    const { data: members } = await supabase
-      .from('chat_members')
-      .select('user_id')
-      .eq('chat_id', chatId)
-    
-    if (members && members.length > 0) {
-      const userIds = members.map(m => m.user_id)
-      await redis.setex(cacheKey, CHAT_MEMBERS_CACHE_TTL, JSON.stringify(userIds))
-      return userIds
+    const memberIds = await fetchChatMemberIds(chatId)
+    if (memberIds.length > 0) {
+      await redis.setex(cacheKey, CHAT_MEMBERS_CACHE_TTL, JSON.stringify(memberIds))
+      return memberIds
     }
     return null
   } catch (error) {
@@ -238,14 +229,16 @@ async function isBlocked(userId1: string, userId2: string): Promise<boolean> {
       return cached === '1'
     }
     
-    const { data: blockCheck } = await supabase
-      .from('blocks')
-      .select('id')
-      .or(`and(blocker_id.eq.${userId1},blocked_id.eq.${userId2}),and(blocker_id.eq.${userId2},blocked_id.eq.${userId1})`)
+    const blockCheck = await db
+      .select({ id: blocks.id })
+      .from(blocks)
+      .where(or(
+        and(eq(blocks.blockerId, userId1), eq(blocks.blockedId, userId2)),
+        and(eq(blocks.blockerId, userId2), eq(blocks.blockedId, userId1)),
+      ))
       .limit(1)
-      .maybeSingle()
-    
-    const blocked = !!blockCheck
+
+    const blocked = blockCheck.length > 0
     await redis.setex(cacheKey, BLOCK_STATUS_CACHE_TTL, blocked ? '1' : '0')
     return blocked
   } catch (error) {
@@ -263,15 +256,19 @@ async function areFriends(userId1: string, userId2: string): Promise<boolean> {
       return cached === '1'
     }
     
-    const { data: friendship } = await supabase
-      .from('friendships')
-      .select('id')
-      .or(`and(user1_id.eq.${userId1},user2_id.eq.${userId2}),and(user1_id.eq.${userId2},user2_id.eq.${userId1})`)
-      .in('status', ['active', 'accepted'])
+    const friendship = await db
+      .select({ id: friendships.id })
+      .from(friendships)
+      .where(and(
+        or(
+          and(eq(friendships.user1Id, userId1), eq(friendships.user2Id, userId2)),
+          and(eq(friendships.user1Id, userId2), eq(friendships.user2Id, userId1)),
+        ),
+        inArray(friendships.status, ['active', 'accepted']),
+      ))
       .limit(1)
-      .maybeSingle()
-    
-    const friends = !!friendship
+
+    const friends = friendship.length > 0
     await redis.setex(cacheKey, FRIENDSHIP_CACHE_TTL, friends ? '1' : '0')
     return friends
   } catch (error) {
