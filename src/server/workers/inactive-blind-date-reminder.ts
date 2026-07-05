@@ -5,8 +5,10 @@
  * Runs every 6 hours to check for inactive matches
  */
 
+import { and, eq, inArray, lte } from 'drizzle-orm'
 import { logger } from '../config/logger.js'
-import { supabase } from '../config/supabase.js'
+import { db } from '../config/db.js'
+import { blindDateMatches, profiles } from '../db/schema.js'
 import { PushNotificationService } from '../services/pushNotificationService.js'
 import EmailService from '../services/emailService.js'
 
@@ -29,18 +31,20 @@ async function checkInactiveMatches() {
     const twentyFourHoursAgo = new Date(Date.now() - INACTIVITY_THRESHOLD).toISOString()
     
     // Get active blind date matches with no messages that are at least 24 hours old
-    const { data: inactiveMatches, error } = await supabase
-      .from('blind_date_matches')
-      .select('id, user_a, user_b, message_count, matched_at, status')
-      .eq('status', 'active')
-      .eq('message_count', 0)
-      .lte('matched_at', twentyFourHoursAgo)
-    
-    if (error) {
-      logger.error({ error }, 'Failed to fetch inactive matches')
-      return
-    }
-    
+    const rows = await db.select({
+      id: blindDateMatches.id,
+      user_a: blindDateMatches.userA,
+      user_b: blindDateMatches.userB,
+      message_count: blindDateMatches.messageCount,
+      matched_at: blindDateMatches.matchedAt,
+      status: blindDateMatches.status,
+    }).from(blindDateMatches).where(and(
+      eq(blindDateMatches.status, 'active'),
+      eq(blindDateMatches.messageCount, 0),
+      lte(blindDateMatches.matchedAt, twentyFourHoursAgo),
+    ))
+    const inactiveMatches = rows as BlindDateMatch[]
+
     if (!inactiveMatches || inactiveMatches.length === 0) {
       logger.info('No inactive matches found')
       return
@@ -62,13 +66,14 @@ async function checkInactiveMatches() {
 async function sendReminders(match: BlindDateMatch) {
   try {
     // Get user profiles
-    const { data: users, error } = await supabase
-      .from('profiles')
-      .select('id, first_name, email')
-      .in('id', [match.user_a, match.user_b])
-    
-    if (error || !users || users.length !== 2) {
-      logger.error({ error, matchId: match.id }, 'Failed to fetch user profiles')
+    const users = await db.select({
+      id: profiles.id,
+      first_name: profiles.firstName,
+      email: profiles.email,
+    }).from(profiles).where(inArray(profiles.id, [match.user_a, match.user_b]))
+
+    if (!users || users.length !== 2) {
+      logger.error({ matchId: match.id }, 'Failed to fetch user profiles')
       return
     }
     
@@ -98,13 +103,10 @@ async function sendReminders(match: BlindDateMatch) {
     }
     
     // Update match to track that reminder was sent
-    await supabase
-      .from('blind_date_matches')
-      .update({ 
-        reminder_sent_at: new Date().toISOString() 
-      })
-      .eq('id', match.id)
-    
+    await db.update(blindDateMatches).set({
+      reminderSentAt: new Date().toISOString(),
+    }).where(eq(blindDateMatches.id, match.id))
+
   } catch (error) {
     logger.error({ error, matchId: match.id }, 'Failed to send reminders for match')
   }
