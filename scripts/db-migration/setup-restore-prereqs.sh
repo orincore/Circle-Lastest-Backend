@@ -50,6 +50,13 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA extensions;
 CREATE EXTENSION IF NOT EXISTS "pgcrypto" SCHEMA extensions;
 GRANT USAGE ON SCHEMA extensions TO circle;
 
+-- KNOWN LIMITATION: this auth.users stub is permanently empty. The restore
+-- only succeeds today because explore_interactions (the only public table
+-- with FKs to auth.users) has zero rows on the live Supabase source. If that
+-- table ever gains rows before a future restore (including the eventual VPS
+-- restore), pg_restore will fail again on those FK constraints with "key is
+-- not present in table auth.users" - re-check explore_interactions' row
+-- count before relying on this script unchanged.
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY);
 GRANT USAGE ON SCHEMA auth TO circle;
