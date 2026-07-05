@@ -745,20 +745,14 @@ export async function initOptimizedSocket(server: Server) {
         io.to(room).emit('chat:typing', { chatId, users: usersTyping })
 
         // Notify other chat members for chat list badges
-        const { data: members } = await supabase
-          .from('chat_members')
-          .select('user_id')
-          .eq('chat_id', chatId)
-
-        if (members) {
-          for (const m of members) {
-            if (m.user_id !== currentUserId) {
-              emitToUser(m.user_id, 'chat:list:typing', {
-                chatId,
-                by: currentUserId,
-                isTyping: !!isTyping,
-              })
-            }
+        const memberIds = await fetchChatMemberIds(chatId)
+        for (const memberId of memberIds) {
+          if (memberId !== currentUserId) {
+            emitToUser(memberId, 'chat:list:typing', {
+              chatId,
+              by: currentUserId,
+              isTyping: !!isTyping,
+            })
           }
         }
       } catch (error) {
@@ -1875,47 +1869,51 @@ export async function initOptimizedSocket(server: Server) {
           
           // Send to individual members with sender info for notifications
           try {
-            const { data: members } = await supabase
-              .from('chat_members')
-              .select('user_id')
-              .eq('chat_id', chatId)
-            
-            const { data: senderInfo, error: senderError } = await supabase
-              .from('profiles')
-              .select('first_name, last_name, username, email')
-              .eq('id', userId)
-              .single()
-            
-            const { data: messageInfo } = await supabase
-              .from('messages')
-              .select('text')
-              .eq('id', messageId)
-              .single()
-            
-            if (senderError) {
+            const memberIds = await fetchChatMemberIds(chatId)
+
+            let senderInfo:
+              | { firstName: string | null; lastName: string | null; username: string | null; email: string | null }
+              | undefined
+            try {
+              const rows = await db
+                .select({
+                  firstName: profiles.firstName,
+                  lastName: profiles.lastName,
+                  username: profiles.username,
+                  email: profiles.email,
+                })
+                .from(profiles)
+                .where(eq(profiles.id, userId))
+                .limit(1)
+              senderInfo = rows[0]
+            } catch (senderError) {
               logger.error({ error: senderError, userId }, 'Error fetching sender info for reaction')
             }
-            
-            const senderName = senderInfo 
-              ? (senderInfo.first_name && senderInfo.last_name 
-                  ? `${senderInfo.first_name} ${senderInfo.last_name}`.trim()
+
+            const [messageInfo] = await db
+              .select({ text: messages.text })
+              .from(messages)
+              .where(eq(messages.id, messageId))
+              .limit(1)
+
+            const senderName = senderInfo
+              ? (senderInfo.firstName && senderInfo.lastName
+                  ? `${senderInfo.firstName} ${senderInfo.lastName}`.trim()
                   : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
               : 'Someone'
-            
-            if (members) {
-              members.forEach((member: { user_id: string }) => {
-                if (member.user_id !== userId) {
-                  io.to(member.user_id).emit('chat:reaction:added', { 
-                    chatId, 
-                    messageId, 
-                    reaction: { 
-                      ...reactionData, 
-                      senderName 
-                    },
-                    messageText: messageInfo?.text || 'a message'
-                  })
-                }
-              })
+
+            for (const memberId of memberIds) {
+              if (memberId !== userId) {
+                io.to(memberId).emit('chat:reaction:added', {
+                  chatId,
+                  messageId,
+                  reaction: {
+                    ...reactionData,
+                    senderName
+                  },
+                  messageText: messageInfo?.text || 'a message'
+                })
+              }
             }
           } catch (error) {
             logger.error({ error, chatId, messageId, userId }, 'Failed to send reaction notification')
@@ -1992,20 +1990,47 @@ export async function initOptimizedSocket(server: Server) {
         //console.log(`✅ Profile visit notification created for ${profileOwnerId}`)
         
         // Track profile visit activity for live feed
-        const { data: visitor } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name')
-          .eq('id', visitorId)
-          .single()
-        
-        const { data: profileOwner } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name')
-          .eq('id', profileOwnerId)
-          .single()
-        
-        if (visitor && profileOwner) {
-          await trackProfileVisited(visitor, profileOwner)
+        const [visitorRow] = await db
+          .select({
+            id: profiles.id,
+            firstName: profiles.firstName,
+            lastName: profiles.lastName,
+            profilePhotoUrl: profiles.profilePhotoUrl,
+            invisibleMode: profiles.invisibleMode,
+          })
+          .from(profiles)
+          .where(eq(profiles.id, visitorId))
+          .limit(1)
+
+        const [ownerRow] = await db
+          .select({
+            id: profiles.id,
+            firstName: profiles.firstName,
+            lastName: profiles.lastName,
+            profilePhotoUrl: profiles.profilePhotoUrl,
+            invisibleMode: profiles.invisibleMode,
+          })
+          .from(profiles)
+          .where(eq(profiles.id, profileOwnerId))
+          .limit(1)
+
+        if (visitorRow && ownerRow) {
+          await trackProfileVisited(
+            {
+              id: visitorRow.id,
+              first_name: visitorRow.firstName,
+              last_name: visitorRow.lastName,
+              profile_photo_url: visitorRow.profilePhotoUrl,
+              invisible_mode: visitorRow.invisibleMode,
+            },
+            {
+              id: ownerRow.id,
+              first_name: ownerRow.firstName,
+              last_name: ownerRow.lastName,
+              profile_photo_url: ownerRow.profilePhotoUrl,
+              invisible_mode: ownerRow.invisibleMode,
+            },
+          )
         }
       } catch (error) {
         console.error('❌ Error creating profile visit notification:', error)
