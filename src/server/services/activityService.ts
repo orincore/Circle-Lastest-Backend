@@ -95,19 +95,9 @@ async function sendActivityNotifications(activity: ActivityEvent): Promise<void>
 
     switch (type) {
       case ACTIVITY_TYPES.USER_JOINED:
-        // Notify nearby users about new user
-        await NotificationService.createNotification({
-          recipient_id: 'broadcast', // Special case for broadcast notifications
-          sender_id: data.user_id,
-          type: 'new_user_suggestion',
-          title: '🎉 New User Joined',
-          message: `${data.user_name} from ${data.location} just joined Circle!`,
-          data: { 
-            action: 'new_user_joined',
-            userId: data.user_id,
-            location: data.location
-          }
-        })
+        // No per-user notification insert here: 'new user joined' has no real
+        // recipient list (no nearby-users query exists), and the socket
+        // broadcast in createActivity() already fans this out to everyone connected.
         break
 
       case ACTIVITY_TYPES.USER_MATCHED:
@@ -138,19 +128,9 @@ async function sendActivityNotifications(activity: ActivityEvent): Promise<void>
         break
 
       case ACTIVITY_TYPES.FRIENDS_CONNECTED:
-        // Notify mutual friends about new connection
-        await NotificationService.createNotification({
-          recipient_id: 'broadcast', // Broadcast to mutual friends
-          sender_id: data.user1_id,
-          type: 'friend_request_accepted',
-          title: '🤝 New Connection',
-          message: `${data.user1_name} and ${data.user2_name} are now friends!`,
-          data: { 
-            action: 'friends_connected',
-            user1Id: data.user1_id,
-            user2Id: data.user2_id
-          }
-        })
+        // No per-user notification insert here: "notify mutual friends" has no
+        // real recipient list (no mutual-friends query exists), and the socket
+        // broadcast in createActivity() already fans this out to everyone connected.
         break
 
       case ACTIVITY_TYPES.PROFILE_VISITED:
@@ -166,19 +146,10 @@ async function sendActivityNotifications(activity: ActivityEvent): Promise<void>
         break
 
       case ACTIVITY_TYPES.INTEREST_UPDATED:
-        // Notify users with similar interests
-        await NotificationService.createNotification({
-          recipient_id: 'broadcast',
-          sender_id: data.user_id,
-          type: 'profile_suggestion',
-          title: '🎯 Similar Interests',
-          message: `${data.user_name} updated their interests and might be a great match!`,
-          data: { 
-            action: 'interest_updated',
-            userId: data.user_id,
-            interests: data.interests
-          }
-        })
+        // No per-user notification insert here: "notify users with similar
+        // interests" has no real recipient list (no interest-matching query
+        // exists), and the socket broadcast in createActivity() already fans
+        // this out to everyone connected.
         break
 
       default:

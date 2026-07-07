@@ -1,6 +1,9 @@
-import { supabase } from '../config/supabase.js'
+import { and, desc, eq, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
+import { db } from '../config/db.js'
+import { refunds, userSubscriptions, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
-import { PaymentGateway } from './payment.service.js'
+import { getRazorpayClient, isRazorpayConfigured } from '../config/razorpay.js'
 import EmailService from './emailService.js'
 
 export interface Refund {
@@ -9,23 +12,20 @@ export interface Refund {
   user_id: string
   amount: number
   currency: string
-  reason?: string
+  reason?: string | null
   status: 'pending' | 'approved' | 'rejected' | 'processed' | 'failed'
-  requested_at: Date
-  processed_at?: Date
-  processed_by?: string
-  payment_provider?: string
-  external_refund_id?: string
+  requested_at: string
+  processed_at?: string | null
+  processed_by?: string | null
+  payment_provider?: string | null
+  external_refund_id?: string | null
   refund_method: string
-  admin_notes?: string
+  admin_notes?: string | null
+  transaction_id?: string | null
   // Relations from joins
-  subscription?: any
-  user?: any
-}
-
-export interface RefundRequest {
-  subscription_id: string
-  reason?: string
+  subscription?: { plan_type: string; started_at: string; external_subscription_id?: string | null } | null
+  user?: { username: string | null; email: string | null } | null
+  processed_by_profile?: { username: string | null } | null
 }
 
 export interface RefundStats {
@@ -39,6 +39,92 @@ export interface RefundStats {
   pending_amount: number
 }
 
+const processedByProfiles = alias(profiles, 'refund_processed_by_profiles')
+const userProfiles = alias(profiles, 'refund_user_profiles')
+
+interface RefundJoinRow {
+  id: string
+  subscription_id: string
+  user_id: string
+  amount: string
+  currency: string | null
+  reason: string | null
+  status: string
+  requested_at: string
+  processed_at: string | null
+  processed_by: string | null
+  payment_provider: string | null
+  external_refund_id: string | null
+  refund_method: string | null
+  admin_notes: string | null
+  transaction_id: string | null
+  sub_plan_id: string | null
+  sub_started_at: string | null
+  sub_apple_original_transaction_id: string | null
+  sub_google_purchase_token: string | null
+  sub_razorpay_subscription_id: string | null
+  sub_source: string | null
+  user_username: string | null
+  user_email: string | null
+  processed_by_username: string | null
+}
+
+function baseRefundSelect() {
+  return {
+    id: refunds.id,
+    subscription_id: refunds.subscriptionId,
+    user_id: refunds.userId,
+    amount: refunds.amount,
+    currency: refunds.currency,
+    reason: refunds.reason,
+    status: refunds.status,
+    requested_at: refunds.requestedAt,
+    processed_at: refunds.processedAt,
+    processed_by: refunds.processedBy,
+    payment_provider: refunds.paymentProvider,
+    external_refund_id: refunds.externalRefundId,
+    refund_method: refunds.refundMethod,
+    admin_notes: refunds.adminNotes,
+    transaction_id: refunds.transactionId,
+    sub_plan_id: userSubscriptions.planId,
+    sub_started_at: userSubscriptions.startedAt,
+    sub_apple_original_transaction_id: userSubscriptions.appleOriginalTransactionId,
+    sub_google_purchase_token: userSubscriptions.googlePurchaseToken,
+    sub_razorpay_subscription_id: userSubscriptions.razorpaySubscriptionId,
+    sub_source: userSubscriptions.source,
+    user_username: userProfiles.username,
+    user_email: userProfiles.email,
+    processed_by_username: processedByProfiles.username,
+  }
+}
+
+function mapRefundRow(row: RefundJoinRow): Refund {
+  return {
+    id: row.id,
+    subscription_id: row.subscription_id,
+    user_id: row.user_id,
+    amount: Number(row.amount),
+    currency: row.currency || 'INR',
+    reason: row.reason,
+    status: row.status as Refund['status'],
+    requested_at: row.requested_at,
+    processed_at: row.processed_at,
+    processed_by: row.processed_by,
+    payment_provider: row.payment_provider,
+    external_refund_id: row.external_refund_id,
+    refund_method: row.refund_method || 'original_payment_method',
+    admin_notes: row.admin_notes,
+    transaction_id: row.transaction_id,
+    subscription: row.sub_plan_id ? {
+      plan_type: row.sub_plan_id,
+      started_at: row.sub_started_at!,
+      external_subscription_id: row.sub_apple_original_transaction_id || row.sub_google_purchase_token || row.sub_razorpay_subscription_id || null,
+    } : null,
+    user: row.user_username !== null ? { username: row.user_username, email: row.user_email } : null,
+    processed_by_profile: row.processed_by_username !== null ? { username: row.processed_by_username } : null,
+  }
+}
+
 export class RefundService {
   // Request a refund for a subscription
   static async requestRefund(
@@ -47,76 +133,48 @@ export class RefundService {
     reason?: string
   ): Promise<Refund> {
     try {
-      // Check if subscription exists and belongs to user
-      const { data: subscription, error: subError } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .eq('id', subscriptionId)
-        .eq('user_id', userId)
-        .single()
+      const [subscription] = await db.select().from(userSubscriptions)
+        .where(and(eq(userSubscriptions.id, subscriptionId), eq(userSubscriptions.userId, userId)))
+        .limit(1)
 
-      if (subError || !subscription) {
+      if (!subscription) {
         throw new Error('Subscription not found or does not belong to user')
       }
 
-      // Check if subscription is eligible for refund
-      const { data: isEligible, error: eligibilityError } = await supabase
-        .rpc('is_refund_eligible', { subscription_uuid: subscriptionId })
-
-      if (eligibilityError) {
-        throw new Error('Error checking refund eligibility')
-      }
-
+      const isEligible = await this.checkRefundEligibility(subscriptionId)
       if (!isEligible) {
-        throw new Error('Subscription is not eligible for refund. Refunds are only available within 7 days of purchase and for premium subscriptions.')
+        throw new Error('Subscription is not eligible for refund. Refunds are only available within 7 days of purchase.')
       }
 
-      // Check if refund already requested
-      const { data: existingRefund } = await supabase
-        .from('refunds')
-        .select('id, status')
-        .eq('subscription_id', subscriptionId)
-        .eq('status', 'pending')
-        .single()
+      const [existingRefund] = await db.select({ id: refunds.id }).from(refunds)
+        .where(and(eq(refunds.subscriptionId, subscriptionId), eq(refunds.status, 'pending')))
+        .limit(1)
 
       if (existingRefund) {
         throw new Error('Refund request already pending for this subscription')
       }
 
-      // Create refund request
-      const { data: refund, error: refundError } = await supabase
-        .from('refunds')
-        .insert({
-          subscription_id: subscriptionId,
-          user_id: userId,
-          amount: subscription.price_paid || 0,
-          currency: subscription.currency || 'USD',
-          reason: reason || 'User requested refund',
-          payment_provider: subscription.payment_provider,
-          refund_method: 'original_payment_method'
-        })
-        .select()
-        .single()
+      const [refund] = await db.insert(refunds).values({
+        subscriptionId,
+        userId,
+        amount: subscription.amount || '0',
+        currency: subscription.currency || 'INR',
+        reason: reason || 'User requested refund',
+        paymentProvider: subscription.source,
+        refundMethod: 'original_payment_method',
+      }).returning()
 
-      if (refundError) {
-        throw refundError
-      }
-
-      // Send notification email to user
       try {
-        const { data: userProfile } = await supabase
-          .from('profiles')
-          .select('email, username')
-          .eq('id', userId)
-          .single()
+        const [userProfile] = await db.select({ email: profiles.email, username: profiles.username })
+          .from(profiles).where(eq(profiles.id, userId)).limit(1)
 
         if (userProfile?.email) {
           await EmailService.sendRefundRequestConfirmation(
             userProfile.email,
             userProfile.username || 'User',
-            subscription.plan_type,
-            refund.amount,
-            refund.currency,
+            subscription.planId,
+            Number(refund.amount),
+            refund.currency || 'INR',
             refund.id
           )
         }
@@ -125,9 +183,48 @@ export class RefundService {
       }
 
       logger.info({ userId, subscriptionId, refundId: refund.id }, 'Refund request created')
-      return refund
+      return {
+        id: refund.id,
+        subscription_id: refund.subscriptionId,
+        user_id: refund.userId,
+        amount: Number(refund.amount),
+        currency: refund.currency || 'INR',
+        reason: refund.reason,
+        status: refund.status as Refund['status'],
+        requested_at: refund.requestedAt,
+        processed_at: refund.processedAt,
+        processed_by: refund.processedBy,
+        payment_provider: refund.paymentProvider,
+        external_refund_id: refund.externalRefundId,
+        refund_method: refund.refundMethod || 'original_payment_method',
+        admin_notes: refund.adminNotes,
+        transaction_id: refund.transactionId,
+        subscription: {
+          plan_type: subscription.planId,
+          started_at: subscription.startedAt,
+          external_subscription_id: subscription.appleOriginalTransactionId || subscription.googlePurchaseToken || subscription.razorpaySubscriptionId || null,
+        },
+      }
     } catch (error) {
       logger.error({ error, userId, subscriptionId }, 'Error requesting refund')
+      throw error
+    }
+  }
+
+  // Get a single refund by id
+  static async getRefundById(refundId: string): Promise<Refund | null> {
+    try {
+      const [row] = await db.select(baseRefundSelect())
+        .from(refunds)
+        .leftJoin(userSubscriptions, eq(userSubscriptions.id, refunds.subscriptionId))
+        .leftJoin(userProfiles, eq(userProfiles.id, refunds.userId))
+        .leftJoin(processedByProfiles, eq(processedByProfiles.id, refunds.processedBy))
+        .where(eq(refunds.id, refundId))
+        .limit(1)
+
+      return row ? mapRefundRow(row) : null
+    } catch (error) {
+      logger.error({ error, refundId }, 'Error getting refund by id')
       throw error
     }
   }
@@ -135,18 +232,15 @@ export class RefundService {
   // Get user's refund requests
   static async getUserRefunds(userId: string): Promise<Refund[]> {
     try {
-      const { data, error } = await supabase
-        .from('refunds')
-        .select(`
-          *,
-          subscription:subscriptions(plan_type, started_at),
-          processed_by_profile:profiles!refunds_processed_by_fkey(username)
-        `)
-        .eq('user_id', userId)
-        .order('requested_at', { ascending: false })
+      const rows = await db.select(baseRefundSelect())
+        .from(refunds)
+        .leftJoin(userSubscriptions, eq(userSubscriptions.id, refunds.subscriptionId))
+        .leftJoin(userProfiles, eq(userProfiles.id, refunds.userId))
+        .leftJoin(processedByProfiles, eq(processedByProfiles.id, refunds.processedBy))
+        .where(eq(refunds.userId, userId))
+        .orderBy(desc(refunds.requestedAt))
 
-      if (error) throw error
-      return data || []
+      return rows.map(mapRefundRow)
     } catch (error) {
       logger.error({ error, userId }, 'Error getting user refunds')
       throw error
@@ -160,27 +254,22 @@ export class RefundService {
     offset = 0
   ): Promise<{ refunds: Refund[]; total: number }> {
     try {
-      let query = supabase
-        .from('refunds')
-        .select(`
-          *,
-          subscription:subscriptions(plan_type, started_at, external_subscription_id),
-          user:profiles!refunds_user_id_fkey(username, email),
-          processed_by_profile:profiles!refunds_processed_by_fkey(username)
-        `, { count: 'exact' })
-        .order('requested_at', { ascending: false })
+      const whereClause = status ? eq(refunds.status, status) : undefined
 
-      if (status) {
-        query = query.eq('status', status)
-      }
+      const rows = await db.select(baseRefundSelect())
+        .from(refunds)
+        .leftJoin(userSubscriptions, eq(userSubscriptions.id, refunds.subscriptionId))
+        .leftJoin(userProfiles, eq(userProfiles.id, refunds.userId))
+        .leftJoin(processedByProfiles, eq(processedByProfiles.id, refunds.processedBy))
+        .where(whereClause)
+        .orderBy(desc(refunds.requestedAt))
+        .limit(limit)
+        .offset(offset)
 
-      const { data, error, count } = await query
-        .range(offset, offset + limit - 1)
-
-      if (error) throw error
+      const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(refunds).where(whereClause)
 
       return {
-        refunds: data || [],
+        refunds: rows.map(mapRefundRow),
         total: count || 0
       }
     } catch (error) {
@@ -197,81 +286,48 @@ export class RefundService {
     adminNotes?: string
   ): Promise<Refund> {
     try {
-      // Get refund details
-      const { data: refund, error: refundError } = await supabase
-        .from('refunds')
-        .select(`
-          *,
-          subscription:subscriptions(*),
-          user:profiles!refunds_user_id_fkey(username, email)
-        `)
-        .eq('id', refundId)
-        .single()
+      const [row] = await db.select(baseRefundSelect())
+        .from(refunds)
+        .leftJoin(userSubscriptions, eq(userSubscriptions.id, refunds.subscriptionId))
+        .leftJoin(userProfiles, eq(userProfiles.id, refunds.userId))
+        .leftJoin(processedByProfiles, eq(processedByProfiles.id, refunds.processedBy))
+        .where(eq(refunds.id, refundId))
+        .limit(1)
 
-      if (refundError || !refund) {
+      if (!row) {
         throw new Error('Refund not found')
       }
 
-      if (refund.status !== 'pending') {
+      if (row.status !== 'pending') {
         throw new Error('Refund has already been processed')
       }
 
       const newStatus = action === 'approve' ? 'approved' : 'rejected'
+      const processedAt = new Date().toISOString()
 
-      // Update refund status
-      const { data: updatedRefund, error: updateError } = await supabase
-        .from('refunds')
-        .update({
+      await db.update(refunds)
+        .set({
           status: newStatus,
-          processed_at: new Date().toISOString(),
-          processed_by: adminUserId,
-          admin_notes: adminNotes
+          processedAt,
+          processedBy: adminUserId,
+          adminNotes: adminNotes || null,
         })
-        .eq('id', refundId)
-        .select()
-        .single()
+        .where(eq(refunds.id, refundId))
 
-      if (updateError) {
-        throw updateError
-      }
+      const refund = mapRefundRow({
+        ...row,
+        status: newStatus,
+        processed_at: processedAt,
+        processed_by: adminUserId,
+        admin_notes: adminNotes || null,
+      })
 
-      // If approved, process the actual refund through payment gateway
-      if (action === 'approve') {
-        try {
-          await this.processPaymentRefund(updatedRefund)
-        } catch (paymentError) {
-          // Mark refund as failed if payment processing fails
-          const errorMessage = paymentError instanceof Error ? paymentError.message : 'Unknown payment error'
-          await supabase
-            .from('refunds')
-            .update({
-              status: 'failed',
-              admin_notes: `Payment processing failed: ${errorMessage}`
-            })
-            .eq('id', refundId)
-
-          throw new Error(`Refund approved but payment processing failed: ${errorMessage}`)
-        }
-      }
-
-      // Send notification email to user
       try {
-        if (refund.user?.email) {
+        if (row.user_email) {
           if (action === 'approve') {
-            await EmailService.sendRefundApprovalEmail(
-              refund.user.email,
-              refund.user.username || 'User',
-              refund.subscription.plan_type,
-              refund.amount,
-              refund.currency
-            )
+            await EmailService.sendRefundApprovalEmail(row.user_email, row.user_username || 'User', row.sub_plan_id || '', Number(refund.amount), refund.currency)
           } else {
-            await EmailService.sendRefundRejectionEmail(
-              refund.user.email,
-              refund.user.username || 'User',
-              refund.subscription.plan_type,
-              adminNotes || 'No reason provided'
-            )
+            await EmailService.sendRefundRejectionEmail(row.user_email, row.user_username || 'User', row.sub_plan_id || '', adminNotes || 'No reason provided')
           }
         }
       } catch (emailError) {
@@ -279,38 +335,47 @@ export class RefundService {
       }
 
       logger.info({ refundId, action, adminUserId }, 'Refund processed')
-      return updatedRefund
+      return refund
     } catch (error) {
       logger.error({ error, refundId, action }, 'Error processing refund')
       throw error
     }
   }
 
-  // Process actual payment refund through payment gateway
-  private static async processPaymentRefund(refund: Refund): Promise<void> {
+  // Actually move money: only Razorpay (web) supports server-initiated refunds via API.
+  // App Store / Play Store purchases must be refunded by the platform itself
+  // (App Store Connect / Play Console) -- there is no equivalent server API call.
+  static async processPaymentRefund(refund: Refund): Promise<{ id: string }> {
     try {
-      if (!refund.payment_provider || !refund.subscription?.external_subscription_id) {
-        throw new Error('Missing payment provider or external subscription ID')
+      if (refund.payment_provider === 'web') {
+        if (!isRazorpayConfigured()) {
+          throw new Error('Razorpay is not configured; cannot process web refund automatically')
+        }
+        const paymentId = refund.subscription?.external_subscription_id
+        if (!paymentId) {
+          throw new Error('Missing Razorpay payment id for this subscription')
+        }
+
+        const razorpay = getRazorpayClient()
+        const razorpayRefund = await razorpay.payments.refund(paymentId, {
+          amount: Math.round(refund.amount * 100),
+        })
+
+        await db.update(refunds).set({
+          status: 'processed',
+          externalRefundId: razorpayRefund.id,
+          adminNotes: `${refund.admin_notes || ''}\nPayment refund processed via Razorpay. External ID: ${razorpayRefund.id}`,
+        }).where(eq(refunds.id, refund.id))
+
+        logger.info({ refundId: refund.id, externalRefundId: razorpayRefund.id }, 'Razorpay refund processed')
+        return { id: razorpayRefund.id }
       }
 
-      // Process refund through payment gateway
-      const paymentRefund = await PaymentGateway.processRefund(
-        refund.subscription.external_subscription_id,
-        refund.amount,
-        refund.currency
+      // ios / android: no API-triggered refund is possible.
+      throw new Error(
+        `Automatic refund processing is not available for ${refund.payment_provider} purchases. ` +
+        'Process this refund manually in App Store Connect / Google Play Console, then update this record.'
       )
-
-      // Update refund with payment gateway response
-      await supabase
-        .from('refunds')
-        .update({
-          status: 'processed',
-          external_refund_id: paymentRefund.id,
-          admin_notes: `Payment refund processed successfully. External ID: ${paymentRefund.id}`
-        })
-        .eq('id', refund.id)
-
-      logger.info({ refundId: refund.id, externalRefundId: paymentRefund.id }, 'Payment refund processed')
     } catch (error) {
       logger.error({ error, refundId: refund.id }, 'Error processing payment refund')
       throw error
@@ -320,11 +385,10 @@ export class RefundService {
   // Get refund statistics for admin dashboard
   static async getRefundStats(): Promise<RefundStats> {
     try {
-      const { data, error } = await supabase.rpc('get_refund_stats')
+      const result = await db.execute(sql`SELECT get_refund_stats() AS stats`)
+      const stats = (result.rows[0] as any)?.stats
 
-      if (error) throw error
-
-      return data || {
+      return stats || {
         total_requests: 0,
         pending: 0,
         approved: 0,
@@ -343,11 +407,8 @@ export class RefundService {
   // Check if subscription is eligible for refund
   static async checkRefundEligibility(subscriptionId: string): Promise<boolean> {
     try {
-      const { data, error } = await supabase
-        .rpc('is_refund_eligible', { subscription_uuid: subscriptionId })
-
-      if (error) throw error
-      return data || false
+      const result = await db.execute(sql`SELECT is_refund_eligible(${subscriptionId}::uuid) AS eligible`)
+      return Boolean((result.rows[0] as any)?.eligible)
     } catch (error) {
       logger.error({ error, subscriptionId }, 'Error checking refund eligibility')
       return false

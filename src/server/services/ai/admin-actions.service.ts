@@ -1,6 +1,6 @@
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, sql } from 'drizzle-orm'
 import { db } from '../../config/db.js'
-import { subscriptions, refunds, profiles } from '../../db/schema.js'
+import { userSubscriptions, refunds, profiles } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 import type { AIResponse } from './together-ai.service.js'
 
@@ -18,24 +18,24 @@ export class AdminActionsService {
       let subscriptionRows
       try {
         subscriptionRows = await db.select({
-          id: subscriptions.id,
-          user_id: subscriptions.userId,
-          plan_type: subscriptions.planType,
-          status: subscriptions.status,
-          started_at: subscriptions.startedAt,
-          expires_at: subscriptions.expiresAt,
-          payment_provider: subscriptions.paymentProvider,
-          external_subscription_id: subscriptions.externalSubscriptionId,
-          price_paid: subscriptions.pricePaid,
-          currency: subscriptions.currency,
-          auto_renew: subscriptions.autoRenew,
-          cancelled_at: subscriptions.cancelledAt,
-          created_at: subscriptions.createdAt,
-          updated_at: subscriptions.updatedAt,
+          id: userSubscriptions.id,
+          user_id: userSubscriptions.userId,
+          plan_type: userSubscriptions.planId,
+          status: userSubscriptions.status,
+          started_at: userSubscriptions.startedAt,
+          expires_at: userSubscriptions.expiresAt,
+          payment_provider: userSubscriptions.source,
+          external_subscription_id: sql<string | null>`coalesce(${userSubscriptions.appleOriginalTransactionId}, ${userSubscriptions.googlePurchaseToken}, ${userSubscriptions.razorpaySubscriptionId})`,
+          price_paid: userSubscriptions.amount,
+          currency: userSubscriptions.currency,
+          auto_renew: userSubscriptions.autoRenew,
+          cancelled_at: userSubscriptions.cancelledAt,
+          created_at: userSubscriptions.createdAt,
+          updated_at: userSubscriptions.updatedAt,
         })
-          .from(subscriptions)
-          .where(eq(subscriptions.userId, userId))
-          .orderBy(desc(subscriptions.startedAt))
+          .from(userSubscriptions)
+          .where(eq(userSubscriptions.userId, userId))
+          .orderBy(desc(userSubscriptions.startedAt))
       } catch (error) {
         return {
           success: false,
@@ -97,7 +97,7 @@ export class AdminActionsService {
       let refundAmount = activeSubscription.price_paid
       if (!refundAmount || refundAmount === 0) {
         // Fallback to default plan prices if price_paid is not set
-        refundAmount = activeSubscription.plan_type === 'premium' ? 9.99 : 19.99
+        refundAmount = activeSubscription.plan_type === 'yearly' ? 1769 : 176
         logger.warn({ userId, subscriptionId: activeSubscription.id }, 'price_paid is null, using default plan price')
       }
 
@@ -111,7 +111,7 @@ export class AdminActionsService {
           daysSinceStart,
           subscription: activeSubscription,
           refundAmount: refundAmount,
-          currency: activeSubscription.currency || 'USD'
+          currency: activeSubscription.currency || 'INR'
         }
       }
     } catch (error) {
@@ -149,6 +149,7 @@ export class AdminActionsService {
           currency: currency,
           reason: reason,
           status: 'approved',
+          paymentProvider: subscription.payment_provider,
           requestedAt: nowIso,
           processedAt: nowIso,
           // processedBy removed - field expects UUID, not string
@@ -164,13 +165,12 @@ export class AdminActionsService {
 
       // Cancel the subscription
       try {
-        await db.update(subscriptions)
+        await db.update(userSubscriptions)
           .set({
             status: 'cancelled',
             cancelledAt: new Date().toISOString()
-            // cancellation_reason field doesn't exist in schema
           })
-          .where(eq(subscriptions.id, subscription.id))
+          .where(eq(userSubscriptions.id, subscription.id))
       } catch (cancelError) {
         logger.error({ error: cancelError, userId, subscriptionId: subscription.id }, 'Error cancelling subscription')
       }
@@ -234,14 +234,12 @@ export class AdminActionsService {
       const { activeSubscription } = subscriptionResult.data
 
       try {
-        await db.update(subscriptions)
+        await db.update(userSubscriptions)
           .set({
             status: 'cancelled',
             cancelledAt: new Date().toISOString()
-            // cancellation_reason field doesn't exist in schema
-            // reason is logged in the service call
           })
-          .where(eq(subscriptions.id, activeSubscription.id))
+          .where(eq(userSubscriptions.id, activeSubscription.id))
       } catch (error) {
         logger.error({ error, userId, subscriptionId: activeSubscription.id }, 'Error cancelling subscription')
         return {

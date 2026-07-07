@@ -19,7 +19,6 @@ import {
   friendships,
   messages,
   userReports,
-  subscriptions,
   userSubscriptions,
   refunds,
   faceVerifications,
@@ -119,39 +118,22 @@ function mapReportRow(row: typeof userReports.$inferSelect) {
   }
 }
 
-function mapSubscriptionRow(row: typeof subscriptions.$inferSelect) {
-  return {
-    id: row.id,
-    user_id: row.userId,
-    plan_type: row.planType,
-    status: row.status,
-    started_at: row.startedAt,
-    expires_at: row.expiresAt,
-    payment_provider: row.paymentProvider,
-    external_subscription_id: row.externalSubscriptionId,
-    price_paid: row.pricePaid !== null && row.pricePaid !== undefined ? Number(row.pricePaid) : null,
-    currency: row.currency,
-    auto_renew: row.autoRenew,
-    cancelled_at: row.cancelledAt,
-    created_at: row.createdAt,
-    updated_at: row.updatedAt,
-  }
-}
-
 function mapUserSubscriptionRow(row: typeof userSubscriptions.$inferSelect) {
   return {
     id: row.id,
     user_id: row.userId,
-    plan_type: row.planType,
+    plan_type: row.planId,
     status: row.status,
+    source: row.source,
     started_at: row.startedAt,
     expires_at: row.expiresAt,
     cancelled_at: row.cancelledAt,
-    payment_gateway: row.paymentGateway,
-    gateway_subscription_id: row.gatewaySubscriptionId,
+    auto_renew: row.autoRenew,
     amount: row.amount !== null && row.amount !== undefined ? Number(row.amount) : null,
     currency: row.currency,
-    auto_renew: row.autoRenew,
+    apple_original_transaction_id: row.appleOriginalTransactionId,
+    google_purchase_token: row.googlePurchaseToken,
+    razorpay_subscription_id: row.razorpaySubscriptionId,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   }
@@ -457,17 +439,11 @@ router.get('/:userId', requireAuth, requireAdmin, async (req: AdminRequest, res)
       .limit(50)
     const recentReports = recentReportRows.map(mapReportRow)
 
-    const subscriptionRows = await db.select().from(subscriptions)
-      .where(eq(subscriptions.userId, userId))
-      .orderBy(desc(subscriptions.createdAt))
-      .limit(subscriptionsLimitNum)
-    const userSubscriptionsOut = subscriptionRows.map(mapSubscriptionRow)
-
-    const cashfreeRows = await db.select().from(userSubscriptions)
+    const subscriptionRows = await db.select().from(userSubscriptions)
       .where(eq(userSubscriptions.userId, userId))
       .orderBy(desc(userSubscriptions.createdAt))
       .limit(subscriptionsLimitNum)
-    const cashfreeSubscriptionsOut = cashfreeRows.map(mapUserSubscriptionRow)
+    const userSubscriptionsOut = subscriptionRows.map(mapUserSubscriptionRow)
 
     const processedByProfiles = alias(profiles, 'refund_processed_by_profiles')
     const refundRows = await db.select({
@@ -487,12 +463,12 @@ router.get('/:userId', requireAuth, requireAdmin, async (req: AdminRequest, res)
       admin_notes: refunds.adminNotes,
       created_at: refunds.createdAt,
       updated_at: refunds.updatedAt,
-      subscription_plan_type: subscriptions.planType,
-      subscription_started_at: subscriptions.startedAt,
+      subscription_plan_type: userSubscriptions.planId,
+      subscription_started_at: userSubscriptions.startedAt,
       processed_by_username: processedByProfiles.username,
     })
       .from(refunds)
-      .leftJoin(subscriptions, eq(subscriptions.id, refunds.subscriptionId))
+      .leftJoin(userSubscriptions, eq(userSubscriptions.id, refunds.subscriptionId))
       .leftJoin(processedByProfiles, eq(processedByProfiles.id, refunds.processedBy))
       .where(eq(refunds.userId, userId))
       .orderBy(desc(refunds.requestedAt))
@@ -555,8 +531,7 @@ router.get('/:userId', requireAuth, requireAdmin, async (req: AdminRequest, res)
         reports: recentReports || []
       },
       subscriptions: {
-        subscriptions: userSubscriptionsOut || [],
-        cashfreeSubscriptions: cashfreeSubscriptionsOut || []
+        subscriptions: userSubscriptionsOut || []
       },
       refunds: refundsOut || [],
       verification: {

@@ -1,37 +1,51 @@
 import express from 'express'
+import { and, desc, eq } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { userSubscriptions, profiles } from '../db/schema.js'
 import { SubscriptionService } from '../services/subscription.service.js'
 import { requireAuth } from '../middleware/auth.js'
-import { requireAdmin, type AdminRequest, logAdminAction } from '../middleware/adminAuth.js'
+import { requireAdmin, type AdminRequest } from '../middleware/adminAuth.js'
 import { logger } from '../config/logger.js'
-import { supabase } from '../config/supabase.js'
 import EmailService from '../services/emailService.js'
 
 const router = express.Router()
 
+const VALID_PLANS = ['monthly', 'yearly']
+const VALID_STATUSES = ['active', 'cancelled', 'expired', 'grace_period', 'pending']
+
+function formatSubscription(row: typeof userSubscriptions.$inferSelect & { user_email?: string | null; user_username?: string | null }) {
+  return {
+    id: row.id,
+    user_id: row.userId,
+    plan_type: row.planId,
+    status: row.status,
+    source: row.source,
+    started_at: row.startedAt,
+    expires_at: row.expiresAt,
+    cancelled_at: row.cancelledAt,
+    auto_renew: row.autoRenew,
+    price_paid: row.amount !== null && row.amount !== undefined ? Number(row.amount) : null,
+    currency: row.currency,
+    payment_provider: row.source,
+    external_subscription_id: row.appleOriginalTransactionId || row.googlePurchaseToken || row.razorpaySubscriptionId || null,
+    user_email: row.user_email,
+    user_username: row.user_username,
+  }
+}
+
 // Get all subscriptions with user info (admin only)
 router.get('/', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
-    const { data: subscriptions, error } = await supabase
-      .from('subscriptions')
-      .select(`
-        *,
-        profiles:user_id (
-          email,
-          username
-        )
-      `)
-      .order('created_at', { ascending: false })
+    const rows = await db.select({
+      sub: userSubscriptions,
+      user_email: profiles.email,
+      user_username: profiles.username,
+    })
+      .from(userSubscriptions)
+      .leftJoin(profiles, eq(profiles.id, userSubscriptions.userId))
+      .orderBy(desc(userSubscriptions.createdAt))
 
-    if (error) {
-      throw error
-    }
-
-    // Format the response to include user info at the top level
-    const formattedSubscriptions = subscriptions.map(sub => ({
-      ...sub,
-      user_email: sub.profiles?.email,
-      user_username: sub.profiles?.username
-    }))
+    const formattedSubscriptions = rows.map(row => formatSubscription({ ...row.sub, user_email: row.user_email, user_username: row.user_username }))
 
     res.json({
       subscriptions: formattedSubscriptions,
@@ -60,87 +74,56 @@ router.put('/:subscriptionId', requireAuth, requireAdmin, async (req: AdminReque
     const { subscriptionId } = req.params
     const { plan_type, status, expires_at } = req.body
 
-    // Validate input
-    const validPlans = ['free', 'premium', 'premium_plus']
-    const validStatuses = ['active', 'cancelled', 'expired', 'pending']
-
-    if (plan_type && !validPlans.includes(plan_type)) {
+    if (plan_type && !VALID_PLANS.includes(plan_type)) {
       return res.status(400).json({ error: 'Invalid plan type' })
     }
 
-    if (status && !validStatuses.includes(status)) {
+    if (status && !VALID_STATUSES.includes(status)) {
       return res.status(400).json({ error: 'Invalid status' })
     }
 
-    // Build update object
-    const updateData: any = {}
-    if (plan_type) updateData.plan_type = plan_type
+    const updateData: Partial<typeof userSubscriptions.$inferInsert> = {
+      updatedAt: new Date().toISOString(),
+    }
+    if (plan_type) updateData.planId = plan_type
     if (status) updateData.status = status
     if (expires_at !== undefined) {
-      updateData.expires_at = expires_at ? new Date(expires_at).toISOString() : null
+      updateData.expiresAt = expires_at ? new Date(expires_at).toISOString() : updateData.expiresAt
     }
-    updateData.updated_at = new Date().toISOString()
 
-    // Update subscription
-    const { data, error } = await supabase
-      .from('subscriptions')
-      .update(updateData)
-      .eq('id', subscriptionId)
-      .select()
-      .single()
-
-    if (error) {
-      throw error
-    }
+    const [data] = await db.update(userSubscriptions)
+      .set(updateData)
+      .where(eq(userSubscriptions.id, subscriptionId))
+      .returning()
 
     if (!data) {
       return res.status(404).json({ error: 'Subscription not found' })
     }
 
-    // Send sponsored subscription email if status changed to active or plan upgraded
     if ((status === 'active' || plan_type) && data.status === 'active') {
-      // Get user details for email
-      const { data: userProfile, error: profileError } = await supabase
-        .from('profiles')
-        .select('email, username')
-        .eq('id', data.user_id)
-        .single()
+      const [userProfile] = await db.select({ email: profiles.email, username: profiles.username })
+        .from(profiles).where(eq(profiles.id, data.userId)).limit(1)
 
-      if (userProfile && userProfile.email) {
-        //console.log('📧 Attempting to send sponsored subscription email...')
+      if (userProfile?.email) {
         try {
           await EmailService.sendSponsoredSubscriptionEmail(
             userProfile.email,
             userProfile.username || 'User',
-            data.plan_type,
-            data.expires_at
+            data.planId,
+            data.expiresAt
           )
-          logger.info({ 
-            subscriptionId,
-            userId: data.user_id,
-            email: userProfile.email,
-            planType: data.plan_type
-          }, 'Sponsored subscription email sent by admin update')
+          logger.info({ subscriptionId, userId: data.userId, email: userProfile.email, planType: data.planId }, 'Sponsored subscription email sent by admin update')
         } catch (emailError) {
-          logger.error({ 
-            error: emailError,
-            subscriptionId,
-            userId: data.user_id
-          }, 'Failed to send sponsored subscription email on admin update')
-          // Don't fail the update if email fails
+          logger.error({ error: emailError, subscriptionId, userId: data.userId }, 'Failed to send sponsored subscription email on admin update')
         }
       }
     }
 
-    logger.info({ 
-      subscriptionId, 
-      adminId: req.user!.id, 
-      changes: updateData 
-    }, 'Subscription updated by admin')
+    logger.info({ subscriptionId, adminId: req.user!.id, changes: updateData }, 'Subscription updated by admin')
 
     res.json({
       message: 'Subscription updated successfully',
-      subscription: data
+      subscription: formatSubscription(data)
     })
   } catch (error) {
     logger.error({ error, subscriptionId: req.params.subscriptionId }, 'Error updating subscription')
@@ -153,14 +136,9 @@ router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: Ad
   try {
     const { subscriptionId } = req.params
 
-    // Get subscription details first
-    const { data: subscription, error: fetchError } = await supabase
-      .from('subscriptions')
-      .select('*')
-      .eq('id', subscriptionId)
-      .single()
+    const [subscription] = await db.select().from(userSubscriptions).where(eq(userSubscriptions.id, subscriptionId)).limit(1)
 
-    if (fetchError || !subscription) {
+    if (!subscription) {
       return res.status(404).json({ error: 'Subscription not found' })
     }
 
@@ -168,62 +146,33 @@ router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: Ad
       return res.status(400).json({ error: 'Only active subscriptions can be cancelled' })
     }
 
-    // Cancel the subscription
-    const { data, error } = await supabase
-      .from('subscriptions')
-      .update({
-        status: 'cancelled',
-        cancelled_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', subscriptionId)
-      .select()
-      .single()
+    const [data] = await db.update(userSubscriptions)
+      .set({ status: 'cancelled', autoRenew: false, cancelledAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+      .where(eq(userSubscriptions.id, subscriptionId))
+      .returning()
 
-    if (error) {
-      throw error
-    }
+    const [userProfile] = await db.select({ email: profiles.email, username: profiles.username })
+      .from(profiles).where(eq(profiles.id, subscription.userId)).limit(1)
 
-    // Get user details for email
-    const { data: userProfile, error: profileError } = await supabase
-      .from('profiles')
-      .select('email, username')
-      .eq('id', subscription.user_id)
-      .single()
-
-    if (userProfile && userProfile.email) {
-      // Send cancellation email
+    if (userProfile?.email) {
       try {
         await EmailService.sendSubscriptionCancellationEmail(
           userProfile.email,
           userProfile.username || 'User',
-          subscription.plan_type,
+          subscription.planId,
           new Date().toISOString()
         )
-        logger.info({ 
-          subscriptionId,
-          userId: subscription.user_id,
-          email: userProfile.email
-        }, 'Admin cancellation email sent')
+        logger.info({ subscriptionId, userId: subscription.userId, email: userProfile.email }, 'Admin cancellation email sent')
       } catch (emailError) {
-        logger.error({ 
-          error: emailError,
-          subscriptionId,
-          userId: subscription.user_id
-        }, 'Failed to send admin cancellation email')
-        // Don't fail the cancellation if email fails
+        logger.error({ error: emailError, subscriptionId, userId: subscription.userId }, 'Failed to send admin cancellation email')
       }
     }
 
-    logger.info({ 
-      subscriptionId, 
-      adminId: req.user!.id,
-      userId: subscription.user_id 
-    }, 'Subscription cancelled by admin')
+    logger.info({ subscriptionId, adminId: req.user!.id, userId: subscription.userId }, 'Subscription cancelled by admin')
 
     res.json({
       message: 'Subscription cancelled successfully',
-      subscription: data
+      subscription: formatSubscription(data)
     })
   } catch (error) {
     logger.error({ error, subscriptionId: req.params.subscriptionId }, 'Error cancelling subscription')
@@ -231,112 +180,67 @@ router.post('/:subscriptionId/cancel', requireAuth, requireAdmin, async (req: Ad
   }
 })
 
-// Create subscription (admin only)
+// Create subscription (admin only) -- e.g. sponsored/promotional grants
 router.post('/create', requireAuth, requireAdmin, async (req: AdminRequest, res) => {
   try {
-    const { 
-      user_id, 
-      plan_type, 
-      expires_at, 
-      price_paid, 
-      currency = 'USD',
-      payment_provider = 'admin_created'
+    const {
+      user_id,
+      plan_type,
+      expires_at,
+      price_paid,
+      currency = 'INR',
+      source = 'web',
     } = req.body
 
-    // Validate required fields
     if (!user_id || !plan_type) {
       return res.status(400).json({ error: 'user_id and plan_type are required' })
     }
 
-    const validPlans = ['free', 'premium', 'premium_plus']
-    if (!validPlans.includes(plan_type)) {
+    if (!VALID_PLANS.includes(plan_type)) {
       return res.status(400).json({ error: 'Invalid plan type' })
     }
 
-    // Check if user exists
-    const { data: userExists, error: userError } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('id', user_id)
-      .single()
+    const [userExists] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.id, user_id)).limit(1)
 
-    if (userError || !userExists) {
+    if (!userExists) {
       return res.status(404).json({ error: 'User not found' })
     }
 
-    // Cancel any existing active subscriptions for this user
-    await supabase
-      .from('subscriptions')
-      .update({
-        status: 'cancelled',
-        cancelled_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .eq('user_id', user_id)
-      .eq('status', 'active')
+    const existing = await SubscriptionService.getUserSubscription(user_id)
+    const expiresAtDate = expires_at ? new Date(expires_at) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
 
-    // Create new subscription
-    const subscriptionData = {
+    const data = await SubscriptionService.createSubscription(
       user_id,
       plan_type,
-      status: 'active',
-      started_at: new Date().toISOString(),
-      expires_at: expires_at ? new Date(expires_at).toISOString() : null,
-      price_paid: price_paid || 0,
-      currency,
-      payment_provider,
-      auto_renew: false,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      expiresAtDate,
+      source,
+      {},
+      price_paid || 0,
+      currency
+    )
+
+    if (existing) {
+      logger.info({ userId: user_id }, 'Replaced existing subscription with admin-created one')
     }
 
-    const { data, error } = await supabase
-      .from('subscriptions')
-      .insert(subscriptionData)
-      .select()
-      .single()
+    const [userProfile] = await db.select({ email: profiles.email, username: profiles.username })
+      .from(profiles).where(eq(profiles.id, user_id)).limit(1)
 
-    if (error) {
-      throw error
-    }
-
-    // Get user details for email
-    const { data: userProfile, error: profileError } = await supabase
-      .from('profiles')
-      .select('email, username')
-      .eq('id', user_id)
-      .single()
-
-    if (userProfile && userProfile.email) {
-      // Send sponsored subscription email
+    if (userProfile?.email) {
       try {
         await EmailService.sendSponsoredSubscriptionEmail(
           userProfile.email,
           userProfile.username || 'User',
           plan_type,
-          expires_at ? new Date(expires_at).toISOString() : undefined
+          expiresAtDate.toISOString()
         )
-        logger.info({ 
-          subscriptionId: data.id,
-          userId: user_id,
-          email: userProfile.email
-        }, 'Sponsored subscription email sent')
+        logger.info({ subscriptionId: data.id, userId: user_id, email: userProfile.email }, 'Sponsored subscription email sent')
       } catch (emailError) {
-        logger.error({ 
-          error: emailError,
-          subscriptionId: data.id,
-          userId: user_id
-        }, 'Failed to send sponsored subscription email')
-        // Don't fail the subscription creation if email fails
+        logger.error({ error: emailError, subscriptionId: data.id, userId: user_id }, 'Failed to send sponsored subscription email')
       }
     }
 
-    logger.info({ 
-      subscriptionId: data.id,
-      adminId: req.user!.id,
-      userId: user_id,
-      planType: plan_type
-    }, 'Subscription created by admin')
+    logger.info({ subscriptionId: data.id, adminId: req.user!.id, userId: user_id, planType: plan_type }, 'Subscription created by admin')
 
     res.status(201).json({
       message: 'Subscription created successfully',
@@ -353,33 +257,15 @@ router.delete('/:subscriptionId', requireAuth, requireAdmin, async (req: AdminRe
   try {
     const { subscriptionId } = req.params
 
-    // Get subscription details first for logging
-    const { data: subscription, error: fetchError } = await supabase
-      .from('subscriptions')
-      .select('*')
-      .eq('id', subscriptionId)
-      .single()
+    const [subscription] = await db.select().from(userSubscriptions).where(eq(userSubscriptions.id, subscriptionId)).limit(1)
 
-    if (fetchError || !subscription) {
+    if (!subscription) {
       return res.status(404).json({ error: 'Subscription not found' })
     }
 
-    // Delete the subscription
-    const { error } = await supabase
-      .from('subscriptions')
-      .delete()
-      .eq('id', subscriptionId)
+    await db.delete(userSubscriptions).where(eq(userSubscriptions.id, subscriptionId))
 
-    if (error) {
-      throw error
-    }
-
-    logger.warn({ 
-      subscriptionId, 
-      adminId: req.user!.id,
-      userId: subscription.user_id,
-      planType: subscription.plan_type
-    }, 'Subscription permanently deleted by admin')
+    logger.warn({ subscriptionId, adminId: req.user!.id, userId: subscription.userId, planType: subscription.planId }, 'Subscription permanently deleted by admin')
 
     res.json({
       message: 'Subscription deleted successfully'
@@ -395,27 +281,17 @@ router.get('/user/:userId/history', requireAuth, requireAdmin, async (req: Admin
   try {
     const { userId } = req.params
 
-    const { data: subscriptions, error } = await supabase
-      .from('subscriptions')
-      .select(`
-        *,
-        profiles:user_id (
-          email,
-          username
-        )
-      `)
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
+    const rows = await db.select({
+      sub: userSubscriptions,
+      user_email: profiles.email,
+      user_username: profiles.username,
+    })
+      .from(userSubscriptions)
+      .leftJoin(profiles, eq(profiles.id, userSubscriptions.userId))
+      .where(eq(userSubscriptions.userId, userId))
+      .orderBy(desc(userSubscriptions.createdAt))
 
-    if (error) {
-      throw error
-    }
-
-    const formattedSubscriptions = subscriptions.map(sub => ({
-      ...sub,
-      user_email: sub.profiles?.email,
-      user_username: sub.profiles?.username
-    }))
+    const formattedSubscriptions = rows.map(row => formatSubscription({ ...row.sub, user_email: row.user_email, user_username: row.user_username }))
 
     res.json({
       subscriptions: formattedSubscriptions,

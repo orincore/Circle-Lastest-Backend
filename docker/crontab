@@ -13,6 +13,9 @@
 # Database maintenance - Weekly on Sunday at 3:00 AM UTC
 0 3 * * 0 cd /app && node dist/server/workers/db-maintenance.js >> /var/log/cron/db-maintenance.log 2>&1
 
+# Age resync (recompute profiles.age from date_of_birth) - Daily at midnight UTC
+0 0 * * * cd /app && node dist/server/workers/age-resync.js >> /var/log/cron/age-resync.log 2>&1
+
 # Health check heartbeat - Every minute (writes timestamp for monitoring)
 * * * * * echo "$(date): Cron worker alive" >> /var/log/cron/heartbeat.log
 

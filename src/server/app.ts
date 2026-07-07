@@ -46,8 +46,7 @@ import userAnalyticsRouter from './routes/user-analytics.routes.js'
 import uploadRouter from './routes/upload.routes.js'
 import adminSettingsRouter from './routes/admin-settings.routes.js'
 import adminSubscriptionRouter from './routes/admin.subscription.routes.js'
-import subscriptionRouter from './routes/subscription.routes.js'
-import paymentRouter from './routes/payment.routes.js'
+import billingRouter from './routes/billing.routes.js'
 import refundRouter from './routes/refund.routes.js'
 import revenueRouter from './routes/revenue.routes.js'
 import aiSupportRouter from './routes/ai-support.routes.js'
@@ -59,12 +58,14 @@ import accountDeletionRouter from './routes/account-deletion.routes.js'
 import referralRouter from './routes/referral.routes.js'
 import adminReferralsRouter from './routes/admin-referrals.routes.js'
 import verificationRouter from './routes/verification.routes.js'
-import cashfreeRouter from './routes/cashfree-subscription.routes.js'
 import chatListRouter from './routes/chat-list.routes.js'
 import announcementsRouter from './routes/announcements.routes.js'
 import adminAnnouncementsRouter from './routes/admin.announcements.routes.js'
 import blindDatingRouter from './routes/blind-dating.routes.js'
 import adminBlindDatingRouter from './routes/admin-blind-dating.routes.js'
+import adminMemesRouter from './routes/admin-memes.routes.js'
+import feedMemesRouter from './routes/feed-memes.routes.js'
+import memeConnectRouter from './routes/meme-connect.routes.js'
 import dockerMonitoringRouter from './routes/docker-monitoring.routes.js'
 import appVersionRouter from './routes/app-version.routes.js'
 import promptMatchingRouter from './routes/prompt-matching.routes.js'
@@ -297,8 +298,7 @@ app.use('/api/admin/subscriptions', adminSubscriptionRouter)
 app.use('/api/admin/campaigns', campaignsRouter)
 app.use('/api/admin/templates', templatesRouter)
 app.use('/api/analytics', userAnalyticsRouter)
-app.use('/api/subscription', subscriptionRouter)
-app.use('/api/payment', paymentRouter)
+app.use('/api/billing', billingRouter)
 app.use('/api/refunds', refundRouter)
 app.use('/api/revenue', revenueRouter)
 app.use('/api/ai-support', aiSupportRouter)
@@ -308,13 +308,15 @@ app.use('/api/account', accountDeletionRouter)
 app.use('/api/referrals', referralRouter)
 app.use('/api/admin/referrals', adminReferralsRouter)
 app.use('/api/verification', verificationRouter)
-app.use('/api/cashfree', cashfreeRouter)
 app.use('/api/chat-list', chatListRouter)
 app.use('/api/announcements', announcementsRouter)
 app.use('/api/admin/announcements', adminAnnouncementsRouter)
 app.use('/api/blind-dating', blindDatingRouter)
 app.use('/api/admin/blind-dating', adminBlindDatingRouter)
 app.use('/api/admin/docker', dockerMonitoringRouter)
+app.use('/api/admin/memes', adminMemesRouter)
+app.use('/api/feed', feedMemesRouter)
+app.use('/api/feed', memeConnectRouter)
 app.use('/api/app-version', appVersionRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/match', promptMatchingRouter)

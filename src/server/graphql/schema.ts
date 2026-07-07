@@ -8,6 +8,8 @@ export const typeDefs = gql`
     firstName: String
     lastName: String
     age: Int
+    dateOfBirth: String
+    needsDobMigration: Boolean
     gender: String
     phoneNumber: String
     about: String
@@ -74,7 +76,7 @@ export const typeDefs = gql`
     username: String
     firstName: String
     lastName: String
-    age: Int
+    dateOfBirth: String
     gender: String
     phoneNumber: String
     about: String

@@ -375,26 +375,34 @@ Requirements:
 
 Generate ONLY the bio text, nothing else.`
 
-    const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.TOGETHER_AI_API_KEY}`,
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+        // Bio generation doesn't need strong reasoning, so use OpenAI's
+        // cheapest chat model rather than a full-size one.
+        model: 'gpt-5-nano',
         messages: [
           { role: 'system', content: 'You are a helpful assistant that writes authentic, engaging dating app bios. Be concise and genuine.' },
           { role: 'user', content: prompt }
         ],
-        max_tokens: 200,
-        temperature: 0.7
+        // gpt-5-nano only supports the default temperature (1) - passing any
+        // other value 400s, so it's omitted here rather than set to 0.7.
+        max_completion_tokens: 200,
+        // Without this, gpt-5-nano spends the entire max_completion_tokens
+        // budget on hidden reasoning tokens and returns empty visible text
+        // (finish_reason: "length" with content: ""). Bio writing needs no
+        // reasoning, so drop it to minimal and leave the budget for output.
+        reasoning_effort: 'minimal'
       })
     })
 
     if (!response.ok) {
       const errorData = await response.text()
-      logger.error({ error: errorData }, 'Together AI API error')
+      logger.error({ error: errorData }, 'OpenAI API error')
       return res.status(500).json({ error: 'Failed to generate bio' })
     }
 

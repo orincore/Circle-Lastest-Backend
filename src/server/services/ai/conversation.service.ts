@@ -1,6 +1,6 @@
 import { desc, eq, gte } from 'drizzle-orm'
 import { db } from '../../config/db.js'
-import { aiConversations, profiles, subscriptions, refunds } from '../../db/schema.js'
+import { aiConversations, profiles, userSubscriptions, refunds } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 import { TogetherAIService, type AIMessage, type AIResponse } from './together-ai.service.js'
 import { RefundPolicyService } from './refund-policy.service.js'
@@ -679,15 +679,15 @@ Would you like me to proceed with the cancellation? Say "yes, cancel my subscrip
 
       // Get user subscriptions
       const subscriptionRows = await db.select({
-        plan_type: subscriptions.planType,
-        status: subscriptions.status,
-        started_at: subscriptions.startedAt,
-        price_paid: subscriptions.pricePaid,
-        currency: subscriptions.currency,
+        plan_type: userSubscriptions.planId,
+        status: userSubscriptions.status,
+        started_at: userSubscriptions.startedAt,
+        price_paid: userSubscriptions.amount,
+        currency: userSubscriptions.currency,
       })
-        .from(subscriptions)
-        .where(eq(subscriptions.userId, userId))
-        .orderBy(desc(subscriptions.startedAt))
+        .from(userSubscriptions)
+        .where(eq(userSubscriptions.userId, userId))
+        .orderBy(desc(userSubscriptions.startedAt))
 
       // Get recent refunds
       const refundRows = await db.select({

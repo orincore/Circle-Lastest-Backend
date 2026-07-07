@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, lt, sql } from 'drizzle-orm'
 import { db } from '../../config/db.js'
-import { aiConversations, messages, profiles, subscriptions } from '../../db/schema.js'
+import { aiConversations, messages, profiles, userSubscriptions } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 
 export interface ProactiveAlert {
@@ -57,14 +57,14 @@ export class ProactiveSupportService {
       }).from(profiles).where(eq(profiles.id, userId))
 
       const [subscription] = await db.select({
-        status: subscriptions.status,
-        plan_type: subscriptions.planType,
-        started_at: subscriptions.startedAt,
-        cancelled_at: subscriptions.cancelledAt,
+        status: userSubscriptions.status,
+        plan_type: userSubscriptions.planId,
+        started_at: userSubscriptions.startedAt,
+        cancelled_at: userSubscriptions.cancelledAt,
       })
-        .from(subscriptions)
-        .where(eq(subscriptions.userId, userId))
-        .orderBy(desc(subscriptions.startedAt))
+        .from(userSubscriptions)
+        .where(eq(userSubscriptions.userId, userId))
+        .orderBy(desc(userSubscriptions.startedAt))
         .limit(1)
 
       // Get recent activity metrics
@@ -180,14 +180,14 @@ export class ProactiveSupportService {
     try {
       // Check for subscription expiring soon
       const [subscription] = await db.select({
-        status: subscriptions.status,
-        started_at: subscriptions.startedAt,
-        plan_type: subscriptions.planType,
+        status: userSubscriptions.status,
+        started_at: userSubscriptions.startedAt,
+        plan_type: userSubscriptions.planId,
       })
-        .from(subscriptions)
+        .from(userSubscriptions)
         .where(and(
-          eq(subscriptions.userId, userId),
-          eq(subscriptions.status, 'active'),
+          eq(userSubscriptions.userId, userId),
+          eq(userSubscriptions.status, 'active'),
         ))
 
       if (subscription) {
@@ -365,9 +365,9 @@ export class ProactiveSupportService {
         ))
         .limit(100)
 
-      const premiumUsers = await db.select({ user_id: subscriptions.userId })
-        .from(subscriptions)
-        .where(eq(subscriptions.status, 'active'))
+      const premiumUsers = await db.select({ user_id: userSubscriptions.userId })
+        .from(userSubscriptions)
+        .where(eq(userSubscriptions.status, 'active'))
         .limit(50)
 
       // Combine and deduplicate

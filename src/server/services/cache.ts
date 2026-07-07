@@ -108,6 +108,30 @@ export const cache = {
     }
   },
 
+  /**
+   * Atomically increment a counter (creating it at 1 if absent). Used as a
+   * cache "generation" stamp: bumping it retires every cache entry keyed to
+   * the old generation without needing to delete them individually, and
+   * without the delete-then-repopulate race a plain `del` has (a concurrent
+   * read that started before the bump can still finish after it and write a
+   * stale value back — bumping the generation makes that write land on an
+   * abandoned key instead of clobbering the fresh one).
+   */
+  async incr(key: string): Promise<number> {
+    try {
+      if (useRedis()) return await redis!.incr(key)
+      const current = parseInt(memGet(key) || '0', 10) || 0
+      const next = current + 1
+      memSet(key, String(next), 60 * 60 * 24)
+      return next
+    } catch (err) {
+      logger.debug?.({ err, key }, 'cache.incr failed')
+      // Fall back to a value that's always different from any prior
+      // generation so the caller still gets an effective cache-bust.
+      return Date.now()
+    }
+  },
+
   async del(...keys: string[]): Promise<void> {
     if (!keys.length) return
     try {
@@ -141,7 +165,10 @@ export const cache = {
 
 // ---- Key builders (centralized so invalidation stays consistent) ----
 export const cacheKeys = {
-  inbox: (userId: string) => `chat:inbox:${userId}`,
+  // Generation-stamped so invalidation can bump the generation (see
+  // `cache.incr`) instead of deleting the key outright -- see invalidateChatCaches.
+  inbox: (userId: string, generation: number | string = 0) => `chat:inbox:${userId}:${generation}`,
+  inboxVersion: (userId: string) => `chat:inbox:ver:${userId}`,
   // History keys share the `chat:hist:{chatId}:` prefix so all of a chat's
   // per-user history pages can be invalidated together.
   historyPrefix: (chatId: string) => `chat:hist:${chatId}:`,
@@ -161,7 +188,39 @@ export const cacheKeys = {
   notificationsPrefix: (userId: string) => `notif:${userId}:`,
   notificationList: (userId: string, limit: number) => `notif:${userId}:list:${limit}`,
   notificationUnread: (userId: string) => `notif:${userId}:unread`,
+
+  // Meme feed caches. `memeContent` holds the immutable parts of a meme
+  // (caption/assets/post_type) shared across every viewer -- live per-viewer
+  // fields (like_count, liked_by_me) are never cached here. Comments are keyed
+  // per meme+page under a shared `memeCommentsPrefix` so a new comment can
+  // invalidate every cached page of that meme in one call. `memeAlias` caches
+  // the (immutable once created) anonymous alias lookup used on every comment row.
+  // Versioned (`v2`) because the cached shape changed (added `poster_alias`,
+  // then changed its format) -- bump this suffix again if MemeContent's shape
+  // changes, so stale cached payloads from an older shape don't linger for a
+  // full TTL and silently omit new fields on the client.
+  memeContent: (memeId: string) => `meme:content:v2:${memeId}`,
+  memeCommentsPrefix: (memeId: string) => `meme:comments:${memeId}:`,
+  memeComments: (memeId: string, limit: number, offset: number) => `meme:comments:${memeId}:${limit}:${offset}`,
+  memeAlias: (userId: string) => `meme:alias:${userId}`,
+  // Server-side-blurred derivative of a user's real profile photo, used for
+  // anonymous comment avatars -- the raw photo never reaches the client, only
+  // this already-blurred version, so it can't be "un-blurred" from the
+  // network response the way a client-side blur overlay could be.
+  anonAvatar: (userId: string) => `meme:anon-avatar:${userId}`,
 }
+
+// `memeContent` TTL is a safety net against a missed invalidation (moderation
+// action) -- explicit `cache.del` on moderation keeps it fresh in practice.
+export const MEME_CONTENT_TTL = 3600
+// Comments change often but not on every request; explicit invalidation on
+// new-comment handles the real-time case, TTL is just a backstop.
+export const MEME_COMMENTS_TTL = 120
+// Aliases never change once created.
+export const MEME_ALIAS_TTL = 86400
+// Profile photos rarely change; explicit invalidation (see
+// invalidateProfileCache) keeps this fresh in practice, TTL is a backstop.
+export const ANON_AVATAR_TTL = 21600
 
 // Notifications change frequently and are explicitly invalidated on every write,
 // so the TTL is just a safety net against a missed invalidation.
@@ -196,7 +255,7 @@ export const PROFILE_TTL = {
  * (the public endpoint doesn't expose friend counts).
  */
 export async function invalidateProfileCache(userId: string, username?: string | null): Promise<void> {
-  const keys = [cacheKeys.profileSelf(userId), cacheKeys.profileView(userId)]
+  const keys = [cacheKeys.profileSelf(userId), cacheKeys.profileView(userId), cacheKeys.anonAvatar(userId)]
   if (username) keys.push(cacheKeys.profilePublic(username))
   await cache.del(...keys)
 }

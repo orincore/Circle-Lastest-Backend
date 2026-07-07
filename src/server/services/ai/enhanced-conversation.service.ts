@@ -1,6 +1,6 @@
 import { desc, eq } from 'drizzle-orm'
 import { db } from '../../config/db.js'
-import { aiConversations, profiles, subscriptions, refunds } from '../../db/schema.js'
+import { aiConversations, profiles, userSubscriptions, refunds } from '../../db/schema.js'
 import { logger } from '../../config/logger.js'
 import { TogetherAIService, type AIMessage as BaseAIMessage, type AIResponse } from './together-ai.service.js'
 import { AdminActionsService } from './admin-actions.service.js'
@@ -573,15 +573,15 @@ export class EnhancedConversationService {
       }).from(profiles).where(eq(profiles.id, userId))
 
       const subscriptionRows = await db.select({
-        plan_type: subscriptions.planType,
-        status: subscriptions.status,
-        started_at: subscriptions.startedAt,
-        price_paid: subscriptions.pricePaid,
-        currency: subscriptions.currency,
+        plan_type: userSubscriptions.planId,
+        status: userSubscriptions.status,
+        started_at: userSubscriptions.startedAt,
+        price_paid: userSubscriptions.amount,
+        currency: userSubscriptions.currency,
       })
-        .from(subscriptions)
-        .where(eq(subscriptions.userId, userId))
-        .orderBy(desc(subscriptions.startedAt))
+        .from(userSubscriptions)
+        .where(eq(userSubscriptions.userId, userId))
+        .orderBy(desc(userSubscriptions.startedAt))
 
       const refundRows = await db.select({
         status: refunds.status,

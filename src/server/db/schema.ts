@@ -1,4 +1,4 @@
-import { pgTable, index, foreignKey, pgPolicy, text, jsonb, timestamp, uuid, bigserial, varchar, unique, check, boolean, integer, numeric, uniqueIndex, date, time, serial, vector, inet, primaryKey, pgView, bigint, doublePrecision, pgMaterializedView, pgEnum, pgSchema } from "drizzle-orm/pg-core"
+import { pgTable, index, foreignKey, unique, check, uuid, varchar, timestamp, boolean, text, numeric, jsonb, integer, bigint, uniqueIndex, doublePrecision, pgPolicy, bigserial, date, time, serial, vector, inet, primaryKey, pgView, pgMaterializedView, pgEnum, pgSchema } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const messageReceiptStatus = pgEnum("message_receipt_status", ['delivered', 'read'])
@@ -20,6 +20,348 @@ export const usersInAuth = authSchema.table("users", {
 	id: uuid().primaryKey().notNull(),
 })
 
+
+export const userSubscriptions = pgTable("user_subscriptions", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	userId: uuid("user_id").notNull(),
+	planId: varchar("plan_id", { length: 20 }).notNull(),
+	status: varchar({ length: 20 }).default('active').notNull(),
+	source: varchar({ length: 10 }).notNull(),
+	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
+	autoRenew: boolean("auto_renew").default(true).notNull(),
+	cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: 'string' }),
+	appleOriginalTransactionId: varchar("apple_original_transaction_id", { length: 100 }),
+	appleTransactionId: varchar("apple_transaction_id", { length: 100 }),
+	googlePurchaseToken: text("google_purchase_token"),
+	googleOrderId: varchar("google_order_id", { length: 150 }),
+	razorpaySubscriptionId: varchar("razorpay_subscription_id", { length: 100 }),
+	razorpayCustomerId: varchar("razorpay_customer_id", { length: 100 }),
+	amount: numeric({ precision: 10, scale:  2 }),
+	currency: varchar({ length: 3 }).default('INR'),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_user_subscriptions_apple_original_transaction_id").using("btree", table.appleOriginalTransactionId.asc().nullsLast().op("text_ops")),
+	index("idx_user_subscriptions_expires_at").using("btree", table.expiresAt.asc().nullsLast().op("timestamptz_ops")),
+	index("idx_user_subscriptions_google_purchase_token").using("btree", table.googlePurchaseToken.asc().nullsLast().op("text_ops")),
+	index("idx_user_subscriptions_razorpay_subscription_id").using("btree", table.razorpaySubscriptionId.asc().nullsLast().op("text_ops")),
+	index("idx_user_subscriptions_status").using("btree", table.status.asc().nullsLast().op("text_ops")),
+	foreignKey({
+			columns: [table.planId],
+			foreignColumns: [subscriptionPlans.planId],
+			name: "user_subscriptions_plan_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "user_subscriptions_user_id_fkey"
+		}).onDelete("cascade"),
+	unique("user_subscriptions_user_id_key").on(table.userId),
+	check("user_subscriptions_source_check", sql`(source)::text = ANY ((ARRAY['ios'::character varying, 'android'::character varying, 'web'::character varying])::text[])`),
+	check("user_subscriptions_status_check", sql`(status)::text = ANY ((ARRAY['active'::character varying, 'cancelled'::character varying, 'expired'::character varying, 'grace_period'::character varying, 'pending'::character varying])::text[])`),
+]);
+
+export const subscriptionPlans = pgTable("subscription_plans", {
+	planId: varchar("plan_id", { length: 20 }).primaryKey().notNull(),
+	name: varchar({ length: 100 }).notNull(),
+	billingPeriod: varchar("billing_period", { length: 20 }).notNull(),
+	priceInr: numeric("price_inr", { precision: 10, scale:  2 }).notNull(),
+	razorpayPlanId: varchar("razorpay_plan_id", { length: 100 }),
+	appleProductId: varchar("apple_product_id", { length: 150 }),
+	googleProductId: varchar("google_product_id", { length: 150 }),
+	features: jsonb().default([]).notNull(),
+	isActive: boolean("is_active").default(true).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	check("subscription_plans_billing_period_check", sql`(billing_period)::text = ANY ((ARRAY['monthly'::character varying, 'yearly'::character varying])::text[])`),
+]);
+
+export const paymentTransactions = pgTable("payment_transactions", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	userId: uuid("user_id").notNull(),
+	subscriptionId: uuid("subscription_id"),
+	source: varchar({ length: 10 }).notNull(),
+	amount: numeric({ precision: 10, scale:  2 }).notNull(),
+	currency: varchar({ length: 3 }).default('INR').notNull(),
+	status: varchar({ length: 20 }).default('created').notNull(),
+	externalTransactionId: varchar("external_transaction_id", { length: 150 }),
+	rawPayload: jsonb("raw_payload"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_payment_transactions_created_at").using("btree", table.createdAt.desc().nullsFirst().op("timestamptz_ops")),
+	index("idx_payment_transactions_external_transaction_id").using("btree", table.externalTransactionId.asc().nullsLast().op("text_ops")),
+	index("idx_payment_transactions_subscription_id").using("btree", table.subscriptionId.asc().nullsLast().op("uuid_ops")),
+	index("idx_payment_transactions_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.subscriptionId],
+			foreignColumns: [userSubscriptions.id],
+			name: "payment_transactions_subscription_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "payment_transactions_user_id_fkey"
+		}).onDelete("cascade"),
+	check("payment_transactions_source_check", sql`(source)::text = ANY ((ARRAY['ios'::character varying, 'android'::character varying, 'web'::character varying])::text[])`),
+	check("payment_transactions_status_check", sql`(status)::text = ANY ((ARRAY['created'::character varying, 'success'::character varying, 'failed'::character varying, 'refunded'::character varying])::text[])`),
+]);
+
+export const refunds = pgTable("refunds", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	subscriptionId: uuid("subscription_id").notNull(),
+	userId: uuid("user_id").notNull(),
+	amount: numeric({ precision: 10, scale:  2 }).notNull(),
+	currency: varchar({ length: 3 }).default('INR').notNull(),
+	reason: text(),
+	status: varchar({ length: 20 }).default('pending').notNull(),
+	requestedAt: timestamp("requested_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	processedAt: timestamp("processed_at", { withTimezone: true, mode: 'string' }),
+	processedBy: uuid("processed_by"),
+	paymentProvider: varchar("payment_provider", { length: 50 }),
+	externalRefundId: varchar("external_refund_id", { length: 255 }),
+	refundMethod: varchar("refund_method", { length: 50 }).default('original_payment_method'),
+	adminNotes: text("admin_notes"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	transactionId: uuid("transaction_id"),
+}, (table) => [
+	index("idx_refunds_processed_by").using("btree", table.processedBy.asc().nullsLast().op("uuid_ops")),
+	index("idx_refunds_requested_at").using("btree", table.requestedAt.asc().nullsLast().op("timestamptz_ops")),
+	index("idx_refunds_status").using("btree", table.status.asc().nullsLast().op("text_ops")),
+	index("idx_refunds_subscription_id").using("btree", table.subscriptionId.asc().nullsLast().op("uuid_ops")),
+	index("idx_refunds_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.processedBy],
+			foreignColumns: [profiles.id],
+			name: "refunds_processed_by_fkey"
+		}),
+	foreignKey({
+			columns: [table.subscriptionId],
+			foreignColumns: [userSubscriptions.id],
+			name: "refunds_subscription_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.transactionId],
+			foreignColumns: [paymentTransactions.id],
+			name: "refunds_transaction_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "refunds_user_id_fkey"
+		}).onDelete("cascade"),
+	check("refunds_status_check", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('approved'::character varying)::text, ('rejected'::character varying)::text, ('processed'::character varying)::text, ('failed'::character varying)::text])`),
+]);
+
+export const memeSources = pgTable("meme_sources", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	instagramUsername: text("instagram_username").notNull(),
+	displayName: text("display_name"),
+	isActive: boolean("is_active").default(true).notNull(),
+	scrapeIntervalMinutes: integer("scrape_interval_minutes").default(60).notNull(),
+	lastScrapedAt: timestamp("last_scraped_at", { withTimezone: true, mode: 'string' }),
+	lastSuccessAt: timestamp("last_success_at", { withTimezone: true, mode: 'string' }),
+	consecutiveFailures: integer("consecutive_failures").default(0).notNull(),
+	backoffUntil: timestamp("backoff_until", { withTimezone: true, mode: 'string' }),
+	status: varchar({ length: 20 }).default('active').notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	unique("meme_sources_instagram_username_key").on(table.instagramUsername),
+	check("meme_sources_status_check", sql`(status)::text = ANY ((ARRAY['active'::character varying, 'backoff'::character varying, 'disabled'::character varying])::text[])`),
+]);
+
+export const memes = pgTable("memes", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	sourceId: uuid("source_id").notNull(),
+	instagramShortcode: text("instagram_shortcode").notNull(),
+	postType: varchar("post_type", { length: 20 }).notNull(),
+	caption: text(),
+	likeCount: integer("like_count"),
+	postedAt: timestamp("posted_at", { withTimezone: true, mode: 'string' }),
+	scrapedAt: timestamp("scraped_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	status: varchar({ length: 20 }).default('active').notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_memes_source").using("btree", table.sourceId.asc().nullsLast().op("uuid_ops")),
+	index("idx_memes_status_created").using("btree", table.status.asc().nullsLast().op("text_ops"), table.createdAt.desc().nullsFirst().op("text_ops")),
+	foreignKey({
+			columns: [table.sourceId],
+			foreignColumns: [memeSources.id],
+			name: "memes_source_id_fkey"
+		}).onDelete("cascade"),
+	unique("memes_instagram_shortcode_key").on(table.instagramShortcode),
+	check("memes_post_type_check", sql`(post_type)::text = ANY ((ARRAY['image'::character varying, 'carousel'::character varying, 'video'::character varying])::text[])`),
+	check("memes_status_check", sql`(status)::text = ANY ((ARRAY['active'::character varying, 'hidden'::character varying, 'flagged'::character varying])::text[])`),
+]);
+
+export const memeAssets = pgTable("meme_assets", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	memeId: uuid("meme_id").notNull(),
+	assetType: varchar("asset_type", { length: 20 }).notNull(),
+	position: integer().default(0).notNull(),
+	s3Key: text("s3_key").notNull(),
+	s3Url: text("s3_url").notNull(),
+	width: integer(),
+	height: integer(),
+	durationSeconds: numeric("duration_seconds"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	fileSizeBytes: bigint("file_size_bytes", { mode: "number" }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_meme_assets_meme").using("btree", table.memeId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.memeId],
+			foreignColumns: [memes.id],
+			name: "meme_assets_meme_id_fkey"
+		}).onDelete("cascade"),
+	check("meme_assets_asset_type_check", sql`(asset_type)::text = ANY ((ARRAY['image'::character varying, 'video'::character varying, 'thumbnail'::character varying])::text[])`),
+]);
+
+export const userMemeAliases = pgTable("user_meme_aliases", {
+	userId: uuid("user_id").primaryKey().notNull(),
+	alias: text().notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "user_meme_aliases_user_id_fkey"
+		}).onDelete("cascade"),
+	unique("user_meme_aliases_alias_key").on(table.alias),
+]);
+
+export const memeLikes = pgTable("meme_likes", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	memeId: uuid("meme_id").notNull(),
+	userId: uuid("user_id").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_meme_likes_meme").using("btree", table.memeId.asc().nullsLast().op("uuid_ops")),
+	index("idx_meme_likes_user").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.memeId],
+			foreignColumns: [memes.id],
+			name: "meme_likes_meme_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "meme_likes_user_id_fkey"
+		}).onDelete("cascade"),
+	unique("meme_likes_meme_id_user_id_key").on(table.memeId, table.userId),
+]);
+
+export const memeComments = pgTable("meme_comments", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	memeId: uuid("meme_id").notNull(),
+	userId: uuid("user_id").notNull(),
+	text: text().notNull(),
+	status: varchar({ length: 20 }).default('active').notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	parentCommentId: uuid("parent_comment_id"),
+}, (table) => [
+	index("idx_meme_comments_meme_created").using("btree", table.memeId.asc().nullsLast().op("timestamptz_ops"), table.createdAt.desc().nullsFirst().op("timestamptz_ops")),
+	index("idx_meme_comments_parent").using("btree", table.parentCommentId.asc().nullsLast().op("uuid_ops"), table.createdAt.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.memeId],
+			foreignColumns: [memes.id],
+			name: "meme_comments_meme_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.parentCommentId],
+			foreignColumns: [table.id],
+			name: "meme_comments_parent_comment_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "meme_comments_user_id_fkey"
+		}).onDelete("cascade"),
+	check("meme_comments_status_check", sql`(status)::text = ANY ((ARRAY['active'::character varying, 'hidden'::character varying, 'flagged'::character varying, 'deleted'::character varying])::text[])`),
+]);
+
+export const memeConnectRequests = pgTable("meme_connect_requests", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	requesterId: uuid("requester_id").notNull(),
+	targetId: uuid("target_id").notNull(),
+	contextMemeId: uuid("context_meme_id"),
+	status: varchar({ length: 20 }).default('pending').notNull(),
+	chatId: uuid("chat_id"),
+	requesterRevealed: boolean("requester_revealed").default(false).notNull(),
+	targetRevealed: boolean("target_revealed").default(false).notNull(),
+	revealedAt: timestamp("revealed_at", { withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	respondedAt: timestamp("responded_at", { withTimezone: true, mode: 'string' }),
+}, (table) => [
+	uniqueIndex("idx_meme_connect_pending_pair").using("btree", table.requesterId.asc().nullsLast().op("uuid_ops"), table.targetId.asc().nullsLast().op("uuid_ops")).where(sql`((status)::text = 'pending'::text)`),
+	index("idx_meme_connect_requester").using("btree", table.requesterId.asc().nullsLast().op("uuid_ops"), table.status.asc().nullsLast().op("uuid_ops")),
+	index("idx_meme_connect_target").using("btree", table.targetId.asc().nullsLast().op("uuid_ops"), table.status.asc().nullsLast().op("text_ops")),
+	foreignKey({
+			columns: [table.chatId],
+			foreignColumns: [chats.id],
+			name: "meme_connect_requests_chat_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.contextMemeId],
+			foreignColumns: [memes.id],
+			name: "meme_connect_requests_context_meme_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.requesterId],
+			foreignColumns: [profiles.id],
+			name: "meme_connect_requests_requester_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.targetId],
+			foreignColumns: [profiles.id],
+			name: "meme_connect_requests_target_id_fkey"
+		}).onDelete("cascade"),
+	check("meme_connect_requests_check", sql`requester_id <> target_id`),
+	check("meme_connect_requests_status_check", sql`(status)::text = ANY ((ARRAY['pending'::character varying, 'accepted'::character varying, 'declined'::character varying, 'expired'::character varying])::text[])`),
+]);
+
+export const memeStats = pgTable("meme_stats", {
+	memeId: uuid("meme_id").primaryKey().notNull(),
+	likeCount: integer("like_count").default(0).notNull(),
+	commentCount: integer("comment_count").default(0).notNull(),
+	shareCount: integer("share_count").default(0).notNull(),
+	viewCount: integer("view_count").default(0).notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	totalDwellMs: bigint("total_dwell_ms", { mode: "number" }).default(0).notNull(),
+	trendingScore: doublePrecision("trending_score").default(0).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_meme_stats_trending_score").using("btree", table.trendingScore.desc().nullsFirst().op("float8_ops")),
+	foreignKey({
+			columns: [table.memeId],
+			foreignColumns: [memes.id],
+			name: "meme_stats_meme_id_fkey"
+		}).onDelete("cascade"),
+]);
+
+export const memeShares = pgTable("meme_shares", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	memeId: uuid("meme_id").notNull(),
+	userId: uuid("user_id").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_meme_shares_meme_id").using("btree", table.memeId.asc().nullsLast().op("uuid_ops")),
+	index("idx_meme_shares_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.memeId],
+			foreignColumns: [memes.id],
+			name: "meme_shares_meme_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "meme_shares_user_id_fkey"
+		}).onDelete("cascade"),
+]);
 
 export const activityFeed = pgTable("activity_feed", {
 	id: text().primaryKey().notNull(),
@@ -272,6 +614,7 @@ export const profiles = pgTable("profiles", {
 	firstName: text("first_name").notNull(),
 	lastName: text("last_name").notNull(),
 	age: integer().notNull(),
+	dateOfBirth: date("date_of_birth"),
 	gender: text().notNull(),
 	phoneNumber: text("phone_number"),
 	profilePhotoUrl: text("profile_photo_url"),
@@ -1312,7 +1655,7 @@ export const promotionalSubscriptions = pgTable("promotional_subscriptions", {
 			columns: [table.subscriptionId],
 			foreignColumns: [userSubscriptions.id],
 			name: "promotional_subscriptions_subscription_id_fkey"
-		}),
+		}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.userId],
 			foreignColumns: [profiles.id],
@@ -1321,31 +1664,48 @@ export const promotionalSubscriptions = pgTable("promotional_subscriptions", {
 	unique("promotional_subscriptions_user_id_promo_type_key").on(table.userId, table.promoType),
 ]);
 
-export const paymentOrders = pgTable("payment_orders", {
+export const messages = pgTable("messages", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
-	orderId: varchar("order_id", { length: 100 }).notNull(),
-	userId: uuid("user_id").notNull(),
-	planId: varchar("plan_id", { length: 50 }).notNull(),
-	amount: numeric({ precision: 10, scale:  2 }).notNull(),
-	currency: varchar({ length: 3 }).default('INR'),
-	status: varchar({ length: 20 }).default('created'),
-	gateway: varchar({ length: 20 }).default('cashfree'),
-	gatewayOrderId: varchar("gateway_order_id", { length: 100 }),
-	gatewayPaymentId: varchar("gateway_payment_id", { length: 100 }),
-	paymentMethod: varchar("payment_method", { length: 50 }),
-	failureReason: text("failure_reason"),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+	chatId: uuid("chat_id").notNull(),
+	senderId: uuid("sender_id").notNull(),
+	text: text().notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }),
+	isEdited: boolean("is_edited").default(false),
+	isDeleted: boolean("is_deleted").default(false),
+	deletedAt: timestamp("deleted_at", { withTimezone: true, mode: 'string' }),
+	deletedBy: uuid("deleted_by"),
+	mediaUrl: text("media_url"),
+	mediaType: text("media_type"),
+	thumbnail: text(),
+	replyToId: uuid("reply_to_id"),
+	isViewOnce: boolean("is_view_once").default(false).notNull(),
+	viewOnceViewedAt: timestamp("view_once_viewed_at", { withTimezone: true, mode: 'string' }),
+	sharedMemeId: uuid("shared_meme_id"),
 }, (table) => [
-	index("idx_payment_orders_created_at").using("btree", table.createdAt.desc().nullsFirst().op("timestamptz_ops")),
-	index("idx_payment_orders_status").using("btree", table.status.asc().nullsLast().op("text_ops")),
-	index("idx_payment_orders_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	index("idx_messages_chat_created").using("btree", table.chatId.asc().nullsLast().op("timestamptz_ops"), table.createdAt.asc().nullsLast().op("timestamptz_ops")),
+	index("idx_messages_chat_id_created_at").using("btree", table.chatId.asc().nullsLast().op("uuid_ops"), table.createdAt.desc().nullsFirst().op("uuid_ops")),
+	index("idx_messages_is_deleted").using("btree", table.isDeleted.asc().nullsLast().op("bool_ops")),
+	index("idx_messages_media_url").using("btree", table.mediaUrl.asc().nullsLast().op("text_ops")).where(sql`(media_url IS NOT NULL)`),
+	index("idx_messages_reply_to_id").using("btree", table.replyToId.asc().nullsLast().op("uuid_ops")),
+	index("idx_messages_updated_at").using("btree", table.updatedAt.asc().nullsLast().op("timestamptz_ops")),
 	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [profiles.id],
-			name: "payment_orders_user_id_fkey"
+			columns: [table.chatId],
+			foreignColumns: [chats.id],
+			name: "messages_chat_id_fkey"
 		}).onDelete("cascade"),
-	unique("payment_orders_order_id_key").on(table.orderId),
+	foreignKey({
+			columns: [table.replyToId],
+			foreignColumns: [table.id],
+			name: "messages_reply_to_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.sharedMemeId],
+			foreignColumns: [memes.id],
+			name: "messages_shared_meme_id_fkey"
+		}).onDelete("set null"),
+	pgPolicy("Users can update their own messages", { as: "permissive", for: "update", to: ["public"], using: sql`(sender_id = auth.uid())`, withCheck: sql`(sender_id = auth.uid())`  }),
+	check("messages_media_type_check", sql`(media_type = ANY (ARRAY['image'::text, 'video'::text])) OR (media_type IS NULL)`),
 ]);
 
 export const proactiveAlerts = pgTable("proactive_alerts", {
@@ -1496,44 +1856,6 @@ export const userActivityEvents = pgTable("user_activity_events", {
 	pgPolicy("user_activity_events_admin_policy", { as: "permissive", for: "all", to: ["public"] }),
 ]);
 
-export const messages = pgTable("messages", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	chatId: uuid("chat_id").notNull(),
-	senderId: uuid("sender_id").notNull(),
-	text: text().notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }),
-	isEdited: boolean("is_edited").default(false),
-	isDeleted: boolean("is_deleted").default(false),
-	deletedAt: timestamp("deleted_at", { withTimezone: true, mode: 'string' }),
-	deletedBy: uuid("deleted_by"),
-	mediaUrl: text("media_url"),
-	mediaType: text("media_type"),
-	thumbnail: text(),
-	replyToId: uuid("reply_to_id"),
-	isViewOnce: boolean("is_view_once").default(false).notNull(),
-	viewOnceViewedAt: timestamp("view_once_viewed_at", { withTimezone: true, mode: 'string' }),
-}, (table) => [
-	index("idx_messages_chat_created").using("btree", table.chatId.asc().nullsLast().op("timestamptz_ops"), table.createdAt.asc().nullsLast().op("timestamptz_ops")),
-	index("idx_messages_chat_id_created_at").using("btree", table.chatId.asc().nullsLast().op("uuid_ops"), table.createdAt.desc().nullsFirst().op("uuid_ops")),
-	index("idx_messages_is_deleted").using("btree", table.isDeleted.asc().nullsLast().op("bool_ops")),
-	index("idx_messages_media_url").using("btree", table.mediaUrl.asc().nullsLast().op("text_ops")).where(sql`(media_url IS NOT NULL)`),
-	index("idx_messages_reply_to_id").using("btree", table.replyToId.asc().nullsLast().op("uuid_ops")),
-	index("idx_messages_updated_at").using("btree", table.updatedAt.asc().nullsLast().op("timestamptz_ops")),
-	foreignKey({
-			columns: [table.chatId],
-			foreignColumns: [chats.id],
-			name: "messages_chat_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.replyToId],
-			foreignColumns: [table.id],
-			name: "messages_reply_to_id_fkey"
-		}).onDelete("set null"),
-	pgPolicy("Users can update their own messages", { as: "permissive", for: "update", to: ["public"], using: sql`(sender_id = auth.uid())`, withCheck: sql`(sender_id = auth.uid())`  }),
-	check("messages_media_type_check", sql`(media_type = ANY (ARRAY['image'::text, 'video'::text])) OR (media_type IS NULL)`),
-]);
-
 export const notifications = pgTable("notifications", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
 	recipientId: uuid("recipient_id").notNull(),
@@ -1664,35 +1986,6 @@ export const satisfactionSurveys = pgTable("satisfaction_surveys", {
 			foreignColumns: [aiConversations.id],
 			name: "satisfaction_surveys_conversation_id_fkey"
 		}).onDelete("cascade"),
-]);
-
-export const subscriptions = pgTable("subscriptions", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	userId: uuid("user_id").notNull(),
-	planType: varchar("plan_type", { length: 20 }).default('free').notNull(),
-	status: varchar({ length: 20 }).default('active').notNull(),
-	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }),
-	paymentProvider: varchar("payment_provider", { length: 50 }),
-	externalSubscriptionId: varchar("external_subscription_id", { length: 255 }),
-	pricePaid: numeric("price_paid", { precision: 10, scale:  2 }),
-	currency: varchar({ length: 3 }).default('USD'),
-	autoRenew: boolean("auto_renew").default(true),
-	cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: 'string' }),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	index("idx_subscriptions_expires_at").using("btree", table.expiresAt.asc().nullsLast().op("timestamptz_ops")),
-	index("idx_subscriptions_status").using("btree", table.status.asc().nullsLast().op("text_ops")),
-	index("idx_subscriptions_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [profiles.id],
-			name: "subscriptions_user_id_fkey"
-		}).onDelete("cascade"),
-	unique("subscriptions_user_id_key").on(table.userId),
-	check("subscriptions_plan_type_check", sql`(plan_type)::text = ANY (ARRAY[('free'::character varying)::text, ('premium'::character varying)::text, ('premium_plus'::character varying)::text])`),
-	check("subscriptions_status_check", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('cancelled'::character varying)::text, ('expired'::character varying)::text, ('pending'::character varying)::text])`),
 ]);
 
 export const surveyResponses = pgTable("survey_responses", {
@@ -1914,34 +2207,6 @@ export const userMatches = pgTable("user_matches", {
 	unique("user_matches_user1_id_user2_id_key").on(table.user1Id, table.user2Id),
 ]);
 
-export const subscriptionTransactions = pgTable("subscription_transactions", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	userId: uuid("user_id").notNull(),
-	orderId: varchar("order_id", { length: 100 }),
-	amount: numeric({ precision: 10, scale:  2 }).notNull(),
-	currency: varchar({ length: 3 }).default('INR'),
-	status: varchar({ length: 20 }).notNull(),
-	paymentMethod: varchar("payment_method", { length: 50 }),
-	gateway: varchar({ length: 20 }).default('cashfree'),
-	gatewayTransactionId: varchar("gateway_transaction_id", { length: 100 }),
-	description: text(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
-}, (table) => [
-	index("idx_subscription_transactions_created_at").using("btree", table.createdAt.desc().nullsFirst().op("timestamptz_ops")),
-	index("idx_subscription_transactions_order_id").using("btree", table.orderId.asc().nullsLast().op("text_ops")),
-	index("idx_subscription_transactions_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.orderId],
-			foreignColumns: [paymentOrders.orderId],
-			name: "subscription_transactions_order_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [profiles.id],
-			name: "subscription_transactions_user_id_fkey"
-		}).onDelete("cascade"),
-]);
-
 export const systemSettings = pgTable("system_settings", {
 	key: text().default('default').primaryKey().notNull(),
 	value: jsonb(),
@@ -2002,47 +2267,6 @@ export const referralPaymentRequests = pgTable("referral_payment_requests", {
 			name: "referral_payment_requests_user_id_fkey"
 		}).onDelete("cascade"),
 	check("referral_payment_requests_status_check", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('processing'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text])`),
-]);
-
-export const refunds = pgTable("refunds", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	subscriptionId: uuid("subscription_id").notNull(),
-	userId: uuid("user_id").notNull(),
-	amount: numeric({ precision: 10, scale:  2 }).notNull(),
-	currency: varchar({ length: 3 }).default('USD').notNull(),
-	reason: text(),
-	status: varchar({ length: 20 }).default('pending').notNull(),
-	requestedAt: timestamp("requested_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	processedAt: timestamp("processed_at", { withTimezone: true, mode: 'string' }),
-	processedBy: uuid("processed_by"),
-	paymentProvider: varchar("payment_provider", { length: 50 }),
-	externalRefundId: varchar("external_refund_id", { length: 255 }),
-	refundMethod: varchar("refund_method", { length: 50 }).default('original_payment_method'),
-	adminNotes: text("admin_notes"),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	index("idx_refunds_processed_by").using("btree", table.processedBy.asc().nullsLast().op("uuid_ops")),
-	index("idx_refunds_requested_at").using("btree", table.requestedAt.asc().nullsLast().op("timestamptz_ops")),
-	index("idx_refunds_status").using("btree", table.status.asc().nullsLast().op("text_ops")),
-	index("idx_refunds_subscription_id").using("btree", table.subscriptionId.asc().nullsLast().op("uuid_ops")),
-	index("idx_refunds_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.processedBy],
-			foreignColumns: [profiles.id],
-			name: "refunds_processed_by_fkey"
-		}),
-	foreignKey({
-			columns: [table.subscriptionId],
-			foreignColumns: [subscriptions.id],
-			name: "refunds_subscription_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [profiles.id],
-			name: "refunds_user_id_fkey"
-		}).onDelete("cascade"),
-	check("refunds_status_check", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('approved'::character varying)::text, ('rejected'::character varying)::text, ('processed'::character varying)::text, ('failed'::character varying)::text])`),
 ]);
 
 export const userProfileVisits = pgTable("user_profile_visits", {
@@ -2189,33 +2413,6 @@ export const voiceCalls = pgTable("voice_calls", {
 	check("voice_calls_status_check", sql`status = ANY (ARRAY['initiated'::text, 'ringing'::text, 'connected'::text, 'ended'::text, 'declined'::text, 'missed'::text])`),
 ]);
 
-export const userSubscriptions = pgTable("user_subscriptions", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	userId: uuid("user_id").notNull(),
-	planType: varchar("plan_type", { length: 20 }).notNull(),
-	status: varchar({ length: 20 }).default('active'),
-	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }).defaultNow(),
-	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
-	cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: 'string' }),
-	paymentGateway: varchar("payment_gateway", { length: 20 }).default('cashfree'),
-	gatewaySubscriptionId: varchar("gateway_subscription_id", { length: 100 }),
-	amount: numeric({ precision: 10, scale:  2 }),
-	currency: varchar({ length: 3 }).default('INR'),
-	autoRenew: boolean("auto_renew").default(false),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
-}, (table) => [
-	index("idx_user_subscriptions_expires_at").using("btree", table.expiresAt.asc().nullsLast().op("timestamptz_ops")),
-	index("idx_user_subscriptions_status").using("btree", table.status.asc().nullsLast().op("text_ops")),
-	index("idx_user_subscriptions_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [profiles.id],
-			name: "user_subscriptions_user_id_fkey"
-		}).onDelete("cascade"),
-	unique("unique_active_subscription").on(table.userId, table.status),
-]);
-
 export const blindDateBlockedMessages = pgTable("blind_date_blocked_messages", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
 	blindDateId: uuid("blind_date_id").notNull(),
@@ -2344,6 +2541,45 @@ export const chatMembers = pgTable("chat_members", {
 			name: "chat_members_chat_id_fkey"
 		}).onDelete("cascade"),
 	primaryKey({ columns: [table.chatId, table.userId], name: "chat_members_pkey"}),
+]);
+
+export const memeFeedViews = pgTable("meme_feed_views", {
+	userId: uuid("user_id").notNull(),
+	memeId: uuid("meme_id").notNull(),
+	viewedAt: timestamp("viewed_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	durationMs: integer("duration_ms").default(0).notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.memeId],
+			foreignColumns: [memes.id],
+			name: "meme_feed_views_meme_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "meme_feed_views_user_id_fkey"
+		}).onDelete("cascade"),
+	primaryKey({ columns: [table.userId, table.memeId], name: "meme_feed_views_pkey"}),
+]);
+
+export const userSourceAffinity = pgTable("user_source_affinity", {
+	userId: uuid("user_id").notNull(),
+	sourceId: uuid("source_id").notNull(),
+	affinityScore: doublePrecision("affinity_score").default(0).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_user_source_affinity_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.sourceId],
+			foreignColumns: [memeSources.id],
+			name: "user_source_affinity_source_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "user_source_affinity_user_id_fkey"
+		}).onDelete("cascade"),
+	primaryKey({ columns: [table.userId, table.sourceId], name: "user_source_affinity_pkey"}),
 ]);
 export const acceptedFriendshipsView = pgView("accepted_friendships_view", {	id: uuid(),
 	user1Id: uuid("user1_id"),

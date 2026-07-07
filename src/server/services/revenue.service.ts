@@ -1,4 +1,6 @@
-import { supabase } from '../config/supabase.js'
+import { and, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { userSubscriptions, refunds } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 
 export interface RevenueStats {
@@ -37,6 +39,8 @@ export interface RevenueBreakdown {
   refunds: number
 }
 
+const REFUNDED_STATUSES = ['approved', 'processed']
+
 export class RevenueService {
   // Get overall revenue statistics
   static async getRevenueStats(days: number = 30): Promise<RevenueStats> {
@@ -44,74 +48,50 @@ export class RevenueService {
       const startDate = new Date()
       startDate.setDate(startDate.getDate() - days)
 
-      // Get subscription revenue
-      const { data: subscriptions, error: subError } = await supabase
-        .from('subscriptions')
-        .select('price_paid, currency, started_at, plan_type')
-        .gte('started_at', startDate.toISOString())
-        .not('price_paid', 'is', null)
+      const subscriptions = await db.select({ amount: userSubscriptions.amount, startedAt: userSubscriptions.startedAt })
+        .from(userSubscriptions)
+        .where(and(gte(userSubscriptions.startedAt, startDate.toISOString()), isNotNull(userSubscriptions.amount)))
 
-      if (subError) {
-        logger.error({ error: subError }, 'Error fetching subscription revenue')
-        throw subError
-      }
+      const refundRows = await db.select({ amount: refunds.amount, requestedAt: refunds.requestedAt })
+        .from(refunds)
+        .where(and(gte(refunds.requestedAt, startDate.toISOString()), inArray(refunds.status, REFUNDED_STATUSES)))
 
-      // Get refund data
-      const { data: refunds, error: refundError } = await supabase
-        .from('refunds')
-        .select('amount, currency, requested_at, status')
-        .gte('requested_at', startDate.toISOString())
-        .in('status', ['approved', 'processed'])
-
-      if (refundError) {
-        logger.error({ error: refundError }, 'Error fetching refund data')
-        throw refundError
-      }
-
-      // Calculate totals
-      const totalRevenue = subscriptions?.reduce((sum, sub) => sum + (sub.price_paid || 0), 0) || 0
-      const totalRefunds = refunds?.reduce((sum, refund) => sum + refund.amount, 0) || 0
+      const totalRevenue = subscriptions.reduce((sum, sub) => sum + Number(sub.amount || 0), 0)
+      const totalRefunds = refundRows.reduce((sum, refund) => sum + Number(refund.amount || 0), 0)
       const netRevenue = totalRevenue - totalRefunds
 
-      // Get previous period for growth calculation
       const prevStartDate = new Date(startDate)
       prevStartDate.setDate(prevStartDate.getDate() - days)
 
-      const { data: prevSubscriptions } = await supabase
-        .from('subscriptions')
-        .select('price_paid')
-        .gte('started_at', prevStartDate.toISOString())
-        .lt('started_at', startDate.toISOString())
-        .not('price_paid', 'is', null)
+      const prevSubscriptions = await db.select({ amount: userSubscriptions.amount })
+        .from(userSubscriptions)
+        .where(and(
+          gte(userSubscriptions.startedAt, prevStartDate.toISOString()),
+          lt(userSubscriptions.startedAt, startDate.toISOString()),
+          isNotNull(userSubscriptions.amount),
+        ))
 
-      const prevRevenue = prevSubscriptions?.reduce((sum, sub) => sum + (sub.price_paid || 0), 0) || 0
+      const prevRevenue = prevSubscriptions.reduce((sum, sub) => sum + Number(sub.amount || 0), 0)
       const revenueGrowth = prevRevenue > 0 ? ((totalRevenue - prevRevenue) / prevRevenue) * 100 : 0
-
-      // Calculate refund rate
       const refundRate = totalRevenue > 0 ? (totalRefunds / totalRevenue) * 100 : 0
 
-      // Get monthly and yearly revenue
       const monthlyStartDate = new Date()
       monthlyStartDate.setMonth(monthlyStartDate.getMonth() - 1)
 
-      const { data: monthlySubscriptions } = await supabase
-        .from('subscriptions')
-        .select('price_paid')
-        .gte('started_at', monthlyStartDate.toISOString())
-        .not('price_paid', 'is', null)
+      const monthlySubscriptions = await db.select({ amount: userSubscriptions.amount })
+        .from(userSubscriptions)
+        .where(and(gte(userSubscriptions.startedAt, monthlyStartDate.toISOString()), isNotNull(userSubscriptions.amount)))
 
-      const monthlyRevenue = monthlySubscriptions?.reduce((sum, sub) => sum + (sub.price_paid || 0), 0) || 0
+      const monthlyRevenue = monthlySubscriptions.reduce((sum, sub) => sum + Number(sub.amount || 0), 0)
 
       const yearlyStartDate = new Date()
       yearlyStartDate.setFullYear(yearlyStartDate.getFullYear() - 1)
 
-      const { data: yearlySubscriptions } = await supabase
-        .from('subscriptions')
-        .select('price_paid')
-        .gte('started_at', yearlyStartDate.toISOString())
-        .not('price_paid', 'is', null)
+      const yearlySubscriptions = await db.select({ amount: userSubscriptions.amount })
+        .from(userSubscriptions)
+        .where(and(gte(userSubscriptions.startedAt, yearlyStartDate.toISOString()), isNotNull(userSubscriptions.amount)))
 
-      const yearlyRevenue = yearlySubscriptions?.reduce((sum, sub) => sum + (sub.price_paid || 0), 0) || 0
+      const yearlyRevenue = yearlySubscriptions.reduce((sum, sub) => sum + Number(sub.amount || 0), 0)
 
       return {
         totalRevenue,
@@ -134,56 +114,39 @@ export class RevenueService {
       const startDate = new Date()
       startDate.setDate(startDate.getDate() - days)
 
-      // Get subscription revenue by plan
-      const { data: subscriptions, error: subError } = await supabase
-        .from('subscriptions')
-        .select('price_paid, currency, plan_type, user_id')
-        .gte('started_at', startDate.toISOString())
-        .not('price_paid', 'is', null)
+      const subscriptions = await db.select({
+        amount: userSubscriptions.amount,
+        planId: userSubscriptions.planId,
+      })
+        .from(userSubscriptions)
+        .where(and(gte(userSubscriptions.startedAt, startDate.toISOString()), isNotNull(userSubscriptions.amount)))
 
-      if (subError) throw subError
+      const refundRows = await db.select({
+        amount: refunds.amount,
+        planId: userSubscriptions.planId,
+      })
+        .from(refunds)
+        .leftJoin(userSubscriptions, eq(userSubscriptions.id, refunds.subscriptionId))
+        .where(and(gte(refunds.requestedAt, startDate.toISOString()), inArray(refunds.status, REFUNDED_STATUSES)))
 
-      // Get refunds by plan
-      const { data: refunds, error: refundError } = await supabase
-        .from('refunds')
-        .select(`
-          amount,
-          subscription:subscriptions!inner(plan_type)
-        `)
-        .gte('requested_at', startDate.toISOString())
-        .in('status', ['approved', 'processed'])
-
-      if (refundError) throw refundError
-
-      // Group by plan type
       const planData: { [key: string]: PlanRevenue } = {}
 
-      // Process subscriptions
-      subscriptions?.forEach(sub => {
-        const planType = sub.plan_type || 'unknown'
+      subscriptions.forEach(sub => {
+        const planType = sub.planId || 'unknown'
         if (!planData[planType]) {
-          planData[planType] = {
-            plan_type: planType,
-            revenue: 0,
-            subscribers: 0,
-            averageRevenue: 0,
-            refunds: 0,
-            netRevenue: 0
-          }
+          planData[planType] = { plan_type: planType, revenue: 0, subscribers: 0, averageRevenue: 0, refunds: 0, netRevenue: 0 }
         }
-        planData[planType].revenue += sub.price_paid || 0
+        planData[planType].revenue += Number(sub.amount || 0)
         planData[planType].subscribers += 1
       })
 
-      // Process refunds
-      refunds?.forEach((refund: any) => {
-        const planType = refund.subscription?.plan_type || 'unknown'
+      refundRows.forEach(refund => {
+        const planType = refund.planId || 'unknown'
         if (planData[planType]) {
-          planData[planType].refunds += refund.amount
+          planData[planType].refunds += Number(refund.amount || 0)
         }
       })
 
-      // Calculate averages and net revenue
       Object.values(planData).forEach(plan => {
         plan.averageRevenue = plan.subscribers > 0 ? plan.revenue / plan.subscribers : 0
         plan.netRevenue = plan.revenue - plan.refunds
@@ -200,7 +163,7 @@ export class RevenueService {
   static async getMonthlyRevenueTrend(months: number = 12): Promise<MonthlyRevenueData[]> {
     try {
       const monthlyData: MonthlyRevenueData[] = []
-      
+
       for (let i = months - 1; i >= 0; i--) {
         const startDate = new Date()
         startDate.setMonth(startDate.getMonth() - i)
@@ -210,32 +173,31 @@ export class RevenueService {
         const endDate = new Date(startDate)
         endDate.setMonth(endDate.getMonth() + 1)
 
-        // Get subscriptions for this month
-        const { data: subscriptions } = await supabase
-          .from('subscriptions')
-          .select('price_paid, user_id')
-          .gte('started_at', startDate.toISOString())
-          .lt('started_at', endDate.toISOString())
-          .not('price_paid', 'is', null)
+        const subscriptions = await db.select({ amount: userSubscriptions.amount })
+          .from(userSubscriptions)
+          .where(and(
+            gte(userSubscriptions.startedAt, startDate.toISOString()),
+            lt(userSubscriptions.startedAt, endDate.toISOString()),
+            isNotNull(userSubscriptions.amount),
+          ))
 
-        // Get refunds for this month
-        const { data: refunds } = await supabase
-          .from('refunds')
-          .select('amount')
-          .gte('requested_at', startDate.toISOString())
-          .lt('requested_at', endDate.toISOString())
-          .in('status', ['approved', 'processed'])
+        const refundRows = await db.select({ amount: refunds.amount })
+          .from(refunds)
+          .where(and(
+            gte(refunds.requestedAt, startDate.toISOString()),
+            lt(refunds.requestedAt, endDate.toISOString()),
+            inArray(refunds.status, REFUNDED_STATUSES),
+          ))
 
-        const revenue = subscriptions?.reduce((sum, sub) => sum + (sub.price_paid || 0), 0) || 0
-        const refundAmount = refunds?.reduce((sum, refund) => sum + refund.amount, 0) || 0
-        const subscribers = subscriptions?.length || 0
+        const revenue = subscriptions.reduce((sum, sub) => sum + Number(sub.amount || 0), 0)
+        const refundAmount = refundRows.reduce((sum, refund) => sum + Number(refund.amount || 0), 0)
 
         monthlyData.push({
           month: startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short' }),
           revenue,
           refunds: refundAmount,
           netRevenue: revenue - refundAmount,
-          subscribers
+          subscribers: subscriptions.length
         })
       }
 
@@ -252,40 +214,27 @@ export class RevenueService {
       const startDate = new Date()
       startDate.setDate(startDate.getDate() - days)
 
-      // Get all subscriptions in the period
-      const { data: subscriptions } = await supabase
-        .from('subscriptions')
-        .select('price_paid, started_at, status, plan_type, user_id')
-        .gte('started_at', startDate.toISOString())
+      const subscriptions = await db.select({ status: userSubscriptions.status })
+        .from(userSubscriptions)
+        .where(gte(userSubscriptions.startedAt, startDate.toISOString()))
 
-      // Get refunds
-      const { data: refunds } = await supabase
-        .from('refunds')
-        .select('amount')
-        .gte('requested_at', startDate.toISOString())
-        .in('status', ['approved', 'processed'])
+      const refundRows = await db.select({ amount: refunds.amount })
+        .from(refunds)
+        .where(and(gte(refunds.requestedAt, startDate.toISOString()), inArray(refunds.status, REFUNDED_STATUSES)))
 
-      // Get cancellations
-      const { data: cancellations } = await supabase
-        .from('subscriptions')
-        .select('price_paid')
-        .gte('cancelled_at', startDate.toISOString())
-        .not('cancelled_at', 'is', null)
+      const cancellations = await db.select({ id: userSubscriptions.id })
+        .from(userSubscriptions)
+        .where(and(gte(userSubscriptions.cancelledAt, startDate.toISOString()), isNotNull(userSubscriptions.cancelledAt)))
 
-      // Calculate breakdown (simplified logic - can be enhanced)
-      const newSubscriptions = subscriptions?.filter(sub => sub.status === 'active').length || 0
-      const renewals = 0 // Would need renewal tracking
-      const upgrades = 0 // Would need plan change tracking
-      const downgrades = 0 // Would need plan change tracking
-      const cancellationCount = cancellations?.length || 0
-      const refundAmount = refunds?.reduce((sum, refund) => sum + refund.amount, 0) || 0
+      const newSubscriptions = subscriptions.filter(sub => sub.status === 'active').length
+      const refundAmount = refundRows.reduce((sum, refund) => sum + Number(refund.amount || 0), 0)
 
       return {
         newSubscriptions,
-        renewals,
-        upgrades,
-        downgrades,
-        cancellations: cancellationCount,
+        renewals: 0, // Would need renewal tracking
+        upgrades: 0, // Would need plan change tracking
+        downgrades: 0, // Would need plan change tracking
+        cancellations: cancellations.length,
         refunds: refundAmount
       }
     } catch (error) {

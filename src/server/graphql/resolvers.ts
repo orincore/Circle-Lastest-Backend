@@ -5,6 +5,7 @@ import { db } from '../config/db.js'
 import { profiles } from '../db/schema.js'
 import { trackLocationUpdated, trackInterestUpdated } from '../services/activityService.js'
 import { cache, cacheKeys, invalidateProfileCache, PROFILE_TTL } from '../services/cache.js'
+import { calculateAge, isValidDateOfBirth, MIN_AGE } from '../utils/age.js'
 
 function toUser(u: Profile | null) {
   if (!u) return null
@@ -15,6 +16,8 @@ function toUser(u: Profile | null) {
     firstName: u.first_name,
     lastName: u.last_name,
     age: u.age,
+    dateOfBirth: u.date_of_birth ?? null,
+    needsDobMigration: !u.date_of_birth,
     gender: u.gender,
     phoneNumber: u.phone_number ?? null,
     about: u.about ?? null,
@@ -129,7 +132,13 @@ export const resolvers = {
       if (typeof input.username === 'string') allowed.username = input.username
       if (typeof input.firstName === 'string') allowed.first_name = input.firstName
       if (typeof input.lastName === 'string') allowed.last_name = input.lastName
-      if (typeof input.age === 'number') allowed.age = input.age
+      if (typeof input.dateOfBirth === 'string') {
+        if (!isValidDateOfBirth(new Date(input.dateOfBirth))) {
+          throw new Error(`You must be at least ${MIN_AGE} years old`)
+        }
+        allowed.date_of_birth = input.dateOfBirth
+        allowed.age = calculateAge(new Date(input.dateOfBirth))
+      }
       if (typeof input.gender === 'string') allowed.gender = input.gender
       if (typeof input.phoneNumber === 'string') allowed.phone_number = input.phoneNumber
       if (typeof input.about === 'string') {
@@ -152,6 +161,7 @@ export const resolvers = {
       if ('username' in allowed) drizzleUpdate.username = allowed.username
       if ('first_name' in allowed) drizzleUpdate.firstName = allowed.first_name
       if ('last_name' in allowed) drizzleUpdate.lastName = allowed.last_name
+      if ('date_of_birth' in allowed) drizzleUpdate.dateOfBirth = allowed.date_of_birth
       if ('age' in allowed) drizzleUpdate.age = allowed.age
       if ('gender' in allowed) drizzleUpdate.gender = allowed.gender
       if ('phone_number' in allowed) drizzleUpdate.phoneNumber = allowed.phone_number

@@ -11,6 +11,15 @@ const HISTORY_TTL = 120
 /**
  * Invalidate all chat caches affected by a change in `chatId`:
  * the chat's message-history pages and every member's inbox.
+ *
+ * Bumps each member's inbox *generation* (see cacheKeys.inbox) rather than
+ * deleting the current inbox cache key outright. A plain delete has a race:
+ * a GET /inbox that started reading just before this runs can still finish
+ * and write its (now-stale) result back to that same key *after* the delete,
+ * silently reviving stale data for the rest of the TTL -- e.g. a freshly
+ * shared meme rendering as "Media" again after a manual refresh. Bumping the
+ * generation instead means any such late write lands on the old, now
+ * unreferenced key, which nobody reads and which simply expires.
  */
 export async function invalidateChatCaches(chatId: string, memberIds?: string[]): Promise<void> {
   try {
@@ -21,7 +30,7 @@ export async function invalidateChatCaches(chatId: string, memberIds?: string[])
       ids = members.map((m) => m.userId)
     }
     if (ids && ids.length) {
-      await cache.del(...ids.map((id) => cacheKeys.inbox(id)))
+      await Promise.all(ids.map((id) => cache.incr(cacheKeys.inboxVersion(id))))
     }
   } catch {
     // best-effort
@@ -30,7 +39,7 @@ export async function invalidateChatCaches(chatId: string, memberIds?: string[])
 
 /** Invalidate a single user's inbox cache (e.g. when their unread count changes). */
 export async function invalidateInbox(userId: string): Promise<void> {
-  await cache.del(cacheKeys.inbox(userId))
+  await cache.incr(cacheKeys.inboxVersion(userId))
 }
 
 export interface Chat {
@@ -60,6 +69,7 @@ export interface ChatMessage {
   is_deleted?: boolean
   is_view_once?: boolean
   view_once_viewed_at?: string | null
+  shared_meme_id?: string | null
 }
 
 type ChatRow = typeof chats.$inferSelect
@@ -91,6 +101,7 @@ export function rowToChatMessage(row: ChatMessageRow): ChatMessage {
     is_deleted: row.isDeleted ?? undefined,
     is_view_once: row.isViewOnce,
     view_once_viewed_at: row.viewOnceViewedAt,
+    shared_meme_id: row.sharedMemeId,
   }
 }
 
@@ -151,7 +162,10 @@ export async function ensureChatForUsers(a: string, b: string): Promise<Chat> {
 
 export async function getUserInbox(userId: string) {
   // Serve from cache when available — this is the hot path the app polls.
-  const cacheKey = cacheKeys.inbox(userId)
+  // Keyed by generation (see invalidateChatCaches) so a bump from a
+  // concurrent write can never be silently overwritten by a stale read.
+  const generation = (await cache.getJSON<number>(cacheKeys.inboxVersion(userId))) ?? 0
+  const cacheKey = cacheKeys.inbox(userId, generation)
   const cached = await cache.getJSON<any[]>(cacheKey)
   if (cached) return cached
 
@@ -401,7 +415,8 @@ export async function insertMessage(
   mediaType?: string,
   thumbnail?: string,
   replyToId?: string,
-  isViewOnce?: boolean
+  isViewOnce?: boolean,
+  sharedMemeId?: string
 ): Promise<ChatMessage> {
   // Insert the message
   const messageData: typeof messages.$inferInsert = {
@@ -416,6 +431,7 @@ export async function insertMessage(
   if (thumbnail) messageData.thumbnail = thumbnail
   if (replyToId) messageData.replyToId = replyToId
   if (isViewOnce) messageData.isViewOnce = true
+  if (sharedMemeId) messageData.sharedMemeId = sharedMemeId
 
   const insertedRows = await db.insert(messages).values(messageData).returning()
   const data = rowToChatMessage(insertedRows[0])

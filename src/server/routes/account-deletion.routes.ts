@@ -10,7 +10,7 @@ import {
   messages,
   notifications,
   profiles,
-  subscriptions,
+  userSubscriptions,
   userActivities,
   userPhotos,
   userProfileVisits,
@@ -153,7 +153,7 @@ router.post('/delete-account', requireAuth, async (req: AuthRequest, res) => {
 
     // 12. Delete subscription data
     try {
-      const deleted = await db.delete(subscriptions).where(eq(subscriptions.userId, userId)).returning({ id: subscriptions.id })
+      const deleted = await db.delete(userSubscriptions).where(eq(userSubscriptions.userId, userId)).returning({ id: userSubscriptions.id })
       deletionResults.subscriptions = deleted.length
     } catch (error) {
       console.error('Error deleting subscriptions:', error)

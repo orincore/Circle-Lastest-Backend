@@ -9,6 +9,7 @@ export interface Profile {
   first_name: string
   last_name: string
   age: number
+  date_of_birth?: string | null
   gender: string
   phone_number?: string | null
   about: string
@@ -58,6 +59,7 @@ export function rowToProfile(row: ProfileRow): Profile {
     first_name: row.firstName,
     last_name: row.lastName,
     age: row.age,
+    date_of_birth: row.dateOfBirth,
     gender: row.gender,
     phone_number: row.phoneNumber,
     about: row.about,
@@ -111,6 +113,7 @@ export async function createProfile(p: Omit<Profile, 'id' | 'created_at'>): Prom
     firstName: p.first_name,
     lastName: p.last_name,
     age: p.age,
+    dateOfBirth: p.date_of_birth ?? null,
     gender: p.gender,
     phoneNumber: p.phone_number ?? null,
     about: p.about,

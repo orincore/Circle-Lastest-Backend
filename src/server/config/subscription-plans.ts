@@ -1,77 +1,17 @@
 /**
- * Subscription Plans Configuration
- * Easy to modify pricing - just update the amounts here
+ * Subscription plan helpers. Pricing/product-ID catalog lives in the
+ * `subscription_plans` DB table (seeded in migrations/payments_rewrite_native_iap_razorpay.sql)
+ * -- this file only has pure date-math shared by the Apple/Google/Razorpay verify handlers.
  */
 
-export interface SubscriptionPlan {
-  id: string;
-  name: string;
-  duration: 'monthly' | 'yearly';
-  price: number; // in INR
-  currency: string;
-  features: string[];
-  popular?: boolean;
-  savings?: string;
+export type PlanId = 'monthly' | 'yearly'
+
+export const getDurationInDays = (billingPeriod: PlanId): number => {
+  return billingPeriod === 'monthly' ? 30 : 365
 }
 
-export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
-  {
-    id: 'monthly',
-    name: 'Monthly Plan',
-    duration: 'monthly',
-    price: 176, // ₹149 + 18% GST = ₹176
-    currency: 'INR',
-    features: [
-      'Unlimited messaging',
-      'Advanced matching',
-      'See who liked you',
-      'Priority support',
-      'Ad-free experience'
-    ],
-    popular: false
-  },
-  {
-    id: 'yearly',
-    name: 'Yearly Plan',
-    duration: 'yearly',
-    price: 1769, // ₹1499 + 18% GST = ₹1769
-    currency: 'INR',
-    features: [
-      'All Monthly features',
-      'Unlimited messaging',
-      'Advanced matching',
-      'See who liked you',
-      'Priority support',
-      'Ad-free experience',
-      'Save ₹343 per year'
-    ],
-    popular: true,
-    savings: 'Save 16%'
-  }
-];
-
-// Helper function to get plan by ID
-export const getPlanById = (planId: string): SubscriptionPlan | undefined => {
-  return SUBSCRIPTION_PLANS.find(plan => plan.id === planId);
-};
-
-// Helper function to calculate savings
-export const calculateSavings = (): number => {
-  const monthly = SUBSCRIPTION_PLANS.find(p => p.id === 'monthly');
-  const yearly = SUBSCRIPTION_PLANS.find(p => p.id === 'yearly');
-  
-  if (monthly && yearly) {
-    return (monthly.price * 12) - yearly.price;
-  }
-  return 0;
-};
-
-// Helper to get duration in days
-export const getDurationInDays = (planId: string): number => {
-  const plan = getPlanById(planId);
-  if (!plan) return 0;
-  
-  return plan.duration === 'monthly' ? 30 : 365;
-};
-
-export default SUBSCRIPTION_PLANS;
+export const computeExpiryDate = (billingPeriod: PlanId, from: Date = new Date()): Date => {
+  const expiresAt = new Date(from)
+  expiresAt.setDate(expiresAt.getDate() + getDurationInDays(billingPeriod))
+  return expiresAt
+}

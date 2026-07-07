@@ -295,6 +295,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         mediaUrl: msg.media_url,
         mediaType: msg.media_type,
         thumbnail: msg.thumbnail,
+        sharedMemeId: msg.shared_meme_id,
         createdAt: new Date(msg.created_at).getTime(),
         status: 'sent',
         senderName,

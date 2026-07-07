@@ -1321,6 +1321,7 @@ export async function initOptimizedSocket(server: Server) {
             mediaUrl: r.media_url, // already stripped by getChatMessages for view-once
             mediaType: r.media_type,
             thumbnail: r.thumbnail,
+            sharedMemeId: (r as any).shared_meme_id,
             isViewOnce: (r as any).is_view_once || false,
             viewOnceViewed: !!(r as any).view_once_viewed_at,
             reply_to_id: r.reply_to_id, // Include reply reference

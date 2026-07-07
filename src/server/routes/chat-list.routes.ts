@@ -212,6 +212,13 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           mediaUrl: (item.lastMessage as any).media_url,
           mediaType: (item.lastMessage as any).media_type,
           thumbnail: (item.lastMessage as any).thumbnail,
+          // A shared meme has no text/media of its own -- the client's preview
+          // fallback relies on this field to say "Shared a meme" instead of
+          // "Media". It was missing here, so it always showed "Media" on any
+          // REST refresh even though shared_meme_id was already correct on
+          // the underlying row (the realtime socket payload sends it fine,
+          // which is why it only broke on refresh/restart, not immediately).
+          sharedMemeId: (item.lastMessage as any).shared_meme_id,
           isEdited: item.lastMessage.is_edited,
           isDeleted: item.lastMessage.is_deleted,
           status: (item.lastMessage as any).status || 'sent',

@@ -11,6 +11,7 @@ import { NotificationService } from '../services/notificationService.js'
 import { trackUserJoined } from '../services/activityService.js'
 import emailService from '../services/emailService.js'
 import { OAuth2Client } from 'google-auth-library'
+import { calculateAge, isValidDateOfBirth, MIN_AGE } from '../utils/age.js'
 
 const router = Router()
 
@@ -22,7 +23,9 @@ const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID, GOOGL
 const signupSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
-  age: z.coerce.number().int().min(13).max(120),
+  dateOfBirth: z.coerce.date().refine(isValidDateOfBirth, {
+    message: `You must be at least ${MIN_AGE} years old`,
+  }),
   gender: z.string().min(1),
   email: z.string().email(),
   phoneNumber: z.string().min(5).optional(),
@@ -76,7 +79,9 @@ router.post('/signup', async (req, res) => {
     } catch {}
     return res.status(400).json({ error: 'Invalid body', details: parse.error.flatten() })
   }
-  let { email, password, firstName, lastName, age, gender, phoneNumber, about, interests, needs, username, instagramUsername, referralCode } = parse.data
+  let { email, password, firstName, lastName, dateOfBirth, gender, phoneNumber, about, interests, needs, username, instagramUsername, referralCode } = parse.data
+  const age = calculateAge(dateOfBirth)
+  const dateOfBirthStr = dateOfBirth.toISOString().slice(0, 10)
 
   // Debug: Log the parsed data to see what we're receiving
   
@@ -113,6 +118,7 @@ router.post('/signup', async (req, res) => {
     first_name: firstName,
     last_name: lastName,
     age,
+    date_of_birth: dateOfBirthStr,
     gender,
     phone_number: phoneNumber,
     about: about || 'Hello! I\'m excited to connect with new people and make meaningful friendships.',
@@ -200,6 +206,7 @@ router.post('/signup', async (req, res) => {
       firstName: profile.first_name,
       lastName: profile.last_name,
       age: profile.age,
+      dateOfBirth: profile.date_of_birth,
       gender: profile.gender,
       phoneNumber: profile.phone_number,
       about: profile.about,
@@ -263,6 +270,7 @@ router.post('/login', async (req, res) => {
       firstName: user.first_name,
       lastName: user.last_name,
       age: user.age,
+      dateOfBirth: user.date_of_birth,
       gender: user.gender,
       phoneNumber: user.phone_number,
       about: user.about,
@@ -271,7 +279,8 @@ router.post('/login', async (req, res) => {
       profilePhotoUrl: user.profile_photo_url,
       instagramUsername: user.instagram_username,
       emailVerified: user.email_verified || false
-    }
+    },
+    needsDobMigration: !user.date_of_birth
   };
   
   //console.log('🔍 [Login] Response emailVerified:', loginResponse.user.emailVerified);
@@ -341,6 +350,7 @@ router.post('/google', async (req, res) => {
           firstName: existingUser.first_name,
           lastName: existingUser.last_name,
           age: existingUser.age,
+          dateOfBirth: existingUser.date_of_birth,
           gender: existingUser.gender,
           phoneNumber: existingUser.phone_number,
           about: existingUser.about,
@@ -350,7 +360,8 @@ router.post('/google', async (req, res) => {
           instagramUsername: existingUser.instagram_username,
           emailVerified: existingUser.email_verified || false
         },
-        isNewUser: false
+        isNewUser: false,
+        needsDobMigration: !existingUser.date_of_birth
       })
     }
 
@@ -375,18 +386,18 @@ router.post('/google', async (req, res) => {
 // Complete Google OAuth Signup
 router.post('/google/complete-signup', async (req, res) => {
   try {
-    const { 
-      idToken, 
-      firstName, 
-      lastName, 
-      age, 
-      gender, 
-      username, 
-      phoneNumber, 
-      interests, 
-      needs, 
-      instagramUsername, 
-      about 
+    const {
+      idToken,
+      firstName,
+      lastName,
+      dateOfBirth,
+      gender,
+      username,
+      phoneNumber,
+      interests,
+      needs,
+      instagramUsername,
+      about
     } = req.body
 
     if (!idToken) {
@@ -412,9 +423,16 @@ router.post('/google/complete-signup', async (req, res) => {
     const profilePicture = payload.picture
 
     // Validate required fields
-    if (!firstName || !lastName || !age || !gender || !username) {
+    if (!firstName || !lastName || !dateOfBirth || !gender || !username) {
       return res.status(400).json({ error: 'Missing required fields' })
     }
+
+    if (!isValidDateOfBirth(new Date(dateOfBirth))) {
+      return res.status(400).json({ error: `You must be at least ${MIN_AGE} years old` })
+    }
+
+    const age = calculateAge(new Date(dateOfBirth))
+    const dateOfBirthStr = new Date(dateOfBirth).toISOString().slice(0, 10)
 
     // Check if email is already taken
     const existingUser = await findByEmail(email)
@@ -438,7 +456,8 @@ router.post('/google/complete-signup', async (req, res) => {
       username: username.trim(),
       first_name: firstName.trim(),
       last_name: lastName.trim(),
-      age: Number(age),
+      age,
+      date_of_birth: dateOfBirthStr,
       gender: gender.trim(),
       phone_number: phoneNumber || null,
       about: about || 'Hello! I\'m excited to connect with new people and make meaningful friendships.',
@@ -492,6 +511,7 @@ router.post('/google/complete-signup', async (req, res) => {
         firstName: profile.first_name,
         lastName: profile.last_name,
         age: profile.age,
+        dateOfBirth: profile.date_of_birth,
         gender: profile.gender,
         phoneNumber: profile.phone_number,
         about: profile.about,

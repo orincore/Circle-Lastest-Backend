@@ -1,19 +1,30 @@
-import { supabase } from '../config/supabase.js'
+import { and, eq, inArray, lt, sql } from 'drizzle-orm'
+import { db } from '../config/db.js'
+import { userSubscriptions, dailyMatchLimits, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
+
+export type PlanId = 'monthly' | 'yearly'
+export type SubscriptionSource = 'ios' | 'android' | 'web'
+export type SubscriptionStatus = 'active' | 'cancelled' | 'expired' | 'grace_period' | 'pending'
 
 export interface Subscription {
   id: string
   user_id: string
-  plan_type: 'free' | 'premium' | 'premium_plus'
-  status: 'active' | 'cancelled' | 'expired' | 'pending'
+  plan_id: PlanId
+  status: SubscriptionStatus
+  source: SubscriptionSource
   started_at: Date
-  expires_at?: Date
-  payment_provider?: string
-  external_subscription_id?: string
-  price_paid?: number
-  currency: string
+  expires_at: Date
   auto_renew: boolean
   cancelled_at?: Date
+  amount?: number
+  currency: string
+  apple_original_transaction_id?: string | null
+  apple_transaction_id?: string | null
+  google_purchase_token?: string | null
+  google_order_id?: string | null
+  razorpay_subscription_id?: string | null
+  razorpay_customer_id?: string | null
 }
 
 export interface DailyMatchLimit {
@@ -23,130 +34,73 @@ export interface DailyMatchLimit {
   matches_made: number
 }
 
+function rowToSubscription(row: typeof userSubscriptions.$inferSelect): Subscription {
+  return {
+    id: row.id,
+    user_id: row.userId,
+    plan_id: row.planId as PlanId,
+    status: row.status as SubscriptionStatus,
+    source: row.source as SubscriptionSource,
+    started_at: new Date(row.startedAt),
+    expires_at: new Date(row.expiresAt),
+    auto_renew: row.autoRenew,
+    cancelled_at: row.cancelledAt ? new Date(row.cancelledAt) : undefined,
+    amount: row.amount !== null && row.amount !== undefined ? Number(row.amount) : undefined,
+    currency: row.currency || 'INR',
+    apple_original_transaction_id: row.appleOriginalTransactionId,
+    apple_transaction_id: row.appleTransactionId,
+    google_purchase_token: row.googlePurchaseToken,
+    google_order_id: row.googleOrderId,
+    razorpay_subscription_id: row.razorpaySubscriptionId,
+    razorpay_customer_id: row.razorpayCustomerId,
+  }
+}
+
 export class SubscriptionService {
-  // Get user's current subscription (active or any status)
+  // Get user's current subscription row, if any (one row per user, any status)
   static async getUserSubscription(userId: string): Promise<Subscription | null> {
     try {
-      const { data, error } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
+      const [row] = await db.select().from(userSubscriptions)
+        .where(eq(userSubscriptions.userId, userId))
         .limit(1)
-        .single()
-      
-      if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-        throw error
-      }
-      
-      if (data) return data
-      
-      // Also check user_subscriptions table (Cashfree payments)
-      const { data: cashfreeSub, error: cashfreeError } = await supabase
-        .from('user_subscriptions')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single()
-      
-      if (cashfreeError && cashfreeError.code !== 'PGRST116') {
-        logger.error({ error: cashfreeError, userId }, 'Error getting Cashfree subscription')
-      }
-      
-      if (cashfreeSub) {
-        // Map Cashfree subscription to standard format
-        return {
-          id: cashfreeSub.id,
-          user_id: cashfreeSub.user_id,
-          plan_type: 'premium', // Map monthly/yearly to premium
-          status: cashfreeSub.status,
-          started_at: new Date(cashfreeSub.started_at),
-          expires_at: cashfreeSub.expires_at ? new Date(cashfreeSub.expires_at) : undefined,
-          payment_provider: cashfreeSub.payment_gateway,
-          external_subscription_id: cashfreeSub.gateway_subscription_id,
-          price_paid: cashfreeSub.amount,
-          currency: cashfreeSub.currency || 'INR',
-          auto_renew: cashfreeSub.auto_renew || false,
-          cancelled_at: cashfreeSub.cancelled_at ? new Date(cashfreeSub.cancelled_at) : undefined
-        } as Subscription
-      }
-      
-      return null
+
+      return row ? rowToSubscription(row) : null
     } catch (error) {
       logger.error({ error, userId }, 'Error getting user subscription')
       throw error
     }
   }
 
-  // Get user's active subscription only
+  // Get user's subscription only if status is exactly 'active'
   static async getActiveSubscription(userId: string): Promise<Subscription | null> {
     try {
-      const { data, error } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .single()
-      
-      if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-        throw error
-      }
-      
-      return data || null
+      const [row] = await db.select().from(userSubscriptions)
+        .where(and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, 'active')))
+        .limit(1)
+
+      return row ? rowToSubscription(row) : null
     } catch (error) {
       logger.error({ error, userId }, 'Error getting active subscription')
       throw error
     }
   }
 
-  // Check if user is premium
+  // Check if user is premium (active or cancelled-but-not-yet-expired)
   static async isPremiumUser(userId: string): Promise<boolean> {
     try {
-      // First check the subscriptions table
-      const subscription = await this.getActiveSubscription(userId)
-      if (subscription) {
-        // Check if subscription is premium and not expired
-        if (subscription.plan_type === 'free') return false
-        
-        if (subscription.expires_at && new Date() > subscription.expires_at) {
-          // Subscription expired, update status
-          await this.expireSubscription(userId)
-          return false
-        }
-        
-        return true
+      const subscription = await this.getUserSubscription(userId)
+      if (!subscription) return false
+
+      if (!['active', 'cancelled', 'grace_period'].includes(subscription.status)) {
+        return false
       }
-      
-      // Also check user_subscriptions table (Cashfree payments)
-      // Note: Include 'cancelled' status because users retain access until expiry
-      const { data: cashfreeSub, error } = await supabase
-        .from('user_subscriptions')
-        .select('*')
-        .eq('user_id', userId)
-        .in('status', ['active', 'cancelled'])
-        .single()
-      
-      if (error && error.code !== 'PGRST116') {
-        logger.error({ error, userId }, 'Error checking Cashfree subscription')
+
+      if (subscription.expires_at && new Date() > subscription.expires_at) {
+        await this.expireSubscription(userId)
+        return false
       }
-      
-      if (cashfreeSub) {
-        // Check if not expired
-        if (cashfreeSub.expires_at && new Date() > new Date(cashfreeSub.expires_at)) {
-          // Expired, update status
-          await supabase
-            .from('user_subscriptions')
-            .update({ status: 'expired', updated_at: new Date().toISOString() })
-            .eq('id', cashfreeSub.id)
-          return false
-        }
-        
-        // User has access until expiry even if cancelled
-        return true
-      }
-      
-      return false
+
+      return true
     } catch (error) {
       logger.error({ error, userId }, 'Error checking premium status')
       return false
@@ -154,48 +108,13 @@ export class SubscriptionService {
   }
 
   // Get user's subscription plan
-  static async getUserPlan(userId: string): Promise<'free' | 'premium' | 'premium_plus'> {
+  static async getUserPlan(userId: string): Promise<'free' | PlanId> {
     try {
-      // First check the subscriptions table
-      const subscription = await this.getActiveSubscription(userId)
-      if (subscription) {
-        // Check if expired
-        if (subscription.expires_at && new Date() > subscription.expires_at) {
-          await this.expireSubscription(userId)
-          return 'free'
-        }
-        
-        return subscription.plan_type
-      }
-      
-      // Also check user_subscriptions table (Cashfree payments)
-      // Include cancelled subscriptions as they retain access until expiry
-      const { data: cashfreeSub, error } = await supabase
-        .from('user_subscriptions')
-        .select('*')
-        .eq('user_id', userId)
-        .in('status', ['active', 'cancelled'])
-        .single()
-      
-      if (error && error.code !== 'PGRST116') {
-        logger.error({ error, userId }, 'Error checking Cashfree subscription plan')
-      }
-      
-      if (cashfreeSub) {
-        // Check if expired
-        if (cashfreeSub.expires_at && new Date() > new Date(cashfreeSub.expires_at)) {
-          await supabase
-            .from('user_subscriptions')
-            .update({ status: 'expired', updated_at: new Date().toISOString() })
-            .eq('id', cashfreeSub.id)
-          return 'free'
-        }
-        
-        // Map Cashfree plan types (monthly/yearly) to premium
-        return 'premium'
-      }
-      
-      return 'free'
+      const isPremium = await this.isPremiumUser(userId)
+      if (!isPremium) return 'free'
+
+      const subscription = await this.getUserSubscription(userId)
+      return subscription?.plan_id || 'free'
     } catch (error) {
       logger.error({ error, userId }, 'Error getting user plan')
       return 'free'
@@ -206,28 +125,21 @@ export class SubscriptionService {
   static async checkDailyMatchLimit(userId: string): Promise<{ canMatch: boolean; matchesUsed: number; limit: number }> {
     try {
       const isPremium = await this.isPremiumUser(userId)
-      
+
       // Premium users have unlimited matches
       if (isPremium) {
         return { canMatch: true, matchesUsed: 0, limit: -1 }
       }
-      
+
       // Free users have 3 matches per day
       const today = new Date().toISOString().split('T')[0]
-      const { data, error } = await supabase
-        .from('daily_match_limits')
-        .select('matches_made')
-        .eq('user_id', userId)
-        .eq('date', today)
-        .single()
-      
-      if (error && error.code !== 'PGRST116') {
-        throw error
-      }
-      
-      const matchesUsed = data?.matches_made || 0
+      const [row] = await db.select({ matchesMade: dailyMatchLimits.matchesMade }).from(dailyMatchLimits)
+        .where(and(eq(dailyMatchLimits.userId, userId), eq(dailyMatchLimits.date, today)))
+        .limit(1)
+
+      const matchesUsed = row?.matchesMade || 0
       const limit = 3
-      
+
       return {
         canMatch: matchesUsed < limit,
         matchesUsed,
@@ -243,40 +155,17 @@ export class SubscriptionService {
   static async incrementDailyMatches(userId: string): Promise<void> {
     try {
       const today = new Date().toISOString().split('T')[0]
-      
-      // Try to update existing record first
-      const { data: existing } = await supabase
-        .from('daily_match_limits')
-        .select('matches_made')
-        .eq('user_id', userId)
-        .eq('date', today)
-        .single()
-      
-      if (existing) {
-        // Update existing record
-        const { error } = await supabase
-          .from('daily_match_limits')
-          .update({ 
-            matches_made: existing.matches_made + 1,
-            updated_at: new Date().toISOString()
-          })
-          .eq('user_id', userId)
-          .eq('date', today)
-        
-        if (error) throw error
-      } else {
-        // Insert new record
-        const { error } = await supabase
-          .from('daily_match_limits')
-          .insert({
-            user_id: userId,
-            date: today,
-            matches_made: 1
-          })
-        
-        if (error) throw error
-      }
-      
+
+      await db.insert(dailyMatchLimits)
+        .values({ userId, date: today, matchesMade: 1 })
+        .onConflictDoUpdate({
+          target: [dailyMatchLimits.userId, dailyMatchLimits.date],
+          set: {
+            matchesMade: sql`${dailyMatchLimits.matchesMade} + 1`,
+            updatedAt: new Date().toISOString(),
+          }
+        })
+
       logger.info({ userId, date: today }, 'Incremented daily match count')
     } catch (error) {
       logger.error({ error, userId }, 'Error incrementing daily matches')
@@ -284,110 +173,87 @@ export class SubscriptionService {
     }
   }
 
-  // Create or update subscription
+  // Create or update the user's subscription (used by all three purchase sources)
   static async createSubscription(
     userId: string,
-    planType: 'premium' | 'premium_plus',
+    planId: PlanId,
     expiresAt: Date,
-    paymentProvider?: string,
-    externalSubscriptionId?: string,
-    pricePaid?: number,
-    currency = 'USD'
+    source: SubscriptionSource,
+    externalIds: {
+      appleOriginalTransactionId?: string
+      appleTransactionId?: string
+      googlePurchaseToken?: string
+      googleOrderId?: string
+      razorpaySubscriptionId?: string
+      razorpayCustomerId?: string
+    } = {},
+    amount?: number,
+    currency = 'INR'
   ): Promise<Subscription> {
     try {
-      // First, try to get existing subscription
-      const existingSubscription = await this.getUserSubscription(userId)
-      
-      let data: Subscription
-      
-      if (existingSubscription) {
-        // Update existing subscription
-        const { data: updatedData, error } = await supabase
-          .from('subscriptions')
-          .update({
-            plan_type: planType,
-            status: 'active',
-            expires_at: expiresAt.toISOString(),
-            payment_provider: paymentProvider,
-            external_subscription_id: externalSubscriptionId,
-            price_paid: pricePaid,
-            currency,
-            updated_at: new Date().toISOString()
-          })
-          .eq('user_id', userId)
-          .select()
-          .single()
-        
-        if (error) throw error
-        data = updatedData
-        logger.info({ userId, planType }, 'Updated existing subscription')
-      } else {
-        // Create new subscription
-        const { data: newData, error } = await supabase
-          .from('subscriptions')
-          .insert({
-            user_id: userId,
-            plan_type: planType,
-            status: 'active',
-            started_at: new Date().toISOString(),
-            expires_at: expiresAt.toISOString(),
-            payment_provider: paymentProvider,
-            external_subscription_id: externalSubscriptionId,
-            price_paid: pricePaid,
-            currency,
-            auto_renew: true
-          })
-          .select()
-          .single()
-        
-        if (error) throw error
-        data = newData
-        logger.info({ userId, planType }, 'Created new subscription')
+      const existing = await this.getUserSubscription(userId)
+      const nowIso = new Date().toISOString()
+
+      const values = {
+        planId,
+        status: 'active' as const,
+        source,
+        expiresAt: expiresAt.toISOString(),
+        autoRenew: true,
+        cancelledAt: null,
+        appleOriginalTransactionId: externalIds.appleOriginalTransactionId ?? null,
+        appleTransactionId: externalIds.appleTransactionId ?? null,
+        googlePurchaseToken: externalIds.googlePurchaseToken ?? null,
+        googleOrderId: externalIds.googleOrderId ?? null,
+        razorpaySubscriptionId: externalIds.razorpaySubscriptionId ?? null,
+        razorpayCustomerId: externalIds.razorpayCustomerId ?? null,
+        amount: amount !== undefined ? String(amount) : null,
+        currency,
+        updatedAt: nowIso,
       }
 
-      // Update profiles table
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          subscription_plan: planType,
-          premium_expires_at: expiresAt.toISOString()
-        })
-        .eq('id', userId)
-      
-      if (profileError) throw profileError
+      let row: typeof userSubscriptions.$inferSelect
+      if (existing) {
+        const [updated] = await db.update(userSubscriptions)
+          .set(values)
+          .where(eq(userSubscriptions.userId, userId))
+          .returning()
+        row = updated
+        logger.info({ userId, planId }, 'Updated existing subscription')
+      } else {
+        const [created] = await db.insert(userSubscriptions)
+          .values({ userId, startedAt: nowIso, ...values })
+          .returning()
+        row = created
+        logger.info({ userId, planId }, 'Created new subscription')
+      }
 
-      logger.info({ userId, planType, expiresAt }, 'Created/updated subscription')
-      return data
+      await db.update(profiles)
+        .set({
+          subscriptionPlan: planId,
+          premiumExpiresAt: expiresAt.toISOString(),
+        })
+        .where(eq(profiles.id, userId))
+
+      logger.info({ userId, planId, expiresAt }, 'Created/updated subscription')
+      return rowToSubscription(row)
     } catch (error) {
-      logger.error({ error, userId, planType }, 'Error creating subscription')
+      logger.error({ error, userId, planId }, 'Error creating subscription')
       throw error
     }
   }
 
-  // Cancel subscription
+  // Cancel subscription (retains access until expiry; auto_renew turned off)
   static async cancelSubscription(userId: string): Promise<void> {
     try {
-      const { error } = await supabase
-        .from('subscriptions')
-        .update({
+      await db.update(userSubscriptions)
+        .set({
           status: 'cancelled',
-          cancelled_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          autoRenew: false,
+          cancelledAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         })
-        .eq('user_id', userId)
-        .eq('status', 'active')
-      
-      if (error) throw error
-
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          subscription_plan: 'free',
-          premium_expires_at: null
-        })
-        .eq('id', userId)
-      
-      if (profileError) throw profileError
+        .where(and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, 'active')))
 
       logger.info({ userId }, 'Cancelled subscription')
     } catch (error) {
@@ -396,19 +262,19 @@ export class SubscriptionService {
     }
   }
 
-  // Expire a subscription (mark as expired)
+  // Expire a subscription (mark as expired, reset profile display fields)
   static async expireSubscription(userId: string): Promise<void> {
     try {
-      await supabase
-        .from('subscriptions')
-        .update({ 
+      await db.update(userSubscriptions)
+        .set({
           status: 'expired',
-          expired_at: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
         })
-        .eq('user_id', userId)
-        .eq('status', 'active')
-      
-      logger.info({ userId }, 'Subscription expired')
+        .where(and(eq(userSubscriptions.userId, userId), inArray(userSubscriptions.status, ['active', 'cancelled', 'grace_period'])))
+
+      await db.update(profiles)
+        .set({ subscriptionPlan: 'free', premiumExpiresAt: null })
+        .where(eq(profiles.id, userId))
 
       logger.info({ userId }, 'Expired subscription')
     } catch (error) {
@@ -420,31 +286,26 @@ export class SubscriptionService {
   // Get subscription stats for admin
   static async getSubscriptionStats(): Promise<{
     total: number
-    free: number
-    premium: number
-    premium_plus: number
+    monthly: number
+    yearly: number
     active: number
     expired: number
     cancelled: number
   }> {
     try {
-      const { data, error } = await supabase
-        .from('subscriptions')
-        .select('plan_type, status')
-      
-      if (error) throw error
-      
-      const stats = {
-        total: data.length,
-        free: data.filter(s => s.plan_type === 'free').length,
-        premium: data.filter(s => s.plan_type === 'premium').length,
-        premium_plus: data.filter(s => s.plan_type === 'premium_plus').length,
-        active: data.filter(s => s.status === 'active').length,
-        expired: data.filter(s => s.status === 'expired').length,
-        cancelled: data.filter(s => s.status === 'cancelled').length
+      const rows = await db.select({
+        planId: userSubscriptions.planId,
+        status: userSubscriptions.status,
+      }).from(userSubscriptions)
+
+      return {
+        total: rows.length,
+        monthly: rows.filter(s => s.planId === 'monthly').length,
+        yearly: rows.filter(s => s.planId === 'yearly').length,
+        active: rows.filter(s => s.status === 'active').length,
+        expired: rows.filter(s => s.status === 'expired').length,
+        cancelled: rows.filter(s => s.status === 'cancelled').length,
       }
-      
-      return stats
     } catch (error) {
       logger.error({ error }, 'Error getting subscription stats')
       throw error
@@ -454,43 +315,22 @@ export class SubscriptionService {
   // Clean up expired subscriptions (run as cron job)
   static async cleanupExpiredSubscriptions(): Promise<number> {
     try {
-      // Get expired subscriptions
-      const { data: expired, error: selectError } = await supabase
-        .from('subscriptions')
-        .select('user_id')
-        .eq('status', 'active')
-        .lt('expires_at', new Date().toISOString())
-      
-      if (selectError) throw selectError
-      
-      if (expired && expired.length > 0) {
-        // Update subscriptions to expired
-        const { error: updateError } = await supabase
-          .from('subscriptions')
-          .update({
-            status: 'expired',
-            updated_at: new Date().toISOString()
-          })
-          .eq('status', 'active')
-          .lt('expires_at', new Date().toISOString())
-        
-        if (updateError) throw updateError
-        
-        // Update profiles table for expired subscriptions
-        const userIds = expired.map((row: any) => row.user_id)
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .update({
-            subscription_plan: 'free',
-            premium_expires_at: null
-          })
-          .in('id', userIds)
-        
-        if (profileError) throw profileError
+      const expired = await db.select({ userId: userSubscriptions.userId }).from(userSubscriptions)
+        .where(and(eq(userSubscriptions.status, 'active'), lt(userSubscriptions.expiresAt, new Date().toISOString())))
+
+      if (expired.length > 0) {
+        await db.update(userSubscriptions)
+          .set({ status: 'expired', updatedAt: new Date().toISOString() })
+          .where(and(eq(userSubscriptions.status, 'active'), lt(userSubscriptions.expiresAt, new Date().toISOString())))
+
+        const userIds = expired.map(row => row.userId)
+        await db.update(profiles)
+          .set({ subscriptionPlan: 'free', premiumExpiresAt: null })
+          .where(inArray(profiles.id, userIds))
       }
 
-      logger.info({ count: expired?.length || 0 }, 'Cleaned up expired subscriptions')
-      return expired?.length || 0
+      logger.info({ count: expired.length }, 'Cleaned up expired subscriptions')
+      return expired.length
     } catch (error) {
       logger.error({ error }, 'Error cleaning up expired subscriptions')
       throw error
@@ -508,7 +348,7 @@ export const requirePremium = async (req: any, res: any, next: any) => {
 
     const isPremium = await SubscriptionService.isPremiumUser(userId)
     if (!isPremium) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: 'Premium subscription required',
         upgrade_required: true,
         current_plan: 'free'
@@ -532,7 +372,7 @@ export const checkMatchLimit = async (req: any, res: any, next: any) => {
 
     const { canMatch, matchesUsed, limit } = await SubscriptionService.checkDailyMatchLimit(userId)
     if (!canMatch) {
-      return res.status(429).json({ 
+      return res.status(429).json({
         error: 'Daily match limit reached',
         matches_used: matchesUsed,
         limit,

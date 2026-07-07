@@ -1,14 +1,43 @@
 import { relations } from "drizzle-orm/relations";
-import { profiles, activityFeed, adminAuditLogs, analyticsEvents, adminRoles, aiConversations, friendships, giverRequestAttempts, helpRequests, appVersions, crashReports, blindDateMatches, blindDateDailyQueue, dailyMatchLimits, blindDatingSettings, chats, chatUserSettings, marketingCampaigns, campaignAnalytics, escalationLogs, chatDeletions, emailTemplates, featureUsage, giverProfiles, followUpTasks, feedbackAnalysis, friendLocationNotifications, helpSessionFeedback, messages, messageReactions, featureFlags, usersInAuth, exploreInteractions, faceVerifications, marketingAutomationRules, referralTransactions, userSubscriptions, promotionalSubscriptions, paymentOrders, proactiveAlerts, messageReceipts, referralCodeAttempts, satisfactionRatings, userReferrals, userActivityEvents, notifications, messageViews, nearbyNotifications, notificationTemplates, pushTokens, satisfactionSurveys, subscriptions, surveyResponses, userPhotos, userConsent, userActivities, userCampaignInteractions, userMarketingPreferences, userReports, userMatches, subscriptionTransactions, systemSettings, referralPaymentRequests, refunds, userProfileVisits, voiceCalls, voiceCallParticipants, userSessions, verificationAttempts, blindDateBlockedMessages, matchmakingProposals, userSegments, chatMembers } from "./schema.js";
+import { subscriptionPlans, userSubscriptions, profiles, paymentTransactions, refunds, memeSources, memes, memeAssets, userMemeAliases, memeLikes, memeComments, chats, memeConnectRequests, memeStats, memeShares, activityFeed, adminAuditLogs, analyticsEvents, adminRoles, aiConversations, friendships, giverRequestAttempts, helpRequests, appVersions, crashReports, blindDateMatches, blindDateDailyQueue, dailyMatchLimits, blindDatingSettings, chatUserSettings, marketingCampaigns, campaignAnalytics, escalationLogs, chatDeletions, emailTemplates, featureUsage, giverProfiles, followUpTasks, feedbackAnalysis, friendLocationNotifications, helpSessionFeedback, messages, messageReactions, featureFlags, usersInAuth, exploreInteractions, faceVerifications, marketingAutomationRules, referralTransactions, promotionalSubscriptions, proactiveAlerts, messageReceipts, referralCodeAttempts, satisfactionRatings, userReferrals, userActivityEvents, notifications, messageViews, nearbyNotifications, notificationTemplates, pushTokens, satisfactionSurveys, surveyResponses, userPhotos, userConsent, userActivities, userCampaignInteractions, userMarketingPreferences, userReports, userMatches, systemSettings, referralPaymentRequests, userProfileVisits, voiceCalls, voiceCallParticipants, userSessions, verificationAttempts, blindDateBlockedMessages, matchmakingProposals, userSegments, chatMembers, memeFeedViews, userSourceAffinity } from "./schema.js";
 
-export const activityFeedRelations = relations(activityFeed, ({one}) => ({
+export const userSubscriptionsRelations = relations(userSubscriptions, ({one, many}) => ({
+	subscriptionPlan: one(subscriptionPlans, {
+		fields: [userSubscriptions.planId],
+		references: [subscriptionPlans.planId]
+	}),
 	profile: one(profiles, {
-		fields: [activityFeed.userId],
+		fields: [userSubscriptions.userId],
 		references: [profiles.id]
 	}),
+	paymentTransactions: many(paymentTransactions),
+	refunds: many(refunds),
+	promotionalSubscriptions: many(promotionalSubscriptions),
+}));
+
+export const subscriptionPlansRelations = relations(subscriptionPlans, ({many}) => ({
+	userSubscriptions: many(userSubscriptions),
 }));
 
 export const profilesRelations = relations(profiles, ({one, many}) => ({
+	userSubscriptions: many(userSubscriptions),
+	paymentTransactions: many(paymentTransactions),
+	refunds_processedBy: many(refunds, {
+		relationName: "refunds_processedBy_profiles_id"
+	}),
+	refunds_userId: many(refunds, {
+		relationName: "refunds_userId_profiles_id"
+	}),
+	userMemeAliases: many(userMemeAliases),
+	memeLikes: many(memeLikes),
+	memeComments: many(memeComments),
+	memeConnectRequests_requesterId: many(memeConnectRequests, {
+		relationName: "memeConnectRequests_requesterId_profiles_id"
+	}),
+	memeConnectRequests_targetId: many(memeConnectRequests, {
+		relationName: "memeConnectRequests_targetId_profiles_id"
+	}),
+	memeShares: many(memeShares),
 	activityFeeds: many(activityFeed),
 	adminAuditLogs: many(adminAuditLogs),
 	analyticsEvents: many(analyticsEvents),
@@ -110,7 +139,6 @@ export const profilesRelations = relations(profiles, ({one, many}) => ({
 		relationName: "referralTransactions_verifiedBy_profiles_id"
 	}),
 	promotionalSubscriptions: many(promotionalSubscriptions),
-	paymentOrders: many(paymentOrders),
 	proactiveAlerts: many(proactiveAlerts),
 	referralCodeAttempts: many(referralCodeAttempts),
 	satisfactionRatings: many(satisfactionRatings),
@@ -130,7 +158,6 @@ export const profilesRelations = relations(profiles, ({one, many}) => ({
 	}),
 	notificationTemplates: many(notificationTemplates),
 	pushTokens: many(pushTokens),
-	subscriptions: many(subscriptions),
 	userPhotos: many(userPhotos),
 	userConsents: many(userConsent),
 	userActivities_relatedUserId: many(userActivities, {
@@ -156,19 +183,12 @@ export const profilesRelations = relations(profiles, ({one, many}) => ({
 	userMatches_user2Id: many(userMatches, {
 		relationName: "userMatches_user2Id_profiles_id"
 	}),
-	subscriptionTransactions: many(subscriptionTransactions),
 	systemSettings: many(systemSettings),
 	referralPaymentRequests_processedBy: many(referralPaymentRequests, {
 		relationName: "referralPaymentRequests_processedBy_profiles_id"
 	}),
 	referralPaymentRequests_userId: many(referralPaymentRequests, {
 		relationName: "referralPaymentRequests_userId_profiles_id"
-	}),
-	refunds_processedBy: many(refunds, {
-		relationName: "refunds_processedBy_profiles_id"
-	}),
-	refunds_userId: many(refunds, {
-		relationName: "refunds_userId_profiles_id"
 	}),
 	userProfileVisits_visitedUserId: many(userProfileVisits, {
 		relationName: "userProfileVisits_visitedUserId_profiles_id"
@@ -185,7 +205,6 @@ export const profilesRelations = relations(profiles, ({one, many}) => ({
 	voiceCalls_receiverId: many(voiceCalls, {
 		relationName: "voiceCalls_receiverId_profiles_id"
 	}),
-	userSubscriptions: many(userSubscriptions),
 	blindDateBlockedMessages: many(blindDateBlockedMessages),
 	matchmakingProposals_a: many(matchmakingProposals, {
 		relationName: "matchmakingProposals_a_profiles_id"
@@ -199,6 +218,163 @@ export const profilesRelations = relations(profiles, ({one, many}) => ({
 	}),
 	helpRequests_receiverUserId: many(helpRequests, {
 		relationName: "helpRequests_receiverUserId_profiles_id"
+	}),
+	memeFeedViews: many(memeFeedViews),
+	userSourceAffinities: many(userSourceAffinity),
+}));
+
+export const paymentTransactionsRelations = relations(paymentTransactions, ({one, many}) => ({
+	userSubscription: one(userSubscriptions, {
+		fields: [paymentTransactions.subscriptionId],
+		references: [userSubscriptions.id]
+	}),
+	profile: one(profiles, {
+		fields: [paymentTransactions.userId],
+		references: [profiles.id]
+	}),
+	refunds: many(refunds),
+}));
+
+export const refundsRelations = relations(refunds, ({one}) => ({
+	profile_processedBy: one(profiles, {
+		fields: [refunds.processedBy],
+		references: [profiles.id],
+		relationName: "refunds_processedBy_profiles_id"
+	}),
+	userSubscription: one(userSubscriptions, {
+		fields: [refunds.subscriptionId],
+		references: [userSubscriptions.id]
+	}),
+	paymentTransaction: one(paymentTransactions, {
+		fields: [refunds.transactionId],
+		references: [paymentTransactions.id]
+	}),
+	profile_userId: one(profiles, {
+		fields: [refunds.userId],
+		references: [profiles.id],
+		relationName: "refunds_userId_profiles_id"
+	}),
+}));
+
+export const memesRelations = relations(memes, ({one, many}) => ({
+	memeSource: one(memeSources, {
+		fields: [memes.sourceId],
+		references: [memeSources.id]
+	}),
+	memeAssets: many(memeAssets),
+	memeLikes: many(memeLikes),
+	memeComments: many(memeComments),
+	memeConnectRequests: many(memeConnectRequests),
+	memeStats: many(memeStats),
+	memeShares: many(memeShares),
+	messages: many(messages),
+	memeFeedViews: many(memeFeedViews),
+}));
+
+export const memeSourcesRelations = relations(memeSources, ({many}) => ({
+	memes: many(memes),
+	userSourceAffinities: many(userSourceAffinity),
+}));
+
+export const memeAssetsRelations = relations(memeAssets, ({one}) => ({
+	meme: one(memes, {
+		fields: [memeAssets.memeId],
+		references: [memes.id]
+	}),
+}));
+
+export const userMemeAliasesRelations = relations(userMemeAliases, ({one}) => ({
+	profile: one(profiles, {
+		fields: [userMemeAliases.userId],
+		references: [profiles.id]
+	}),
+}));
+
+export const memeLikesRelations = relations(memeLikes, ({one}) => ({
+	meme: one(memes, {
+		fields: [memeLikes.memeId],
+		references: [memes.id]
+	}),
+	profile: one(profiles, {
+		fields: [memeLikes.userId],
+		references: [profiles.id]
+	}),
+}));
+
+export const memeCommentsRelations = relations(memeComments, ({one, many}) => ({
+	meme: one(memes, {
+		fields: [memeComments.memeId],
+		references: [memes.id]
+	}),
+	memeComment: one(memeComments, {
+		fields: [memeComments.parentCommentId],
+		references: [memeComments.id],
+		relationName: "memeComments_parentCommentId_memeComments_id"
+	}),
+	memeComments: many(memeComments, {
+		relationName: "memeComments_parentCommentId_memeComments_id"
+	}),
+	profile: one(profiles, {
+		fields: [memeComments.userId],
+		references: [profiles.id]
+	}),
+}));
+
+export const memeConnectRequestsRelations = relations(memeConnectRequests, ({one}) => ({
+	chat: one(chats, {
+		fields: [memeConnectRequests.chatId],
+		references: [chats.id]
+	}),
+	meme: one(memes, {
+		fields: [memeConnectRequests.contextMemeId],
+		references: [memes.id]
+	}),
+	profile_requesterId: one(profiles, {
+		fields: [memeConnectRequests.requesterId],
+		references: [profiles.id],
+		relationName: "memeConnectRequests_requesterId_profiles_id"
+	}),
+	profile_targetId: one(profiles, {
+		fields: [memeConnectRequests.targetId],
+		references: [profiles.id],
+		relationName: "memeConnectRequests_targetId_profiles_id"
+	}),
+}));
+
+export const chatsRelations = relations(chats, ({many}) => ({
+	memeConnectRequests: many(memeConnectRequests),
+	chatUserSettings: many(chatUserSettings),
+	blindDateMatches: many(blindDateMatches),
+	chatDeletions: many(chatDeletions),
+	helpSessionFeedbacks: many(helpSessionFeedback),
+	messages: many(messages),
+	userReports: many(userReports),
+	helpRequests: many(helpRequests),
+	chatMembers: many(chatMembers),
+}));
+
+export const memeStatsRelations = relations(memeStats, ({one}) => ({
+	meme: one(memes, {
+		fields: [memeStats.memeId],
+		references: [memes.id]
+	}),
+}));
+
+export const memeSharesRelations = relations(memeShares, ({one}) => ({
+	meme: one(memes, {
+		fields: [memeShares.memeId],
+		references: [memes.id]
+	}),
+	profile: one(profiles, {
+		fields: [memeShares.userId],
+		references: [profiles.id]
+	}),
+}));
+
+export const activityFeedRelations = relations(activityFeed, ({one}) => ({
+	profile: one(profiles, {
+		fields: [activityFeed.userId],
+		references: [profiles.id]
 	}),
 }));
 
@@ -380,17 +556,6 @@ export const chatUserSettingsRelations = relations(chatUserSettings, ({one}) => 
 	}),
 }));
 
-export const chatsRelations = relations(chats, ({many}) => ({
-	chatUserSettings: many(chatUserSettings),
-	blindDateMatches: many(blindDateMatches),
-	chatDeletions: many(chatDeletions),
-	helpSessionFeedbacks: many(helpSessionFeedback),
-	messages: many(messages),
-	userReports: many(userReports),
-	helpRequests: many(helpRequests),
-	chatMembers: many(chatMembers),
-}));
-
 export const campaignAnalyticsRelations = relations(campaignAnalytics, ({one}) => ({
 	marketingCampaign: one(marketingCampaigns, {
 		fields: [campaignAnalytics.campaignId],
@@ -511,7 +676,6 @@ export const messageReactionsRelations = relations(messageReactions, ({one}) => 
 
 export const messagesRelations = relations(messages, ({one, many}) => ({
 	messageReactions: many(messageReactions),
-	messageReceipts: many(messageReceipts),
 	chat: one(chats, {
 		fields: [messages.chatId],
 		references: [chats.id]
@@ -524,6 +688,11 @@ export const messagesRelations = relations(messages, ({one, many}) => ({
 	messages: many(messages, {
 		relationName: "messages_replyToId_messages_id"
 	}),
+	meme: one(memes, {
+		fields: [messages.sharedMemeId],
+		references: [memes.id]
+	}),
+	messageReceipts: many(messageReceipts),
 	messageViews: many(messageViews),
 	userReports: many(userReports),
 }));
@@ -605,22 +774,6 @@ export const promotionalSubscriptionsRelations = relations(promotionalSubscripti
 		fields: [promotionalSubscriptions.userId],
 		references: [profiles.id]
 	}),
-}));
-
-export const userSubscriptionsRelations = relations(userSubscriptions, ({one, many}) => ({
-	promotionalSubscriptions: many(promotionalSubscriptions),
-	profile: one(profiles, {
-		fields: [userSubscriptions.userId],
-		references: [profiles.id]
-	}),
-}));
-
-export const paymentOrdersRelations = relations(paymentOrders, ({one, many}) => ({
-	profile: one(profiles, {
-		fields: [paymentOrders.userId],
-		references: [profiles.id]
-	}),
-	subscriptionTransactions: many(subscriptionTransactions),
 }));
 
 export const proactiveAlertsRelations = relations(proactiveAlerts, ({one}) => ({
@@ -724,14 +877,6 @@ export const satisfactionSurveysRelations = relations(satisfactionSurveys, ({one
 	surveyResponses: many(surveyResponses),
 }));
 
-export const subscriptionsRelations = relations(subscriptions, ({one, many}) => ({
-	profile: one(profiles, {
-		fields: [subscriptions.userId],
-		references: [profiles.id]
-	}),
-	refunds: many(refunds),
-}));
-
 export const surveyResponsesRelations = relations(surveyResponses, ({one}) => ({
 	satisfactionSurvey: one(satisfactionSurveys, {
 		fields: [surveyResponses.surveyId],
@@ -823,17 +968,6 @@ export const userMatchesRelations = relations(userMatches, ({one}) => ({
 	}),
 }));
 
-export const subscriptionTransactionsRelations = relations(subscriptionTransactions, ({one}) => ({
-	paymentOrder: one(paymentOrders, {
-		fields: [subscriptionTransactions.orderId],
-		references: [paymentOrders.orderId]
-	}),
-	profile: one(profiles, {
-		fields: [subscriptionTransactions.userId],
-		references: [profiles.id]
-	}),
-}));
-
 export const systemSettingsRelations = relations(systemSettings, ({one}) => ({
 	profile: one(profiles, {
 		fields: [systemSettings.updatedBy],
@@ -851,23 +985,6 @@ export const referralPaymentRequestsRelations = relations(referralPaymentRequest
 		fields: [referralPaymentRequests.userId],
 		references: [profiles.id],
 		relationName: "referralPaymentRequests_userId_profiles_id"
-	}),
-}));
-
-export const refundsRelations = relations(refunds, ({one}) => ({
-	profile_processedBy: one(profiles, {
-		fields: [refunds.processedBy],
-		references: [profiles.id],
-		relationName: "refunds_processedBy_profiles_id"
-	}),
-	subscription: one(subscriptions, {
-		fields: [refunds.subscriptionId],
-		references: [subscriptions.id]
-	}),
-	profile_userId: one(profiles, {
-		fields: [refunds.userId],
-		references: [profiles.id],
-		relationName: "refunds_userId_profiles_id"
 	}),
 }));
 
@@ -962,5 +1079,27 @@ export const chatMembersRelations = relations(chatMembers, ({one}) => ({
 	chat: one(chats, {
 		fields: [chatMembers.chatId],
 		references: [chats.id]
+	}),
+}));
+
+export const memeFeedViewsRelations = relations(memeFeedViews, ({one}) => ({
+	meme: one(memes, {
+		fields: [memeFeedViews.memeId],
+		references: [memes.id]
+	}),
+	profile: one(profiles, {
+		fields: [memeFeedViews.userId],
+		references: [profiles.id]
+	}),
+}));
+
+export const userSourceAffinityRelations = relations(userSourceAffinity, ({one}) => ({
+	memeSource: one(memeSources, {
+		fields: [userSourceAffinity.sourceId],
+		references: [memeSources.id]
+	}),
+	profile: one(profiles, {
+		fields: [userSourceAffinity.userId],
+		references: [profiles.id]
 	}),
 }));
