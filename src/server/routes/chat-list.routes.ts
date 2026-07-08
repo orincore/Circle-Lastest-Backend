@@ -6,12 +6,14 @@ import {
   blindDateMatches,
   chatDeletions,
   chatUserSettings,
+  memeConnectRequests,
   messageReceipts,
   messages,
   profiles,
 } from '../db/schema.js'
 import { getUserInbox } from '../repos/chat.repo.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
+import { getBlurredAvatarDataUri } from '../services/anonAvatar.service.js'
 
 const router = Router()
 
@@ -191,6 +193,37 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
       }
     }
 
+    // Determine which chats are accepted-but-not-yet-fully-revealed meme
+    // connect chats (see meme-connect.routes.ts / memeConnect.service.ts).
+    // Mirrors the blindDateMap approach above: identity stays anonymized in
+    // the chat list exactly like it is inside the chat itself, until both
+    // sides reveal (at which point this map simply won't contain that chat
+    // anymore on the next load, and it reads exactly like a normal chat).
+    let memeConnectMap = new Map<string, { avatar: string | null }>()
+    if (chatIds.length > 0) {
+      const connectRows = await db
+        .select({
+          chatId: memeConnectRequests.chatId,
+          requesterId: memeConnectRequests.requesterId,
+          targetId: memeConnectRequests.targetId,
+        })
+        .from(memeConnectRequests)
+        .where(and(
+          inArray(memeConnectRequests.chatId, chatIds),
+          eq(memeConnectRequests.status, 'accepted'),
+          sql`${memeConnectRequests.revealedAt} IS NULL`,
+        ))
+
+      if (connectRows.length > 0) {
+        await Promise.all(connectRows.map(async (row) => {
+          if (!row.chatId) return
+          const otherUserId = row.requesterId === userId ? row.targetId : row.requesterId
+          const avatar = await getBlurredAvatarDataUri(otherUserId)
+          memeConnectMap.set(row.chatId, { avatar })
+        }))
+      }
+    }
+
     // Filter out archived by default unless includeArchived=true
     const includeArchived = String(req.query.includeArchived || 'false') === 'true'
 
@@ -200,7 +233,9 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
       const count = countsMap.get(item.chat.id)
       const blindDateInfo = blindDateMap.get(item.chat.id)
       const isBlindDateOngoing = !!blindDateInfo?.isOngoing
-      
+      const memeConnectInfo = memeConnectMap.get(item.chat.id)
+      const isMemeConnectOngoing = !!memeConnectInfo
+
       return {
         chatId: item.chat.id,
         lastMessageAt: item.chat.last_message_at,
@@ -224,10 +259,22 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           status: (item.lastMessage as any).status || 'sent',
           createdAt: new Date(item.lastMessage.created_at).getTime(),
         } : null,
+        // Blind date takes priority over meme-connect in the (practically
+        // never happening, but not impossible: both features reuse the same
+        // 1:1 chat between two users) case a chat is somehow both at once --
+        // keeping name and photo consistent with each other either way.
         otherUser: item.otherId ? {
           id: item.otherId,
-          name: isBlindDateOngoing && blindDateInfo?.maskedName ? blindDateInfo.maskedName : item.otherName,
-          profilePhoto: item.otherProfilePhoto,
+          name: isBlindDateOngoing && blindDateInfo?.maskedName
+            ? blindDateInfo.maskedName
+            : isMemeConnectOngoing
+              ? 'Anonymous connection'
+              : item.otherName,
+          profilePhoto: isBlindDateOngoing
+            ? item.otherProfilePhoto
+            : isMemeConnectOngoing
+              ? (memeConnectInfo?.avatar || '')
+              : item.otherProfilePhoto,
         } : null,
         archived: s.archived,
         pinned: s.pinned,
@@ -240,6 +287,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           age: blindDateInfo?.otherUserAge,
           maskedName: blindDateInfo?.maskedName
         } : null,
+        isMemeConnectOngoing,
       }
     })
 

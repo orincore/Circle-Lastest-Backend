@@ -616,6 +616,26 @@ router.post('/memes/:id/share', requireAuth, async (req: AuthRequest, res) => {
           )
       `)).rows as any
       emitToUser(otherUserId, 'chat:unread_count', { chatId: chat_id, unreadCount })
+
+      // Push notification to the receiver -- this endpoint only ever emitted
+      // live socket events above, which reach nothing if the recipient's app
+      // isn't open (no active socket connection). Every other message-send
+      // path (POST /:chatId/messages in chat.routes.ts, and the socket
+      // chat:message handler in optimized-socket.ts) calls this; this share
+      // endpoint never did, so a shared meme silently never notified an
+      // offline/backgrounded/closed-app recipient.
+      try {
+        const { PushNotificationService, describeMessageForNotification } = await import('../services/pushNotificationService.js')
+        await PushNotificationService.sendMessageNotification(
+          otherUserId,
+          senderName,
+          describeMessageForNotification({ sharedMemeId: message.shared_meme_id }),
+          chat_id,
+          message.id
+        )
+      } catch (pushError) {
+        console.error('feed share push notification error:', pushError)
+      }
     } catch (emitError) {
       // A failure here shouldn't fail the share itself -- the message is
       // already persisted and will show up on the recipient's next reload.

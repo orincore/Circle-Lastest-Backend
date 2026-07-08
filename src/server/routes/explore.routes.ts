@@ -8,6 +8,95 @@ import { cache, cacheKeys, PROFILE_TTL } from '../services/cache.js'
 
 const router = Router()
 
+// How strongly Explore favors showing the viewer's preferred gender bucket
+// in each section. 0.9 = ~90% of a section's slots go to that bucket when
+// enough candidates exist, matching a typical dating-app discovery feed.
+const OPPOSITE_GENDER_WEIGHT = 0.9
+
+// `profiles.gender` is free text (an 11-option picker at signup: male,
+// female, non-binary, transgender male/female, genderqueer, genderfluid,
+// agender, two-spirit, other, prefer not to say) with no CHECK constraint,
+// not a strict enum -- so this buckets it down to the three groups the
+// weighting below actually reasons about.
+function genderBucket(gender: string | null | undefined): 'male' | 'female' | 'other' {
+  const g = (gender || '').trim().toLowerCase()
+  if (g === 'male') return 'male'
+  if (g === 'female') return 'female'
+  return 'other'
+}
+
+// Which bucket should dominate (~OPPOSITE_GENDER_WEIGHT) a viewer's feed.
+// Male -> mostly female, female -> mostly male. There's no single
+// well-defined "opposite" of the catch-all 'other' bucket (it covers many
+// distinct identities), so for those viewers the majority becomes anyone
+// outside their own exact bucket -- i.e. mostly male/female profiles, with
+// their own bucket as the minority -- which is the closest sensible reading
+// of "opposite gender profiles most" for a non-binary viewer.
+function preferredBucket(viewerGender: string | null | undefined): 'male' | 'female' | 'not-other' {
+  const bucket = genderBucket(viewerGender)
+  if (bucket === 'male') return 'female'
+  if (bucket === 'female') return 'male'
+  return 'not-other'
+}
+
+function matchesPreferredBucket(candidateGender: string | null | undefined, preferred: 'male' | 'female' | 'not-other'): boolean {
+  const candidateBucket = genderBucket(candidateGender)
+  if (preferred === 'not-other') return candidateBucket !== 'other'
+  return candidateBucket === preferred
+}
+
+/**
+ * Picks `count` entries out of `sortedCandidates` (already ordered by
+ * whatever ranking signal the caller cares about -- compatibility score,
+ * recency, completeness, etc.), biasing the pick so that around
+ * OPPOSITE_GENDER_WEIGHT of them fall in the viewer's preferred gender
+ * bucket (see preferredBucket above) whenever the pool has enough of both to
+ * choose from. Picks are drawn from each pool in its existing sorted order,
+ * so this only changes the *gender mix* filling the section's slots, not
+ * which profiles within a gender group get priority over one another.
+ */
+function pickWithGenderBias<T extends { gender?: string | null }>(
+  sortedCandidates: T[],
+  count: number,
+  viewerGender: string | null | undefined
+): T[] {
+  const preferred = preferredBucket(viewerGender)
+
+  const preferredPool: T[] = []
+  const otherPool: T[] = []
+  for (const candidate of sortedCandidates) {
+    if (matchesPreferredBucket(candidate.gender, preferred)) preferredPool.push(candidate)
+    else otherPool.push(candidate)
+  }
+
+  const picked: T[] = []
+  let pi = 0
+  let oi = 0
+  for (let i = 0; i < count; i++) {
+    const wantPreferred = Math.random() < OPPOSITE_GENDER_WEIGHT
+    const preferredHasMore = pi < preferredPool.length
+    const otherHasMore = oi < otherPool.length
+
+    let takeFromPreferred: boolean
+    if (wantPreferred && preferredHasMore) {
+      takeFromPreferred = true
+    } else if (!wantPreferred && otherHasMore) {
+      takeFromPreferred = false
+    } else if (preferredHasMore) {
+      // The desired pool ran out for this slot -- fall back to whichever
+      // pool still has candidates rather than under-filling the section.
+      takeFromPreferred = true
+    } else if (otherHasMore) {
+      takeFromPreferred = false
+    } else {
+      break // both pools exhausted
+    }
+
+    picked.push(takeFromPreferred ? preferredPool[pi++] : otherPool[oi++])
+  }
+  return picked
+}
+
 // Helper function to get all sections data
 async function getAllSectionsLogic(currentUserId: string) {
   //console.log('Fetching fresh explore data for user:', currentUserId)
@@ -233,10 +322,13 @@ async function getAllSectionsLogic(currentUserId: string) {
   const usedUserIds = new Set()
 
   // 1. First priority: High compatibility users (score >= 60)
-  const highCompatibilityUsers = usersWithScores
-    .filter(user => user.compatibilityScore >= 60)
-    .sort((a, b) => b.compatibilityScore - a.compatibilityScore)
-    .slice(0, 5)
+  const highCompatibilityUsers = pickWithGenderBias(
+    usersWithScores
+      .filter(user => user.compatibilityScore >= 60)
+      .sort((a, b) => b.compatibilityScore - a.compatibilityScore),
+    5,
+    currentUser.gender
+  )
 
   highCompatibilityUsers.forEach(user => {
     distributedUsers.compatibleUsers.push(user)
@@ -244,10 +336,13 @@ async function getAllSectionsLogic(currentUserId: string) {
   })
 
   // 2. Second priority: New users (not already in compatibility)
-  const availableNewUsers = usersWithScores
-    .filter(user => user.isNewUser && !usedUserIds.has(user.id))
-    .sort((a, b) => new Date(b.joinedDate as string).getTime() - new Date(a.joinedDate as string).getTime())
-    .slice(0, 5)
+  const availableNewUsers = pickWithGenderBias(
+    usersWithScores
+      .filter(user => user.isNewUser && !usedUserIds.has(user.id))
+      .sort((a, b) => new Date(b.joinedDate as string).getTime() - new Date(a.joinedDate as string).getTime()),
+    5,
+    currentUser.gender
+  )
 
   availableNewUsers.forEach(user => {
     distributedUsers.newUsers.push(user)
@@ -255,16 +350,19 @@ async function getAllSectionsLogic(currentUserId: string) {
   })
 
   // 3. Third priority: Top users (high completeness, not already used)
-  const availableTopUsers = usersWithScores
-    .filter(user => !usedUserIds.has(user.id))
-    .sort((a, b) => {
-      // Sort by completeness score first, then by recent activity
-      if (b.completenessScore !== a.completenessScore) {
-        return b.completenessScore - a.completenessScore
-      }
-      return new Date(b.updatedAt as string).getTime() - new Date(a.updatedAt as string).getTime()
-    })
-    .slice(0, 5)
+  const availableTopUsers = pickWithGenderBias(
+    usersWithScores
+      .filter(user => !usedUserIds.has(user.id))
+      .sort((a, b) => {
+        // Sort by completeness score first, then by recent activity
+        if (b.completenessScore !== a.completenessScore) {
+          return b.completenessScore - a.completenessScore
+        }
+        return new Date(b.updatedAt as string).getTime() - new Date(a.updatedAt as string).getTime()
+      }),
+    5,
+    currentUser.gender
+  )
 
   availableTopUsers.forEach(user => {
     distributedUsers.topUsers.push(user)

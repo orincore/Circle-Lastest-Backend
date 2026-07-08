@@ -3,6 +3,7 @@ import { db } from '../config/db.js'
 import { memeConnectRequests, friendships, memeComments } from '../db/schema.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 import { NotificationService } from './notificationService.js'
+import { emitToUser } from '../sockets/optimized-socket.js'
 
 // In-app + push notification for meme-connect events. Deliberately carries
 // NO sender_id and no name: meme comments are anonymous, so the notification
@@ -51,6 +52,12 @@ async function createConnectRequest(
       'Someone liked your comment on a meme and wants to connect with you.',
       { requestId: row.id }
     )
+
+    // Real-time nudge for the Connect Requests screen, if it's open right
+    // now -- without this, a newly-arrived request only shows up on the next
+    // manual pull-to-refresh (push/in-app notifications aren't enough to
+    // update a screen that's already on-screen).
+    emitToUser(targetId, 'meme_connect:request_created', { requestId: row.id })
 
     return row
   } catch (e: any) {
@@ -102,6 +109,7 @@ export async function respondToConnectRequest(
       .set({ status: 'declined', respondedAt: new Date().toISOString() })
       .where(eq(memeConnectRequests.id, requestId))
       .returning()
+    emitToUser(request.requesterId, 'meme_connect:responded', { requestId: updated.id, status: 'declined' })
     return updated
   }
 
@@ -111,6 +119,11 @@ export async function respondToConnectRequest(
     .set({ status: 'accepted', chatId: chat.id, respondedAt: new Date().toISOString() })
     .where(eq(memeConnectRequests.id, requestId))
     .returning()
+
+  // Real-time: lets the requester's Connect Requests screen refresh instantly,
+  // and the chat list pick up the newly-accepted anonymous chat immediately
+  // instead of waiting for a manual pull-to-refresh.
+  emitToUser(request.requesterId, 'meme_connect:responded', { requestId: updated.id, status: 'accepted', chatId: chat.id })
 
   await notifyMemeConnect(
     request.requesterId,
@@ -165,6 +178,14 @@ export async function requestReveal(requestId: string, userId: string): Promise<
         { requestId: updated.id, chatId: updated.chatId }
       ),
     ])
+
+    // Real-time: both parties' open chat screens (if any) swap the header to
+    // the real profile instantly instead of waiting for the push/in-app
+    // notification to be tapped, and the chat list drops it from "Blind
+    // Connect" into the normal chat list on its next refresh.
+    const revealedPayload = { requestId: updated.id, chatId: updated.chatId }
+    emitToUser(request.requesterId, 'meme_connect:revealed', revealedPayload)
+    emitToUser(request.targetId, 'meme_connect:revealed', revealedPayload)
   } else {
     await notifyMemeConnect(
       otherUserId,
@@ -172,6 +193,11 @@ export async function requestReveal(requestId: string, userId: string): Promise<
       'Your meme connection wants to reveal identities. Reveal yours too to see who they are!',
       { requestId: updated.id, chatId: updated.chatId }
     )
+
+    // Real-time nudge so the other party's open chat screen (if any) updates
+    // its reveal banner immediately ("they revealed, reveal yours too") --
+    // otherwise it doesn't hear about this until they reopen the chat.
+    emitToUser(otherUserId, 'meme_connect:reveal_requested', { requestId: updated.id, chatId: updated.chatId })
   }
 
   return updated

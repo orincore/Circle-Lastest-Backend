@@ -180,9 +180,15 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     // Check if this is a blind date chat (bypass friendship requirement)
     const { BlindDatingService } = await import('../services/blind-dating.service.js')
     const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
-    
-    // Only check friendship if it's NOT a blind date chat
-    if (!isBlindDate) {
+
+    // An accepted meme-connect chat has no friendship yet -- that's only
+    // created once both sides reveal (see memeConnect.service.ts) -- so it
+    // needs the same friendship bypass blind date gets.
+    const { isMemeConnectChat } = await import('../services/memeConnect.service.js')
+    const isMemeConnect = isBlindDate ? false : await isMemeConnectChat(chatId)
+
+    // Only check friendship if it's neither a blind date nor a meme-connect chat
+    if (!isBlindDate && !isMemeConnect) {
       if (!(await areFriends(userId, otherUserId))) {
         return res.status(403).json({
           error: 'Messaging not allowed',

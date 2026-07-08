@@ -1475,14 +1475,22 @@ export async function initOptimizedSocket(server: Server) {
         // Check if this is a blind date chat (bypass friendship requirement)
         const { BlindDatingService } = await import('../services/blind-dating.service.js')
         const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
-        
-        // Only check friendship if it's NOT a blind date chat (cached)
-        if (!isBlindDate) {
+
+        // An accepted meme-connect chat has no friendship yet -- that's only
+        // created once both sides reveal (see memeConnect.service.ts) -- so it
+        // needs the same friendship bypass blind date gets, or every message
+        // in an anonymous connect chat gets rejected as 'not_friends' the
+        // instant it's accepted.
+        const { isMemeConnectChat } = await import('../services/memeConnect.service.js')
+        const isMemeConnect = isBlindDate ? false : await isMemeConnectChat(chatId)
+
+        // Only check friendship if it's neither a blind date nor a meme-connect chat
+        if (!isBlindDate && !isMemeConnect) {
           const friends = await areFriends(userId, otherUserId)
-          
+
           if (!friends) {
             // No friendship found - don't allow messaging
-            socket.emit('chat:message:blocked', { 
+            socket.emit('chat:message:blocked', {
               error: 'Messaging not allowed',
               reason: 'not_friends'
             })
@@ -1674,7 +1682,27 @@ export async function initOptimizedSocket(server: Server) {
                         describeMessageForNotification(msg),
                         chatId,
                         msg.id
-                      ).catch(pushError => {
+                      ).then(async (pushSent) => {
+                        // Recipient has no live socket (app closed/backgrounded), so the
+                        // earlier connectionCounts-based delivered receipt above never
+                        // fired. A successful push send is the best signal we have that
+                        // the message reached the recipient's device — mark it delivered
+                        // now so the sender's tick upgrades from single to double-grey
+                        // instead of being stuck on "sent" until the recipient reopens
+                        // the app and reconnects.
+                        if (!pushSent) return
+                        try {
+                          await insertReceipt(msg.id, memberId, 'delivered')
+                          io.to(userId).emit('chat:message:delivery_receipt', {
+                            messageId: msg.id,
+                            userId: memberId,
+                            status: 'delivered',
+                            chatId,
+                          })
+                        } catch (deliveryError) {
+                          logger.error({ error: deliveryError, messageId: msg.id, memberId }, 'Failed to mark delivered after push send')
+                        }
+                      }).catch(pushError => {
                         logger.error({ error: pushError, recipientId: memberId }, 'Failed to send push notification')
                       })
                     }).catch(err => {
