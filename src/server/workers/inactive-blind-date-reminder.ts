@@ -126,13 +126,17 @@ async function startReminderService() {
   logger.info({ intervalHours: CHECK_INTERVAL / (60 * 60 * 1000) }, '⏰ Reminder service running')
 }
 
-// Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  startReminderService()
-    .catch((error) => {
-      logger.error({ error }, '❌ Reminder service failed to start')
-      process.exit(1)
-    })
-}
+// This file is only ever launched as a dedicated PM2 worker entrypoint
+// (never imported elsewhere), so start unconditionally. PM2 fork mode loads
+// scripts through its own ProcessContainerFork wrapper, which replaces
+// process.argv[1] -- the usual `import.meta.url === file://${process.argv[1]}`
+// "run if main module" guard is therefore always false under PM2 and the
+// service never actually started, silently exiting almost immediately on
+// every restart.
+startReminderService()
+  .catch((error) => {
+    logger.error({ error }, '❌ Reminder service failed to start')
+    process.exit(1)
+  })
 
 export { startReminderService, checkInactiveMatches }

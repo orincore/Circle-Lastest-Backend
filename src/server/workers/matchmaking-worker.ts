@@ -329,7 +329,8 @@ async function main() {
 // Export for testing and monitoring
 export { worker }
 
-// Start if this file is run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main()
-}
+// This file is only ever launched as a dedicated PM2 worker entrypoint
+// (never imported elsewhere), so start unconditionally -- PM2 fork mode
+// rewrites process.argv[1] to its own loader, which makes the usual
+// "run if main module" guard always false. See inactive-blind-date-reminder.ts.
+main()

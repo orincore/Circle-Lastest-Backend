@@ -102,13 +102,14 @@ async function startContinuousMatching() {
   scheduleNextCycle()
 }
 
-// Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  startContinuousMatching()
-    .catch((error) => {
-      logger.error({ error }, '❌ Continuous matcher service failed to start')
-      process.exit(1)
-    })
-}
+// This file is only ever launched as a dedicated PM2 worker entrypoint
+// (never imported elsewhere), so start unconditionally -- PM2 fork mode
+// rewrites process.argv[1] to its own loader, which makes the usual
+// "run if main module" guard always false. See inactive-blind-date-reminder.ts.
+startContinuousMatching()
+  .catch((error) => {
+    logger.error({ error }, '❌ Continuous matcher service failed to start')
+    process.exit(1)
+  })
 
 export { startContinuousMatching, runMatchingCycle }
