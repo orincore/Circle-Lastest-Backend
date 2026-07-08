@@ -574,18 +574,9 @@ export async function initOptimizedSocket(server: Server) {
     return false
   }
 
-  // Push notification body text. Media messages have empty `text`, so the
-  // old `msg.text || 'New message'` fallback showed a generic, unhelpful
-  // "New message" for every photo/video instead of describing what it is —
-  // and for view-once media it must never reveal any real content anyway.
-  function describeMessageForNotification(msg: { text?: string; mediaType?: string; isViewOnce?: boolean }): string {
-    if (msg.isViewOnce) {
-      return msg.mediaType === 'video' ? '🔒 View once video' : '🔒 View once photo'
-    }
-    if (msg.mediaType === 'video') return '🎥 Video'
-    if (msg.mediaType === 'image') return '📷 Photo'
-    return msg.text || 'New message'
-  }
+  // Push notification body text lives in pushNotificationService
+  // (describeMessageForNotification) so the socket path and the REST chat
+  // route describe media/meme/view-once messages identically.
 
   io.on('connection', (socket) => {
     const user = (socket.data as any).user
@@ -1676,7 +1667,7 @@ export async function initOptimizedSocket(server: Server) {
                   // open on some device; otherwise they'd get a redundant push
                   // for a message they're already looking at in real time.
                   if (!isUserActiveInChat(io, memberId, chatId)) {
-                    import('../services/pushNotificationService.js').then(({ PushNotificationService }) => {
+                    import('../services/pushNotificationService.js').then(({ PushNotificationService, describeMessageForNotification }) => {
                       PushNotificationService.sendMessageNotification(
                         memberId,
                         senderName, // Already masked for blind date

@@ -1,9 +1,37 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../config/db.js';
 import { profiles, pushTokens } from '../db/schema.js';
 import { logger } from '../config/logger.js';
 // Import ioRef dynamically to avoid circular dependency
 let getIoRef: (() => any) | null = null;
+
+// Expo accepts up to 100 messages per POST to /push/send and /push/getReceipts.
+const EXPO_BATCH_LIMIT = 100;
+// A ticket only means Expo accepted the message; delivery failures (most
+// importantly DeviceNotRegistered for uninstalled apps / rotated FCM tokens)
+// only show up in the receipt, which becomes available a short while later.
+const RECEIPT_CHECK_DELAY_MS = 60_000;
+
+/**
+ * Push notification body for a chat message. Media messages have empty
+ * `text`, so a plain `msg.text || 'New message'` fallback would show a
+ * generic "New message" for every photo/video/meme — and view-once media
+ * must never reveal any real content anyway.
+ */
+export function describeMessageForNotification(msg: {
+  text?: string | null;
+  mediaType?: string | null;
+  isViewOnce?: boolean;
+  sharedMemeId?: string | null;
+}): string {
+  if (msg.isViewOnce) {
+    return msg.mediaType === 'video' ? '🔒 View once video' : '🔒 View once photo';
+  }
+  if (msg.sharedMemeId) return '😂 Shared a meme';
+  if (msg.mediaType === 'video') return '🎥 Video';
+  if (msg.mediaType === 'image') return '📷 Photo';
+  return msg.text || 'New message';
+}
 
 /**
  * Push Notification Service
@@ -89,26 +117,10 @@ export class PushNotificationService {
         return false;
       }
 
-      let successCount = 0;
-
-      // Send to each token
-      for (const tokenData of userPushTokens) {
-        try {
-          if (tokenData.device_type === 'web') {
-            // Web Push API - handled by service worker
-            // For now, we'll use Expo for web too if token is Expo format
-            await this.sendExpoPushNotification(tokenData.token, notification);
-          } else {
-            // Android/iOS - Expo Push Notifications
-            await this.sendExpoPushNotification(tokenData.token, notification);
-          }
-          successCount++;
-        } catch (error) {
-          logger.error({ error, userId, token: tokenData.token }, 'Failed to send push notification to token');
-        }
-      }
-
-      return successCount > 0;
+      return await this.sendExpoPushNotifications(
+        userPushTokens.map(t => t.token),
+        notification
+      );
     } catch (error) {
       logger.error({ error, userId }, 'Error sending push notification');
       return false;
@@ -116,18 +128,74 @@ export class PushNotificationService {
   }
 
   /**
-   * Send Expo Push Notification
+   * Disable push tokens that a ticket or receipt reported as dead
+   * (DeviceNotRegistered: app uninstalled or FCM/APNs token rotated).
+   * Without this, dead tokens accumulate forever and every send to them
+   * silently goes nowhere.
    */
-  private static async sendExpoPushNotification(
-    token: string,
+  private static async disableDeadTokens(tokens: string[], source: 'ticket' | 'receipt'): Promise<void> {
+    if (tokens.length === 0) return;
+    try {
+      await db.update(pushTokens)
+        .set({ enabled: false, updatedAt: new Date().toISOString() })
+        .where(inArray(pushTokens.token, tokens));
+      logger.warn({ tokens, source }, 'Disabled dead push tokens (DeviceNotRegistered)');
+    } catch (error) {
+      logger.error({ error, tokens }, 'Failed to disable dead push tokens');
+    }
+  }
+
+  /**
+   * Fetch delivery receipts for previously accepted tickets and disable
+   * tokens whose receipt says DeviceNotRegistered. Other receipt errors
+   * (InvalidCredentials, MessageTooBig, MessageRateExceeded) are logged so
+   * delivery problems are visible instead of silently swallowed.
+   */
+  private static async checkReceipts(tickets: Array<{ id: string; token: string }>): Promise<void> {
+    try {
+      const response = await fetch('https://exp.host/--/api/v2/push/getReceipts', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: tickets.map(t => t.id) }),
+      });
+      if (!response.ok) {
+        logger.error({ status: response.status }, 'Failed to fetch Expo push receipts');
+        return;
+      }
+      const { data } = await response.json() as { data: Record<string, any> };
+      if (!data) return;
+
+      const deadTokens: string[] = [];
+      for (const ticket of tickets) {
+        const receipt = data[ticket.id];
+        if (!receipt || receipt.status === 'ok') continue;
+        const errorCode = receipt.details?.error;
+        if (errorCode === 'DeviceNotRegistered') {
+          deadTokens.push(ticket.token);
+        } else {
+          logger.error({ token: ticket.token, errorCode, message: receipt.message }, 'Push receipt reported delivery error');
+        }
+      }
+      await this.disableDeadTokens(deadTokens, 'receipt');
+    } catch (error) {
+      logger.error({ error }, 'Error checking Expo push receipts');
+    }
+  }
+
+  /**
+   * Send one notification to a set of Expo push tokens in a single batched
+   * request. Handles ticket-level errors immediately and schedules a receipt
+   * check to catch delivery-time failures.
+   */
+  private static async sendExpoPushNotifications(
+    tokens: string[],
     notification: PushNotificationData
   ): Promise<boolean> {
     try {
       const isIncomingCall = notification.data && notification.data.type === 'incoming_call';
       const isNewMessage = notification.data && (notification.data.type === 'new_message' || notification.data.type === 'message');
 
-      const message: any = {
-        to: token,
+      const baseMessage: any = {
         sound: notification.sound || 'default',
         title: notification.title,
         body: notification.body,
@@ -136,45 +204,67 @@ export class PushNotificationService {
         priority: notification.priority || 'high',
         channelId: 'default', // Android notification channel
       };
-
       if (isIncomingCall) {
-        message.categoryId = 'call';
+        baseMessage.categoryId = 'call';
       } else if (isNewMessage) {
-        message.categoryId = 'message_reply';
+        baseMessage.categoryId = 'message_reply';
       }
 
-      const response = await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Accept-Encoding': 'gzip, deflate',
-        },
-        body: JSON.stringify(message),
-      });
+      let successCount = 0;
+      for (let i = 0; i < tokens.length; i += EXPO_BATCH_LIMIT) {
+        const batch = tokens.slice(i, i + EXPO_BATCH_LIMIT);
+        const messages = batch.map(token => ({ ...baseMessage, to: token }));
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        logger.error({ 
-          status: response.status, 
-          error: errorText, 
-          token 
-        }, 'Expo push notification failed');
-        return false;
+        const response = await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Accept-Encoding': 'gzip, deflate',
+          },
+          body: JSON.stringify(messages),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error({ status: response.status, error: errorText }, 'Expo push notification request failed');
+          continue;
+        }
+
+        const result = await response.json();
+        // Response `data` mirrors the request array: one ticket per message.
+        const ticketList: any[] = Array.isArray(result.data) ? result.data : [result.data];
+
+        const deadTokens: string[] = [];
+        const acceptedTickets: Array<{ id: string; token: string }> = [];
+        ticketList.forEach((ticket, idx) => {
+          const token = batch[idx];
+          if (!ticket) return;
+          if (ticket.status === 'ok') {
+            successCount++;
+            if (ticket.id) acceptedTickets.push({ id: ticket.id, token });
+          } else if (ticket.details?.error === 'DeviceNotRegistered') {
+            deadTokens.push(token);
+          } else {
+            logger.warn({ ticket, token }, 'Push ticket returned non-ok status');
+          }
+        });
+
+        // Fire-and-forget cleanup + delayed receipt verification; neither
+        // should block or fail the send path.
+        this.disableDeadTokens(deadTokens, 'ticket').catch(() => {});
+        if (acceptedTickets.length > 0) {
+          const timer = setTimeout(() => {
+            this.checkReceipts(acceptedTickets).catch(() => {});
+          }, RECEIPT_CHECK_DELAY_MS);
+          // Don't keep the process alive just to check receipts.
+          if (typeof timer.unref === 'function') timer.unref();
+        }
       }
 
-      const result = await response.json();
-      
-      // Check if notification was successful
-      if (result.data && result.data.status === 'ok') {
-        logger.debug({ token }, 'Push notification sent successfully');
-        return true;
-      } else {
-        logger.warn({ result, token }, 'Push notification returned non-ok status');
-        return false;
-      }
+      return successCount > 0;
     } catch (error) {
-      logger.error({ error, token }, 'Error sending Expo push notification');
+      logger.error({ error }, 'Error sending Expo push notifications');
       return false;
     }
   }

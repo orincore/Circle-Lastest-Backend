@@ -11,6 +11,14 @@ export interface NotificationData {
   title: string;
   message: string;
   data?: Record<string, any>;
+  /**
+   * Whether to also deliver this notification as a push notification
+   * (default true). The socket emit below only reaches the app while it is
+   * open; without the push, closed apps never see the notification at all.
+   * Set to false only when the caller already sends its own dedicated push
+   * for this event (e.g. blind date match).
+   */
+  push?: boolean;
 }
 
 export type NotificationType = 
@@ -119,6 +127,25 @@ export class NotificationService {
         //console.log('✅ Real-time notification emitted to user:', notificationData.recipient_id);
       } catch (emitError) {
         console.error('❌ Failed to emit real-time notification:', emitError);
+      }
+
+      // Also deliver as a push notification so the recipient sees it when the
+      // app is closed — the socket emit above only works for open apps.
+      // Fire-and-forget: push delivery must never block or fail the in-app path.
+      if (notificationData.push !== false) {
+        import('./pushNotificationService.js')
+          .then(({ PushNotificationService }) =>
+            PushNotificationService.sendPushNotification(notificationData.recipient_id, {
+              title: notificationData.title,
+              body: notificationData.message,
+              data: { type: notificationData.type, ...(notificationData.data || {}) },
+              sound: 'default',
+              priority: 'high',
+            })
+          )
+          .catch((pushError) => {
+            console.error('❌ Failed to send push for notification:', pushError);
+          });
       }
 
       //console.log('✅ Notification created successfully:', notification.id);
@@ -279,32 +306,23 @@ export class NotificationService {
    */
   static async notifyProfileVisit(profileOwnerId: string, visitorId: string, visitorName: string): Promise<void> {
     try {
-      // Create in-app notification
+      // Create in-app notification; createNotification also delivers the
+      // push (with this data payload) so the owner is notified even when
+      // the app is closed.
       await this.createNotification({
         recipient_id: profileOwnerId,
         sender_id: visitorId,
         type: 'profile_visit',
-        title: 'Profile Visit',
-        message: `${visitorName} visited your profile`,
-        data: { action: 'profile_visit' }
-      });
-      
-      // Also send push notification for immediate awareness
-      const { PushNotificationService } = await import('./pushNotificationService.js');
-      await PushNotificationService.sendPushNotification(profileOwnerId, {
         title: '👀 Profile Visit',
-        body: `${visitorName} checked out your profile!`,
+        message: `${visitorName} visited your profile`,
         data: {
-          type: 'profile_visit',
+          action: 'profile_visit',
           userId: visitorId,
-          action: 'view_profile',
           screen: 'profile-view',
           params: { userId: visitorId }
-        },
-        sound: 'default',
-        priority: 'default'
+        }
       });
-      
+
       //console.log('✅ Profile visit notification created successfully');
     } catch (error) {
       console.error('❌ Failed to create profile visit notification:', error);

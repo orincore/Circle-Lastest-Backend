@@ -2,6 +2,27 @@ import { and, eq } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import { memeConnectRequests, friendships, memeComments } from '../db/schema.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
+import { NotificationService } from './notificationService.js'
+
+// In-app + push notification for meme-connect events. Deliberately carries
+// NO sender_id and no name: meme comments are anonymous, so the notification
+// must not leak who the other party is. Type reuses the generic
+// 'profile_suggestion' (same precedent as announcements) because the shipped
+// app doesn't know any meme-specific notification types. Failures are logged
+// and swallowed — notifying must never break the connect flow itself.
+async function notifyMemeConnect(recipientId: string, title: string, message: string, data: Record<string, any>) {
+  try {
+    await NotificationService.createNotification({
+      recipient_id: recipientId,
+      type: 'profile_suggestion',
+      title,
+      message,
+      data: { action: 'meme_connect', ...data },
+    })
+  } catch (e) {
+    console.error('meme connect notification failed:', e)
+  }
+}
 
 export type ConnectRequestRow = typeof memeConnectRequests.$inferSelect
 
@@ -23,6 +44,14 @@ async function createConnectRequest(
       .insert(memeConnectRequests)
       .values({ requesterId, targetId, contextMemeId: contextMemeId || null })
       .returning()
+
+    await notifyMemeConnect(
+      targetId,
+      '🎭 Someone wants to connect!',
+      'Someone liked your comment on a meme and wants to connect with you.',
+      { requestId: row.id }
+    )
+
     return row
   } catch (e: any) {
     if ((e?.code ?? e?.cause?.code) === '23505') {
@@ -82,6 +111,14 @@ export async function respondToConnectRequest(
     .set({ status: 'accepted', chatId: chat.id, respondedAt: new Date().toISOString() })
     .where(eq(memeConnectRequests.id, requestId))
     .returning()
+
+  await notifyMemeConnect(
+    request.requesterId,
+    '🎉 Connect request accepted!',
+    'Your meme connect request was accepted. Start chatting anonymously!',
+    { requestId: updated.id, chatId: chat.id }
+  )
+
   return updated
 }
 
@@ -110,8 +147,31 @@ export async function requestReveal(requestId: string, userId: string): Promise<
     .where(eq(memeConnectRequests.id, requestId))
     .returning()
 
+  const otherUserId = request.requesterId === userId ? request.targetId : request.requesterId
+
   if (bothRevealed) {
     await createFriendshipIfMissing(request.requesterId, request.targetId)
+    await Promise.all([
+      notifyMemeConnect(
+        request.requesterId,
+        '🎉 Identities revealed!',
+        'You both revealed your identities. Check out who you connected with!',
+        { requestId: updated.id, chatId: updated.chatId }
+      ),
+      notifyMemeConnect(
+        request.targetId,
+        '🎉 Identities revealed!',
+        'You both revealed your identities. Check out who you connected with!',
+        { requestId: updated.id, chatId: updated.chatId }
+      ),
+    ])
+  } else {
+    await notifyMemeConnect(
+      otherUserId,
+      '🎭 Reveal request',
+      'Your meme connection wants to reveal identities. Reveal yours too to see who they are!',
+      { requestId: updated.id, chatId: updated.chatId }
+    )
   }
 
   return updated

@@ -742,13 +742,17 @@ export class BlindDatingService {
         revealThreshold: match.reveal_threshold
       })
 
-      // Create in-app notifications
+      // Create in-app notifications. push: false — the dedicated
+      // sendBlindDateMatchNotification calls below already deliver the push
+      // with the payload the app expects, so the default push here would
+      // notify each user twice.
       await NotificationService.createNotification({
         recipient_id: userId,
         type: 'blind_date_match',
         title: '🎭 New Blind Date!',
         message: 'You have a new anonymous match! Start chatting to discover who they are.',
-        data: { matchId: match.id, chatId: match.chat_id }
+        data: { matchId: match.id, chatId: match.chat_id },
+        push: false
       })
 
       await NotificationService.createNotification({
@@ -756,7 +760,8 @@ export class BlindDatingService {
         type: 'blind_date_match',
         title: '🎭 New Blind Date!',
         message: 'You have a new anonymous match! Start chatting to discover who they are.',
-        data: { matchId: match.id, chatId: match.chat_id }
+        data: { matchId: match.id, chatId: match.chat_id },
+        push: false
       })
 
       // Send push notifications to both users

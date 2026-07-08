@@ -315,11 +315,16 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
       
       // Send push notification to the receiver with masked name for blind date
       try {
-        const { PushNotificationService } = await import('../services/pushNotificationService.js')
+        const { PushNotificationService, describeMessageForNotification } = await import('../services/pushNotificationService.js')
         await PushNotificationService.sendMessageNotification(
           otherUserId,
           senderName, // Already masked for blind date
-          msg.text || 'New message',
+          describeMessageForNotification({
+            text: msg.text,
+            mediaType: msg.media_type,
+            isViewOnce: (msg as any).is_view_once,
+            sharedMemeId: msg.shared_meme_id,
+          }),
           chatId,
           msg.id
         )
