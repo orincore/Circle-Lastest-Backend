@@ -5,7 +5,7 @@
  * Runs every 6 hours to check for inactive matches
  */
 
-import { and, eq, inArray, lte } from 'drizzle-orm'
+import { and, eq, inArray, isNull, lte } from 'drizzle-orm'
 import { logger } from '../config/logger.js'
 import { db } from '../config/db.js'
 import { blindDateMatches, profiles } from '../db/schema.js'
@@ -30,7 +30,11 @@ async function checkInactiveMatches() {
   try {
     const twentyFourHoursAgo = new Date(Date.now() - INACTIVITY_THRESHOLD).toISOString()
     
-    // Get active blind date matches with no messages that are at least 24 hours old
+    // Get active blind date matches with no messages that are at least 24 hours
+    // old AND haven't already been reminded -- reminderSentAt is set after a
+    // successful send specifically to make this a one-time reminder per match;
+    // omitting this filter meant every invocation (every pod startup, every
+    // 6h tick, across every replica) re-sent to the same matches indefinitely.
     const rows = await db.select({
       id: blindDateMatches.id,
       user_a: blindDateMatches.userA,
@@ -42,6 +46,7 @@ async function checkInactiveMatches() {
       eq(blindDateMatches.status, 'active'),
       eq(blindDateMatches.messageCount, 0),
       lte(blindDateMatches.matchedAt, twentyFourHoursAgo),
+      isNull(blindDateMatches.reminderSentAt),
     ))
     const inactiveMatches = rows as BlindDateMatch[]
 
