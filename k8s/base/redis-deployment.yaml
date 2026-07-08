@@ -1,0 +1,81 @@
+# Single instance -- cache/pub-sub for Socket.IO's cross-pod adapter, not a
+# durable store. maxmemory kept below the container limit to leave headroom
+# for Redis' own process overhead before the OOM killer would step in.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: circle-prod
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # ReadWriteOnce PVC can't be attached to two pods at once during rollout
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - "300mb"
+            - --maxmemory-policy
+            - "allkeys-lru"
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              memory: "200Mi"
+              cpu: "100m"
+            limits:
+              memory: "384Mi"
+              cpu: "250m"
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: circle-prod
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: circle-prod
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

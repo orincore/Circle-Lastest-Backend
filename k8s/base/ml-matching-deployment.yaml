@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-matching
+  namespace: circle-prod
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: ml-matching
+  template:
+    metadata:
+      labels:
+        app: ml-matching
+    spec:
+      containers:
+        - name: ml-matching
+          image: ghcr.io/orincore/circle-backend-ml-matching:latest
+          ports:
+            - containerPort: 8090
+          envFrom:
+            - configMapRef:
+                name: circle-backend-config
+            - secretRef:
+                name: circle-backend-secrets
+          env:
+            - name: SERVICE_PORT
+              value: "8090"
+          resources:
+            requests:
+              memory: "150Mi"
+              cpu: "100m"
+            limits:
+              memory: "300Mi"
+              cpu: "300m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 20
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-matching
+  namespace: circle-prod
+spec:
+  selector:
+    app: ml-matching
+  ports:
+    - port: 8090
+      targetPort: 8090

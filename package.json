@@ -34,6 +34,8 @@
     "redis:stop": "docker-compose stop redis",
     "redis:cli": "redis-cli",
     "health": "curl http://localhost:3000/health",
+    "migrate": "node scripts/run-migrations.js",
+    "migrate:baseline": "node scripts/run-migrations.js --baseline",
     "lint": "eslint . --ext .ts"
   },
   "dependencies": {

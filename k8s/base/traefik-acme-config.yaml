@@ -1,0 +1,21 @@
+# Applies on top of k3s's bundled Traefik (kube-system namespace, HelmChart
+# name "traefik") to add a Let's Encrypt HTTP-01 resolver. This replaces
+# cert-manager entirely -- Traefik's built-in ACME support does the same job
+# for one domain with one less moving part and ~150Mi less RAM.
+#
+# Apply once during provisioning: kubectl apply -f k8s/base/traefik-acme-config.yaml
+# Then wait for `kubectl -n kube-system rollout status deploy/traefik`.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    additionalArguments:
+      - "--certificatesresolvers.myresolver.acme.email=admin@orincore.com"
+      - "--certificatesresolvers.myresolver.acme.storage=/data/acme.json"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+    persistence:
+      enabled: true
+      size: 128Mi

@@ -1,0 +1,45 @@
+# Reproduces the path map from docker/nginx.conf:
+#   /api/ml/*                         -> ml-matching:8090
+#   /ws/*                             -> socket:8081 (sticky via Service sessionAffinity)
+#   /api/*, /graphql, /chat/*, /health -> api:8080
+#
+# Traefik disambiguates overlapping PathPrefix rules by `priority` (higher
+# wins), which is why /api/ml gets a higher number than the general /api rule.
+#
+# TLS termination happens at the HOST's system nginx (via certbot), not here --
+# this VPS is shared with another live site (api.manishbosephotography.com)
+# that already owns ports 80/443 via nginx. Traefik stays internal-only
+# (ClusterIP, servicelb disabled at k3s install) and nginx reverse-proxies
+# api.circle.orincore.com to Traefik's ClusterIP over plain HTTP on the "web"
+# entrypoint. See docs/k8s/PROVISIONING.md for the nginx vhost config.
+# traefik-acme-config.yaml's ACME resolver is therefore unused in this layout
+# -- kept only in case a future dedicated VPS wants Traefik to own TLS directly.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: circle-backend
+  namespace: circle-prod
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`api.circle.orincore.com`) && PathPrefix(`/api/ml`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: ml-matching
+          port: 8090
+    - match: Host(`api.circle.orincore.com`) && PathPrefix(`/ws`)
+      kind: Rule
+      priority: 90
+      services:
+        - name: socket
+          port: 8081
+    - match: >-
+        Host(`api.circle.orincore.com`) &&
+        (PathPrefix(`/api`) || PathPrefix(`/graphql`) || PathPrefix(`/chat`) || Path(`/health`))
+      kind: Rule
+      priority: 50
+      services:
+        - name: api
+          port: 8080

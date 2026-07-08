@@ -1,0 +1,53 @@
+# Runs the same 3 PM2 apps as today (matchmaking-worker, continuous-blind-
+# matching, inactive-blind-date-reminder -- see docker/ecosystem.matchmaking.config.cjs)
+# unchanged. Kept at 2 replicas, matching the concurrency level already
+# proven safe in the current blue-green compose setup (both colors run
+# simultaneously today). Do NOT raise this without first confirming
+# inactive-blind-date-reminder's de-dupe (reminder_sent_at column check) and
+# matchmaking-worker's row-claiming hold up at higher concurrency -- the
+# failure mode is duplicate push notifications/emails to real users.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matchmaking
+  namespace: circle-prod
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: matchmaking
+  template:
+    metadata:
+      labels:
+        app: matchmaking
+    spec:
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: matchmaking
+          image: ghcr.io/orincore/circle-backend-matchmaking:latest
+          envFrom:
+            - configMapRef:
+                name: circle-backend-config
+            - secretRef:
+                name: circle-backend-secrets
+          resources:
+            requests:
+              memory: "200Mi"
+              cpu: "100m"
+            limits:
+              memory: "350Mi"
+              cpu: "300m"
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "const fs=require('fs');const s=fs.statSync('/tmp/matchmaking-heartbeat');if(Date.now()-s.mtimeMs>60000)process.exit(1)"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3

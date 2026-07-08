@@ -1,0 +1,20 @@
+# Template -- CI generates a fresh Job name per deploy (Jobs are immutable
+# once created) by substituting __TAG__ before `kubectl apply`. See the
+# "migrate" step in .github/workflows/deploy.yml.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: circle-migrate-__TAG__
+  namespace: circle-prod
+spec:
+  backoffLimit: 0 # fail fast -- don't silently retry against a possibly-partial schema state
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/orincore/circle-backend-migrate:__TAG__
+          envFrom:
+            - secretRef:
+                name: circle-backend-secrets

@@ -1,0 +1,15 @@
+# Non-secret configuration shared across services. Actual secrets (JWT_SECRET,
+# DATABASE_URL, API keys, etc.) are NOT here -- see docs/k8s/README.md for how
+# the circle-backend-secrets Secret is created directly from .env.production
+# and is never committed to git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: circle-backend-config
+  namespace: circle-prod
+data:
+  NODE_ENV: "production"
+  TZ: "Asia/Kolkata"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  UV_THREADPOOL_SIZE: "8"

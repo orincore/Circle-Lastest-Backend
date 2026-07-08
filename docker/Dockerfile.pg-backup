@@ -1,0 +1,15 @@
+# ============================================
+# Circle Backend - Postgres Backup Runner
+# pg_dump (matching the server's major version) + aws-cli, invoked nightly
+# by k8s/base/backup-cronjob.yaml.
+# ============================================
+# syntax=docker/dockerfile:1
+
+FROM postgres:17-alpine
+
+RUN apk add --no-cache aws-cli
+
+COPY docker/pg-backup.sh /usr/local/bin/pg-backup.sh
+RUN chmod +x /usr/local/bin/pg-backup.sh
+
+ENTRYPOINT ["/usr/local/bin/pg-backup.sh"]

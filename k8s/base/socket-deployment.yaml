@@ -1,0 +1,91 @@
+# Unlike Dockerfile.api, Dockerfile.socket has no separate ENTRYPOINT script
+# (it already runs as the `nodejs` user via a Dockerfile USER directive), so
+# overriding `command` directly (not just `args`) is safe here -- there's
+# nothing else to skip.
+#
+# Socket.IO already uses the Redis adapter (src/server/sockets/optimized-socket.ts)
+# for cross-pod broadcast, but the HTTP long-polling handshake still needs
+# repeated requests to land on the same pod before the upgrade to websocket
+# completes (transports include both 'websocket' and 'polling'). The Service's
+# sessionAffinity below is the k8s equivalent of nginx's `ip_hash` in the
+# current docker/nginx.conf.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socket
+  namespace: circle-prod
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: socket
+  template:
+    metadata:
+      labels:
+        app: socket
+    spec:
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: socket
+          image: ghcr.io/orincore/circle-backend-socket:latest
+          command: ["node", "dist/index.js"]
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: circle-backend-config
+            - secretRef:
+                name: circle-backend-secrets
+          env:
+            - name: PORT
+              value: "8081"
+            - name: SERVICE_TYPE
+              value: "socket"
+            - name: SOCKET_REDIS_ENABLED
+              value: "true"
+          resources:
+            requests:
+              memory: "280Mi"
+              cpu: "150m"
+            limits:
+              memory: "450Mi"
+              cpu: "400m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 10"] # let in-flight sockets migrate/close gracefully
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: socket
+  namespace: circle-prod
+spec:
+  selector:
+    app: socket
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800 # 3h, matches the socket upstream keepalive timeout in docker/nginx.conf
+  ports:
+    - port: 8081
+      targetPort: 8081

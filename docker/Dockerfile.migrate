@@ -1,0 +1,29 @@
+# ============================================
+# Circle Backend - DB Migration Runner
+# Runs scripts/run-migrations.js as a one-shot k8s Job before each rollout.
+# Kept separate from the api image so migration SQL/history isn't shipped
+# to every app pod.
+# ============================================
+# syntax=docker/dockerfile:1
+
+FROM node:20-alpine AS deps
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+FROM node:20-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY scripts/run-migrations.js ./scripts/run-migrations.js
+COPY migrations ./migrations
+
+RUN chown -R nodejs:nodejs /app
+USER nodejs
+
+CMD ["node", "scripts/run-migrations.js"]

@@ -1,0 +1,112 @@
+# NOTE on `args` vs `command`:
+# docker/Dockerfile.api's ENTRYPOINT (docker/api-entrypoint.sh) fixes ownership
+# of the shared OTA-updates volume and then drops from root to the `nodejs`
+# user via su-exec before exec-ing "$@". We deliberately only override `args`
+# here (not `command`) so that ENTRYPOINT still runs -- overriding `command`
+# would skip it and the container would run the app as root with a
+# root-owned OTA directory.
+#
+# We replace the image's default CMD (`pm2-runtime ecosystem.config.cjs`,
+# which runs PM2 in cluster mode = `instances: max`) with a plain
+# `node dist/index.js`. PM2 cluster-mode forking multiple Node processes
+# inside one pod is redundant once k8s is doing the horizontal replication
+# (and pod self-healing) -- keeping both would multiply memory usage and
+# double-count "replicas" for no benefit.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: circle-prod
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: api
+          image: ghcr.io/orincore/circle-backend-api:latest # CI substitutes the real owner/tag
+          args: ["node", "dist/index.js"]
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: circle-backend-config
+            - secretRef:
+                name: circle-backend-secrets
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVICE_TYPE
+              value: "api"
+          resources:
+            requests:
+              memory: "250Mi"
+              cpu: "100m"
+            limits:
+              memory: "400Mi"
+              cpu: "400m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # give the Service/Ingress time to stop sending new traffic
+                # before SIGTERM, since the app itself doesn't drain on signal
+                command: ["/bin/sh", "-c", "sleep 5"]
+          volumeMounts:
+            - name: ota-updates
+              mountPath: /app/public/updates
+      volumes:
+        - name: ota-updates
+          persistentVolumeClaim:
+            claimName: ota-updates
+            # RWO works here only because this is a single-node cluster --
+            # all 3 replicas land on the same node. Multi-node would need a
+            # real RWX volume or moving OTA storage to S3 instead.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ota-updates
+  namespace: circle-prod
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: circle-prod
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 8080
+      targetPort: 8080

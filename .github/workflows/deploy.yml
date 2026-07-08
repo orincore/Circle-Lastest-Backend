@@ -1,0 +1,118 @@
+name: Build and deploy to k3s
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/${{ github.repository_owner }}/circle-backend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - service: api
+            dockerfile: docker/Dockerfile.api
+          - service: socket
+            dockerfile: docker/Dockerfile.socket
+          - service: matchmaking
+            dockerfile: docker/Dockerfile.matchmaking
+          - service: cron
+            dockerfile: docker/Dockerfile.cron
+          - service: ml-matching
+            dockerfile: docker/Dockerfile.ml-matching
+          - service: migrate
+            dockerfile: docker/Dockerfile.migrate
+          - service: pg-backup
+            dockerfile: docker/Dockerfile.pg-backup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          build-args: |
+            CACHEBUST=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE_BASE }}-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.IMAGE_BASE }}-${{ matrix.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply manifests, migrate, and roll out
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GITHUB_SHA
+          script: |
+            set -euo pipefail
+            cd /root/Circle-Lastest-Backend
+            git fetch --all
+            git checkout main
+            git reset --hard origin/main
+
+            NAMESPACE=circle-prod
+            TAG="${GITHUB_SHA}"
+
+            # Sync base manifests (idempotent)
+            kubectl apply -f k8s/base/namespace.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/configmap.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/postgres-statefulset.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/redis-deployment.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/backup-cronjob.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/ingressroute.yaml
+
+            # Run DB migrations before rolling out new app images, and wait for it
+            JOB_YAML=$(mktemp)
+            sed "s/__TAG__/${TAG}/g" k8s/jobs/migrate-job-template.yaml > "$JOB_YAML"
+            kubectl apply -n "$NAMESPACE" -f "$JOB_YAML"
+            kubectl wait -n "$NAMESPACE" --for=condition=complete "job/circle-migrate-${TAG}" --timeout=300s
+
+            # Sync Deployments (in case probes/resources/etc. changed) then roll images
+            kubectl apply -n "$NAMESPACE" -f k8s/base/api-deployment.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/socket-deployment.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/matchmaking-deployment.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/cron-deployment.yaml
+            kubectl apply -n "$NAMESPACE" -f k8s/base/ml-matching-deployment.yaml
+
+            kubectl set image -n "$NAMESPACE" deployment/api api="${{ env.IMAGE_BASE }}-api:${TAG}"
+            kubectl set image -n "$NAMESPACE" deployment/socket socket="${{ env.IMAGE_BASE }}-socket:${TAG}"
+            kubectl set image -n "$NAMESPACE" deployment/matchmaking matchmaking="${{ env.IMAGE_BASE }}-matchmaking:${TAG}"
+            kubectl set image -n "$NAMESPACE" deployment/cron cron="${{ env.IMAGE_BASE }}-cron:${TAG}"
+            kubectl set image -n "$NAMESPACE" deployment/ml-matching ml-matching="${{ env.IMAGE_BASE }}-ml-matching:${TAG}"
+
+            for d in api socket matchmaking cron ml-matching; do
+              kubectl rollout status -n "$NAMESPACE" "deployment/$d" --timeout=180s || {
+                echo "Rollout failed for $d, rolling back";
+                kubectl rollout undo -n "$NAMESPACE" "deployment/$d";
+                exit 1;
+              }
+            done
+
+            echo "Deploy complete: $TAG"

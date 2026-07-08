@@ -1,0 +1,90 @@
+# Single-instance Postgres. Deliberately NOT multi-replica: real Postgres HA
+# (streaming replication + automatic failover via Patroni/repmgr) is a
+# specialized, easy-to-get-wrong setup and pointless on one node anyway (same
+# disk = same failure domain). HA here comes from the nightly S3 backup
+# (k8s/base/backup-cronjob.yaml), not from replica count.
+#
+# max_connections=150 covers worst case: 3 api + 3 socket + 2x3 matchmaking
+# processes, each holding a `pg` Pool with max:10 (src/server/config/db.ts) =
+# up to ~90 connections, leaving headroom for migrations/admin/backup jobs.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: circle-prod
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: postgres
+          # pgvector/pgvector (not vanilla postgres) -- the schema uses the
+          # `vector` type + pgvector extension for ML-matching embeddings.
+          image: pgvector/pgvector:pg17
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          args:
+            - "-c"
+            - "max_connections=150"
+            - "-c"
+            - "shared_buffers=256MB"
+            - "-c"
+            - "effective_cache_size=768MB"
+            - "-c"
+            - "work_mem=4MB"
+            - "-c"
+            - "maintenance_work_mem=64MB"
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata # avoid "lost+found" clashing with PGDATA on a fresh volume
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi # local-path PVCs aren't easily resized after creation -- see docs/k8s/PROVISIONING.md
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: circle-prod
+spec:
+  clusterIP: None # headless: stable DNS name for the StatefulSet pod
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

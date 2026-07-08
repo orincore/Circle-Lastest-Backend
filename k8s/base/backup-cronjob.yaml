@@ -1,0 +1,55 @@
+# Nightly pg_dump -> S3. Retention is handled by an S3 lifecycle rule on the
+# postgres-backups/ prefix (set once in the S3 console/CLI, not scripted here
+# -- see docs/k8s/BACKUPS.md), not by deleting old dumps from this job.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: circle-prod
+spec:
+  schedule: "0 20 * * *" # 20:00 UTC = 01:30 IST, low-traffic window
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: ghcr.io/orincore/circle-backend-pg-backup:latest
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: circle-backend-secrets
+                      key: DATABASE_URL
+                - name: AWS_S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: circle-backend-secrets
+                      key: AWS_S3_BUCKET
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: circle-backend-secrets
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: circle-backend-secrets
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: circle-backend-secrets
+                      key: AWS_REGION
+              resources:
+                requests:
+                  memory: "100Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "200Mi"
+                  cpu: "300m"

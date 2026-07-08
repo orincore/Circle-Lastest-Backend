@@ -1,0 +1,42 @@
+# MUST stay single-replica -- duplicate crond instances would double-run
+# every scheduled job (blind-dating-scheduler, notification cleanup,
+# db-maintenance, age-resync -- see docker/crontab). `Recreate` strategy
+# guarantees the old pod is fully gone before the new one starts, so there's
+# never a window with two crond processes during a rollout.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cron
+  namespace: circle-prod
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: cron
+  template:
+    metadata:
+      labels:
+        app: cron
+    spec:
+      containers:
+        - name: cron
+          image: ghcr.io/orincore/circle-backend-cron:latest
+          envFrom:
+            - configMapRef:
+                name: circle-backend-config
+            - secretRef:
+                name: circle-backend-secrets
+          resources:
+            requests:
+              memory: "100Mi"
+              cpu: "50m"
+            limits:
+              memory: "200Mi"
+              cpu: "200m"
+          livenessProbe:
+            exec:
+              command: ["pgrep", "crond"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
