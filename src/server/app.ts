@@ -25,6 +25,7 @@ import matchmakingRouter from './routes/matchmaking.routes.js'
 import { heartbeat } from './services/matchmaking-optimized.js'
 import { monitoringService, performanceMiddleware } from './services/monitoring.js'
 import chatRouter from './routes/chat.routes.js'
+import jamRouter from './routes/jam.routes.js'
 import friendsRouter from './routes/friends.routes.js'
 import monitoringRouter from './routes/monitoring.routes.js'
 import exploreRouter from './routes/explore.routes.js'
@@ -280,6 +281,7 @@ app.use('/api/analytics', analyticsRouter)
 app.use('/api/storage', storageRouter)
 app.use('/matchmaking', matchmakingRouter)
 app.use('/chat', chatRouter)
+app.use('/api/jam', jamRouter)
 app.use('/api/friends', friendsRouter)
 app.use('/api/monitoring', monitoringRouter)
 app.use('/api/explore', exploreRouter)

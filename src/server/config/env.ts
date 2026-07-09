@@ -38,6 +38,8 @@ const envSchema = z.object({
   APPLE_KEY_ID: z.string().optional(),
   APPLE_PRIVATE_KEY: z.string().optional(),
   APPLE_BUNDLE_ID: z.string().optional(),
+  // YouTube Data API v3 (jam session search + metadata; never exposed to clients)
+  YOUTUBE_API_KEY: z.string().optional(),
 })
 
 export const env = envSchema.parse(process.env)

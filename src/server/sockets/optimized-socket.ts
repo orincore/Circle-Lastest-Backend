@@ -29,6 +29,7 @@ import { setupVoiceCallHandlers, registerTestHandlers } from '../handlers/voiceC
 import { setupFriendRequestHandlers } from '../handlers/friendRequestHandler.js'
 import { setupBlindDatingHandlers } from '../handlers/blindDatingHandler.js'
 import { setupPromptMatchingHandlers } from '../handlers/promptMatchingHandler.js'
+import { setupJamHandlers, cleanupJamPresenceOnDisconnect } from '../handlers/jamHandler.js'
 import { Redis } from 'ioredis'
 
 // Helper function to calculate and emit unread count for a specific chat
@@ -396,6 +397,19 @@ export function emitToUser(userId: string, event: string, payload: any) {
     ioRef.to(userId).emit(event, payload)
   } catch (error) {
     logger.error({ error, userId, event }, 'Failed to emit to user')
+  }
+}
+
+export function emitToRoom(room: string, event: string, payload: any) {
+  try {
+    if (!ioRef) {
+      logger.warn({ room, event }, 'Socket.IO not initialized - cannot emit to room')
+      return
+    }
+
+    ioRef.to(room).emit(event, payload)
+  } catch (error) {
+    logger.error({ error, room, event }, 'Failed to emit to room')
   }
 }
 
@@ -2124,6 +2138,8 @@ export async function initOptimizedSocket(server: Server) {
       setupBlindDatingHandlers(io, socket, userId);
       // Set up prompt matching handlers
       setupPromptMatchingHandlers(io, socket, userId);
+      // Set up jam session (listen-together) handlers
+      setupJamHandlers(io, socket, userId);
       // Register test handlers for debugging
       registerTestHandlers(io, socket);
       
@@ -2199,6 +2215,10 @@ export async function initOptimizedSocket(server: Server) {
       }
       
       untrackConnection(userId)
+
+      if (userId) {
+        cleanupJamPresenceOnDisconnect(io, socket, userId)
+      }
 
       // If this was the user's LAST live connection, tell chat partners they're
       // offline. (untrackConnection already decremented/removed the count.)

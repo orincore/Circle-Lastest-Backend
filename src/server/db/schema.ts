@@ -3,6 +3,8 @@ import { sql } from "drizzle-orm"
 
 export const messageReceiptStatus = pgEnum("message_receipt_status", ['delivered', 'read'])
 export const verificationStatus = pgEnum("verification_status", ['pending', 'verified', 'rejected', 'expired'])
+export const jamSessionStatus = pgEnum("jam_session_status", ['active', 'paused', 'ended'])
+export const jamQueueItemStatus = pgEnum("jam_queue_item_status", ['queued', 'playing', 'played', 'skipped'])
 
 // Manually added after `drizzle-kit pull` (not generated): drizzle-kit only introspects the
 // `public` schema, but `explore_interactions` below has foreign keys into Supabase's
@@ -1018,6 +1020,85 @@ export const chatUserSettings = pgTable("chat_user_settings", {
 	pgPolicy("chat_user_settings_select", { as: "permissive", for: "select", to: ["public"] }),
 	pgPolicy("chat_user_settings_insert", { as: "permissive", for: "insert", to: ["public"] }),
 	pgPolicy("chat_user_settings_delete", { as: "permissive", for: "delete", to: ["public"] }),
+]);
+
+// Manually added for migration 052_create_jam_sessions.sql (listen-together jam sessions).
+export const jamSessions = pgTable("jam_sessions", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	chatId: uuid("chat_id").notNull(),
+	startedBy: uuid("started_by").notNull(),
+	status: jamSessionStatus().default('active').notNull(),
+	currentQueueItemId: uuid("current_queue_item_id"),
+	playbackPositionMs: integer("playback_position_ms").default(0).notNull(),
+	isPlaying: boolean("is_playing").default(false).notNull(),
+	pausedForPresence: boolean("paused_for_presence").default(false).notNull(),
+	lastPositionSyncedAt: timestamp("last_position_synced_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	endedAt: timestamp("ended_at", { withTimezone: true, mode: 'string' }),
+}, (table) => [
+	index("idx_jam_sessions_chat_id").using("btree", table.chatId.asc().nullsLast().op("uuid_ops")),
+	uniqueIndex("jam_sessions_one_active_per_chat").using("btree", table.chatId.asc().nullsLast().op("uuid_ops")).where(sql`(status <> 'ended')`),
+	foreignKey({
+			columns: [table.chatId],
+			foreignColumns: [chats.id],
+			name: "jam_sessions_chat_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.startedBy],
+			foreignColumns: [profiles.id],
+			name: "jam_sessions_started_by_fkey"
+		}),
+	// current_queue_item_id -> jam_session_queue.id is enforced in Postgres via the
+	// migration's ALTER TABLE (added after both tables exist, since the two tables
+	// reference each other). Not declared here to avoid a circular pgTable() reference.
+]);
+
+export const jamSessionParticipants = pgTable("jam_session_participants", {
+	sessionId: uuid("session_id").notNull(),
+	userId: uuid("user_id").notNull(),
+	isPresent: boolean("is_present").default(false).notNull(),
+	joinedAt: timestamp("joined_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	leftAt: timestamp("left_at", { withTimezone: true, mode: 'string' }),
+}, (table) => [
+	index("idx_jam_participants_user").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.sessionId],
+			foreignColumns: [jamSessions.id],
+			name: "jam_session_participants_session_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "jam_session_participants_user_id_fkey"
+		}),
+	primaryKey({ columns: [table.sessionId, table.userId], name: "jam_session_participants_pkey" }),
+]);
+
+export const jamSessionQueue = pgTable("jam_session_queue", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	sessionId: uuid("session_id").notNull(),
+	youtubeVideoId: text("youtube_video_id").notNull(),
+	title: text().notNull(),
+	channelTitle: text("channel_title"),
+	thumbnailUrl: text("thumbnail_url"),
+	durationSeconds: integer("duration_seconds"),
+	addedBy: uuid("added_by").notNull(),
+	status: jamQueueItemStatus().default('queued').notNull(),
+	position: doublePrecision().notNull(),
+	isAutoRecommended: boolean("is_auto_recommended").default(false).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_jam_queue_session_position").using("btree", table.sessionId.asc().nullsLast().op("uuid_ops"), table.position.asc().nullsLast().op("float8_ops")),
+	foreignKey({
+			columns: [table.sessionId],
+			foreignColumns: [jamSessions.id],
+			name: "jam_session_queue_session_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.addedBy],
+			foreignColumns: [profiles.id],
+			name: "jam_session_queue_added_by_fkey"
+		}),
 ]);
 
 export const campaignAnalytics = pgTable("campaign_analytics", {

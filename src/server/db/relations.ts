@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm/relations";
-import { subscriptionPlans, userSubscriptions, profiles, paymentTransactions, refunds, memeSources, memes, memeAssets, userMemeAliases, memeLikes, memeComments, chats, memeConnectRequests, memeStats, memeShares, activityFeed, adminAuditLogs, analyticsEvents, adminRoles, aiConversations, friendships, giverRequestAttempts, helpRequests, appVersions, crashReports, blindDateMatches, blindDateDailyQueue, dailyMatchLimits, blindDatingSettings, chatUserSettings, marketingCampaigns, campaignAnalytics, escalationLogs, chatDeletions, emailTemplates, featureUsage, giverProfiles, followUpTasks, feedbackAnalysis, friendLocationNotifications, helpSessionFeedback, messages, messageReactions, featureFlags, usersInAuth, exploreInteractions, faceVerifications, marketingAutomationRules, referralTransactions, promotionalSubscriptions, proactiveAlerts, messageReceipts, referralCodeAttempts, satisfactionRatings, userReferrals, userActivityEvents, notifications, messageViews, nearbyNotifications, notificationTemplates, pushTokens, satisfactionSurveys, surveyResponses, userPhotos, userConsent, userActivities, userCampaignInteractions, userMarketingPreferences, userReports, userMatches, systemSettings, referralPaymentRequests, userProfileVisits, voiceCalls, voiceCallParticipants, userSessions, verificationAttempts, blindDateBlockedMessages, matchmakingProposals, userSegments, chatMembers, memeFeedViews, userSourceAffinity } from "./schema.js";
+import { subscriptionPlans, userSubscriptions, profiles, paymentTransactions, refunds, memeSources, memes, memeAssets, userMemeAliases, memeLikes, memeComments, chats, memeConnectRequests, memeStats, memeShares, activityFeed, adminAuditLogs, analyticsEvents, adminRoles, aiConversations, friendships, giverRequestAttempts, helpRequests, appVersions, crashReports, blindDateMatches, blindDateDailyQueue, dailyMatchLimits, blindDatingSettings, chatUserSettings, marketingCampaigns, campaignAnalytics, escalationLogs, chatDeletions, emailTemplates, featureUsage, giverProfiles, followUpTasks, feedbackAnalysis, friendLocationNotifications, helpSessionFeedback, messages, messageReactions, featureFlags, usersInAuth, exploreInteractions, faceVerifications, marketingAutomationRules, referralTransactions, promotionalSubscriptions, proactiveAlerts, messageReceipts, referralCodeAttempts, satisfactionRatings, userReferrals, userActivityEvents, notifications, messageViews, nearbyNotifications, notificationTemplates, pushTokens, satisfactionSurveys, surveyResponses, userPhotos, userConsent, userActivities, userCampaignInteractions, userMarketingPreferences, userReports, userMatches, systemSettings, referralPaymentRequests, userProfileVisits, voiceCalls, voiceCallParticipants, userSessions, verificationAttempts, blindDateBlockedMessages, matchmakingProposals, userSegments, chatMembers, memeFeedViews, userSourceAffinity, jamSessions, jamSessionParticipants, jamSessionQueue } from "./schema.js";
 
 export const userSubscriptionsRelations = relations(userSubscriptions, ({one, many}) => ({
 	subscriptionPlan: one(subscriptionPlans, {
@@ -552,6 +552,41 @@ export const chatUserSettingsRelations = relations(chatUserSettings, ({one}) => 
 	}),
 	profile: one(profiles, {
 		fields: [chatUserSettings.userId],
+		references: [profiles.id]
+	}),
+}));
+
+export const jamSessionsRelations = relations(jamSessions, ({one, many}) => ({
+	chat: one(chats, {
+		fields: [jamSessions.chatId],
+		references: [chats.id]
+	}),
+	startedByProfile: one(profiles, {
+		fields: [jamSessions.startedBy],
+		references: [profiles.id]
+	}),
+	participants: many(jamSessionParticipants),
+	queue: many(jamSessionQueue),
+}));
+
+export const jamSessionParticipantsRelations = relations(jamSessionParticipants, ({one}) => ({
+	session: one(jamSessions, {
+		fields: [jamSessionParticipants.sessionId],
+		references: [jamSessions.id]
+	}),
+	profile: one(profiles, {
+		fields: [jamSessionParticipants.userId],
+		references: [profiles.id]
+	}),
+}));
+
+export const jamSessionQueueRelations = relations(jamSessionQueue, ({one}) => ({
+	session: one(jamSessions, {
+		fields: [jamSessionQueue.sessionId],
+		references: [jamSessions.id]
+	}),
+	addedByProfile: one(profiles, {
+		fields: [jamSessionQueue.addedBy],
 		references: [profiles.id]
 	}),
 }));
