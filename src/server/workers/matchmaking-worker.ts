@@ -1,6 +1,26 @@
 import { heartbeat } from '../services/matchmaking-optimized.js'
 import { logger } from '../config/logger.js'
 import { Redis } from 'ioredis'
+import { writeFileSync } from 'fs'
+
+// The k8s liveness probe for this pod (docker/k8s deployment manifest, not
+// in this repo) checks the mtime of this exact local file and kills the
+// container if it hasn't been touched in the last 60s. This worker only
+// ever heartbeated to Redis, so that file was never written -- the probe
+// failed every cycle regardless of actual health, restarting the pod every
+// ~2 minutes (177 restarts observed in production). Every restart also
+// re-triggers each PM2 app's "run once immediately on startup" cycle
+// (matchmaking-worker's processing loop, blind-matcher's first match pass),
+// so this wasn't just a cosmetic CrashLoopBackOff -- it was hammering the
+// DB with matching runs every ~2 minutes instead of the intended interval.
+const LIVENESS_FILE = '/tmp/matchmaking-heartbeat'
+function touchLivenessFile() {
+  try {
+    writeFileSync(LIVENESS_FILE, String(Date.now()))
+  } catch (error) {
+    logger.error({ error }, 'Failed to touch liveness heartbeat file')
+  }
+}
 
 // Redis client for worker coordination
 const redis = new Redis({
@@ -94,7 +114,9 @@ class MatchmakingWorker {
   }
 
   private startHeartbeat() {
+    touchLivenessFile()
     this.heartbeatTimer = setInterval(async () => {
+      touchLivenessFile()
       try {
         await redis.setex(
           `matchmaking:workers:${WORKER_ID}`,

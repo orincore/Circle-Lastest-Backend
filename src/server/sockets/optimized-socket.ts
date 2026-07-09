@@ -15,10 +15,13 @@ import {
   friendRequestsView,
   friendships,
   matchmakingProposals,
+  memeConnectRequests,
   messageReceipts,
   messages,
   profiles,
 } from '../db/schema.js'
+import { maskFullName } from '../utils/maskName.js'
+import { getBlurredAvatarDataUri } from '../services/anonAvatar.service.js'
 import { getStatus } from '../services/matchmaking-optimized.js'
 import { NotificationService } from '../services/notificationService.js'
 import { getRecentActivities, trackFriendRequestSent, trackFriendsConnected, trackProfileVisited } from '../services/activityService.js'
@@ -65,6 +68,31 @@ async function fetchChatMemberIds(chatId: string): Promise<string[]> {
     .from(chatMembers)
     .where(eq(chatMembers.chatId, chatId))
   return rows.map((r) => r.userId)
+}
+
+// True while a chat is still identity-hidden: an active (unrevealed) blind
+// date, or an accepted-but-unrevealed meme-connect. Used everywhere the
+// server pushes a sender's name/photo out-of-band (push notifications,
+// reaction events) to keep those channels from leaking an identity the
+// in-chat UI is still masking.
+async function isChatStillAnonymous(chatId: string): Promise<boolean> {
+  const [blindMatch] = await db
+    .select({ id: blindDateMatches.id })
+    .from(blindDateMatches)
+    .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
+    .limit(1)
+  if (blindMatch) return true
+
+  const [memeConnectMatch] = await db
+    .select({ id: memeConnectRequests.id })
+    .from(memeConnectRequests)
+    .where(and(
+      eq(memeConnectRequests.chatId, chatId),
+      eq(memeConnectRequests.status, 'accepted'),
+      sql`${memeConnectRequests.revealedAt} IS NULL`,
+    ))
+    .limit(1)
+  return !!memeConnectMatch
 }
 
 // When a user (re)connects, mark every message they received while offline as
@@ -1593,41 +1621,49 @@ export async function initOptimizedSocket(server: Server) {
             logger.error({ error: senderError, userId }, 'Error fetching sender info')
           }
 
-          // Check if this is a blind date chat (active, not revealed)
+          // Check if this is a blind date chat (active, not revealed) or an
+          // accepted-but-unrevealed meme-connect chat -- both need the
+          // sender's name AND photo masked in the push notification,
+          // otherwise the notification leaks the identity the in-chat UI is
+          // still hiding.
           const [blindMatch] = await db
             .select({ id: blindDateMatches.id })
             .from(blindDateMatches)
             .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
             .limit(1)
 
+          const [memeConnectMatch] = await db
+            .select({ id: memeConnectRequests.id })
+            .from(memeConnectRequests)
+            .where(and(
+              eq(memeConnectRequests.chatId, chatId),
+              eq(memeConnectRequests.status, 'accepted'),
+              sql`${memeConnectRequests.revealedAt} IS NULL`,
+            ))
+            .limit(1)
+
           const isBlindDateChat = !!blindMatch
-          
-          // Helper function to mask name for blind date
-          const maskName = (firstName: string | null, lastName: string | null): string => {
-            const maskWord = (word: string) => {
-              if (!word || word.length === 0) return ''
-              if (word.length === 1) return word[0] + '*'
-              return word[0] + '*'.repeat(word.length - 1)
-            }
-            
-            if (!firstName) return 'Anonymous'
-            const maskedFirst = maskWord(firstName.trim())
-            const maskedLast = lastName?.trim() ? maskWord(lastName.trim()) : ''
-            return maskedLast ? `${maskedFirst} ${maskedLast}` : maskedFirst
-          }
-          
-          // Use masked name for blind date chats, real name otherwise
+          const isMemeConnectChat = !!memeConnectMatch
+          const isAnonymousChat = isBlindDateChat || isMemeConnectChat
+
+          // Use masked name for blind date / meme-connect chats, real name otherwise
           const realName = senderInfo
             ? (senderInfo.firstName && senderInfo.lastName
                 ? `${senderInfo.firstName} ${senderInfo.lastName}`.trim()
                 : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
             : 'Someone'
 
-          const senderName = isBlindDateChat
-            ? maskName(senderInfo?.firstName || null, senderInfo?.lastName || null)
+          const senderName = isAnonymousChat
+            ? maskFullName(senderInfo?.firstName || null, senderInfo?.lastName || null)
             : realName
 
-          const senderAvatar = senderInfo?.profilePhotoUrl || null
+          // The push notification's avatar would otherwise leak the sender's
+          // real, unblurred photo for a chat whose whole point is that it's
+          // still anonymous -- use the same server-side-blurred image the
+          // chat list / chat header already show.
+          const senderAvatar = isAnonymousChat
+            ? await getBlurredAvatarDataUri(userId).catch(() => null)
+            : (senderInfo?.profilePhotoUrl || null)
           
           if (memberIds && memberIds.length > 0) {
             // Process each member (parallel for better performance)
@@ -1908,11 +1944,18 @@ export async function initOptimizedSocket(server: Server) {
               .where(eq(messages.id, messageId))
               .limit(1)
 
-            const senderName = senderInfo
+            const realName = senderInfo
               ? (senderInfo.firstName && senderInfo.lastName
                   ? `${senderInfo.firstName} ${senderInfo.lastName}`.trim()
                   : senderInfo.username || senderInfo.email?.split('@')[0] || 'Someone')
               : 'Someone'
+
+            // Same masking as the message-notification path above -- this
+            // event previously always carried the reactor's real name, even
+            // for a still-anonymous blind-date/meme-connect chat.
+            const senderName = (await isChatStillAnonymous(chatId))
+              ? maskFullName(senderInfo?.firstName || null, senderInfo?.lastName || null)
+              : realName
 
             for (const memberId of memberIds) {
               if (memberId !== userId) {

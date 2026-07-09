@@ -1,17 +1,23 @@
 import { logger } from '../../config/logger.js'
 
 /**
- * Together AI Content Filter Service for Personal Information Detection
+ * OpenAI Content Filter Service for Personal Information Detection
  * Smart filtering for blind dating - blocks ONLY identifying info
- * 
+ *
  * IMPORTANT: This is a DATING APP - the following are ALWAYS ALLOWED:
  * - Flirting, romantic messages, compliments
  * - Adult conversations, sexting, explicit content
  * - Profanity, swear words, crude language
  * - Any sexual or intimate discussions
- * 
+ *
  * We ONLY block personal IDENTIFYING information (names, phone numbers, addresses, etc.)
  * The CONTENT of the conversation is NOT moderated - only identity protection matters.
+ *
+ * Previously ran on Together AI (Llama-3.2-3B); moved to OpenAI's gpt-5-nano
+ * (their cheapest chat model) for better accuracy at a lower per-request
+ * cost -- this only ever handles the small fraction of messages pattern
+ * detection can't confidently classify (see analyzeMessage below), so model
+ * cost per message matters more than raw throughput here.
  */
 
 export interface PersonalInfoAnalysis {
@@ -210,15 +216,14 @@ const GENERIC_JOB_INDICATORS = [
 ]
 
 export class ContentFilterService {
-  private static readonly API_BASE_URL = 'https://api.together.xyz/v1'
-  private static readonly MODEL = 'meta-llama/Llama-3.2-3B-Instruct-Turbo'
-  private static readonly MAX_TOKENS = 500
-  private static readonly TEMPERATURE = 0.1
+  private static readonly API_BASE_URL = 'https://api.openai.com/v1'
+  private static readonly MODEL = 'gpt-5-nano'
+  private static readonly MAX_COMPLETION_TOKENS = 500
 
   private static getApiKey(): string {
-    const apiKey = process.env.TOGETHER_AI_API_KEY
+    const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) {
-      throw new Error('TOGETHER_AI_API_KEY environment variable is required')
+      throw new Error('OPENAI_API_KEY environment variable is required')
     }
     return apiKey
   }
@@ -353,7 +358,7 @@ export class ContentFilterService {
   }
 
   /**
-   * Call Together AI for nuanced analysis
+   * Call OpenAI (gpt-5-nano) for nuanced analysis
    */
   private static async analyzeWithAI(message: string, context?: {
     senderGender?: string
@@ -373,8 +378,15 @@ export class ContentFilterService {
           { role: 'system', content: this.getSystemPrompt() },
           { role: 'user', content: this.buildAnalysisPrompt(message, context) }
         ],
-        max_tokens: this.MAX_TOKENS,
-        temperature: this.TEMPERATURE,
+        // gpt-5-nano only supports the default temperature (1) -- passing
+        // any other value 400s, so it's omitted entirely (matches
+        // ai-support.routes.ts's bio-generation call).
+        max_completion_tokens: this.MAX_COMPLETION_TOKENS,
+        // Without this, gpt-5-nano spends the whole token budget on hidden
+        // reasoning tokens and returns empty visible content (finish_reason
+        // "length", content ""). This check needs no real reasoning, so
+        // minimal leaves the budget for the actual JSON output.
+        reasoning_effort: 'minimal',
         stream: false
       })
     })
@@ -1168,7 +1180,7 @@ Does this message reveal the person's real-world identity?`
       })
       return response.ok
     } catch (error) {
-      logger.error({ error }, 'Failed to validate Together AI connection')
+      logger.error({ error }, 'Failed to validate OpenAI connection')
       return false
     }
   }
@@ -1184,7 +1196,7 @@ Does this message reveal the person's real-world identity?`
   } {
     return {
       model: this.MODEL,
-      provider: 'Together AI',
+      provider: 'OpenAI',
       endpoint: this.API_BASE_URL,
       features: [
         'Identity-only filtering (no content moderation)',

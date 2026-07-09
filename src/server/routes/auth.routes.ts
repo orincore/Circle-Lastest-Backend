@@ -5,13 +5,15 @@ import { findByEmail, findByUsername, createProfile } from '../repos/profiles.re
 import { ne, eq, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import { profiles } from '../db/schema.js'
-import { signJwt, verifyJwt } from '../utils/jwt.js'
+import { issueTokenWithSession, revokeSession } from '../utils/authSession.js'
 import { hashPassword, verifyPassword } from '../utils/password.js'
 import { NotificationService } from '../services/notificationService.js'
+import { PushNotificationService } from '../services/pushNotificationService.js'
 import { trackUserJoined } from '../services/activityService.js'
 import emailService from '../services/emailService.js'
 import { OAuth2Client } from 'google-auth-library'
 import { calculateAge, isValidDateOfBirth, MIN_AGE } from '../utils/age.js'
+import { AuthRequest, requireAuth } from '../middleware/auth.js'
 
 const router = Router()
 
@@ -196,7 +198,7 @@ router.post('/signup', async (req, res) => {
     }
   }
 
-  const access_token = signJwt({ sub: profile.id, email: profile.email, username: profile.username })
+  const access_token = await issueTokenWithSession(req, { id: profile.id, email: profile.email, username: profile.username })
   return res.json({
     access_token,
     user: {
@@ -244,8 +246,8 @@ router.post('/login', async (req, res) => {
   const ok = await verifyPassword(password, user.password_hash)
   if (!ok) return res.status(400).json({ error: 'Invalid credentials' })
 
-  const access_token = signJwt({ sub: user.id, email: user.email, username: user.username })
-  
+  const access_token = await issueTokenWithSession(req, { id: user.id, email: user.email, username: user.username })
+
   // Send login alert email (async, don't wait for it)
   const loginInfo = {
     device: req.get('User-Agent') || 'Unknown device',
@@ -288,6 +290,36 @@ router.post('/login', async (req, res) => {
   return res.json(loginResponse)
 })
 
+/**
+ * Logout: revokes the CURRENT session (blacklists its jti so this exact
+ * token is rejected on its very next request once ENFORCE_SESSION_REVOCATION
+ * is on -- see middleware/auth.ts) and disables push tokens for this
+ * device, so a logged-out device stops receiving pushes immediately.
+ *
+ * Deliberately best-effort/non-throwing internally (revokeSession and
+ * disablePushTokensForDevice already log-and-continue on failure) so this
+ * route always returns success -- the client clears its local token
+ * regardless, and a partial failure here just means enforcement lags
+ * slightly rather than the user being stuck unable to log out.
+ */
+router.post('/logout', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { deviceId, token } = req.body as { deviceId?: string; token?: string }
+
+    if (req.jti) {
+      await revokeSession(req.jti, 'logout')
+    }
+    await PushNotificationService.disablePushTokensForDevice(req.user!.id, { deviceId, token })
+
+    return res.json({ success: true, message: 'Logged out successfully' })
+  } catch (error) {
+    console.error('Logout error:', error)
+    // Even on an unexpected error, the client should treat itself as logged
+    // out locally -- this endpoint is a best-effort server-side cleanup.
+    return res.status(500).json({ error: 'Failed to log out' })
+  }
+})
+
 // Google OAuth Login/Signup
 router.post('/google', async (req, res) => {
   try {
@@ -323,11 +355,7 @@ router.post('/google', async (req, res) => {
 
     if (existingUser) {
       // User exists - log them in
-      const access_token = signJwt({ 
-        sub: existingUser.id, 
-        email: existingUser.email, 
-        username: existingUser.username 
-      })
+      const access_token = await issueTokenWithSession(req, { id: existingUser.id, email: existingUser.email, username: existingUser.username })
 
       // Send login alert email (async, don't wait for it)
       const loginInfo = {
@@ -496,11 +524,7 @@ router.post('/google/complete-signup', async (req, res) => {
       console.error('❌ Failed to send new user notifications:', error)
     }
 
-    const access_token = signJwt({ 
-      sub: profile.id, 
-      email: profile.email, 
-      username: profile.username 
-    })
+    const access_token = await issueTokenWithSession(req, { id: profile.id, email: profile.email, username: profile.username })
 
     return res.json({
       access_token,

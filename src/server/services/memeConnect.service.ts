@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, or, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import { memeConnectRequests, friendships, memeComments } from '../db/schema.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
@@ -30,6 +30,13 @@ export type ConnectRequestRow = typeof memeConnectRequests.$inferSelect
 export class DuplicateRequestError extends Error {}
 export class NotFoundError extends Error {}
 export class ForbiddenError extends Error {}
+export class AlreadyConnectedError extends Error {
+  chatId: string | null
+  constructor(message: string, chatId: string | null) {
+    super(message)
+    this.chatId = chatId
+  }
+}
 
 async function createConnectRequest(
   requesterId: string,
@@ -38,6 +45,34 @@ async function createConnectRequest(
 ): Promise<ConnectRequestRow> {
   if (requesterId === targetId) {
     throw new ForbiddenError('Cannot send a connect request to yourself')
+  }
+
+  // The unique index backing the 23505 check below only covers *pending*
+  // requests, so it doesn't stop a brand new anonymous cycle from being
+  // created between two people who already fully revealed to each other on
+  // a past meme comment -- that used to leave their existing, already-normal
+  // chat with a second "accepted but unrevealed" row for the same chat_id,
+  // which re-masked the name and dropped the chat back into Blind Connect
+  // even though both sides already know who the other is. If they've ever
+  // completed a reveal together, there's nothing left for a new anonymous
+  // request to do.
+  const [existingRevealed] = await db
+    .select({ id: memeConnectRequests.id, chatId: memeConnectRequests.chatId })
+    .from(memeConnectRequests)
+    .where(and(
+      or(
+        and(eq(memeConnectRequests.requesterId, requesterId), eq(memeConnectRequests.targetId, targetId)),
+        and(eq(memeConnectRequests.requesterId, targetId), eq(memeConnectRequests.targetId, requesterId)),
+      ),
+      sql`${memeConnectRequests.revealedAt} IS NOT NULL`,
+    ))
+    .limit(1)
+
+  if (existingRevealed) {
+    throw new AlreadyConnectedError(
+      'You already know this person -- reveal is already complete between you two',
+      existingRevealed.chatId,
+    )
   }
 
   try {

@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 import { StatusCodes } from 'http-status-codes'
 import { verifyJwt, signJwt, shouldRenewToken } from '../utils/jwt.js'
+import { touchSessionActivity, isSessionRevoked, isSessionRevocationEnforced } from '../utils/authSession.js'
 import { logger } from '../config/logger.js'
 import { eq } from 'drizzle-orm'
 import { db } from '../config/db.js'
@@ -9,6 +10,9 @@ import { adminRoles } from '../db/schema.js'
 export interface AuthRequest extends Request {
   user?: { id: string; email: string; username: string; role?: string }
   token?: string
+  // Session id from the verified JWT's `jti` claim -- undefined for tokens
+  // issued before Phase 3 (no jti yet), which is expected during rollout.
+  jti?: string
   adminRole?: { id: string; role: string; is_active: boolean }
 }
 
@@ -68,7 +72,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid token format' })
     }
 
-    const payload = verifyJwt<{ sub: string; email: string; username: string }>(token)
+    const payload = verifyJwt<{ sub: string; email: string; username: string; jti?: string }>(token)
     //console.log('🔐 JWT payload:', payload ? 'Valid' : 'Invalid', payload?.sub ? `User: ${payload.sub}` : '')
 
     if (!payload || !payload.sub || typeof payload.sub !== 'string' || payload.sub.length === 0) {
@@ -84,15 +88,45 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     // Clear failed attempts on successful auth
     failedAttempts.delete(ip)
 
+    // Session revocation -- gated entirely behind ENFORCE_SESSION_REVOCATION
+    // so this can ship dark and be turned on deliberately once observed
+    // running clean, and flipped back off instantly (no redeploy, just a pod
+    // restart to pick up the new env value) if it ever misbehaves.
+    //
+    // Not a brute-force signal either way (the token's signature is
+    // genuinely valid), so neither branch below touches failedAttempts.
+    if (isSessionRevocationEnforced()) {
+      if (!payload.jti) {
+        // Pre-rollout tokens have no session id to check/revoke by -- the
+        // user's own explicit choice was "force everyone to log in again"
+        // rather than silently grandfather these in, so this is deliberate.
+        return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Session expired. Please log in again.' })
+      }
+      if (await isSessionRevoked(payload.jti)) {
+        return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'You have been logged out. Please log in again.' })
+      }
+    }
+
     req.user = {
       id: payload.sub,
       email: payload.email || '',
       username: payload.username || ''
     }
     req.token = token
+    req.jti = payload.jti
+
+    if (payload.jti) {
+      // Fire-and-forget, throttled internally -- never adds latency to the request.
+      touchSessionActivity(payload.jti)
+    }
 
     if (shouldRenewToken(token)) {
-      const renewed = signJwt({ sub: payload.sub, email: payload.email || '', username: payload.username || '' })
+      // Renewal MUST keep the same jti -- minting a new one here would
+      // silently orphan the auth_sessions row on every renewal (every ~3.5
+      // days for an active user) and break "list/terminate my sessions"
+      // later, since the session row's jti would no longer match the
+      // token the client is actually using.
+      const renewed = signJwt({ sub: payload.sub, email: payload.email || '', username: payload.username || '', jti: payload.jti })
       res.setHeader('X-Renewed-Token', renewed)
     }
 

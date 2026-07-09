@@ -14,6 +14,7 @@ import {
 import { getUserInbox } from '../repos/chat.repo.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { getBlurredAvatarDataUri } from '../services/anonAvatar.service.js'
+import { maskFullName } from '../utils/maskName.js'
 
 const router = Router()
 
@@ -98,6 +99,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
       otherUserGender?: string
       otherUserAge?: number
       maskedName?: string
+      avatar?: string | null
     }
     let blindDateMap = new Map<string, BlindDateInfo>()
     if (chatIds.length > 0) {
@@ -138,22 +140,9 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 
           // Get age directly from profile
           const age: number | undefined = otherProfile?.age
-          
-          // Mask name: "Adarsh Suradkar" -> "A***** S*******"
-          // Helper function to mask a word
-          const maskWord = (word: string) => {
-            if (!word || word.length === 0) return ''
-            if (word.length === 1) return word[0] + '*'
-            return word[0] + '*'.repeat(word.length - 1)
-          }
-          
-          let maskedName = 'Anonymous'
-          if (otherProfile?.firstName && otherProfile.firstName.trim()) {
-            const firstName = maskWord(otherProfile.firstName.trim())
-            const lastName = otherProfile.lastName?.trim() ? maskWord(otherProfile.lastName.trim()) : ''
-            maskedName = lastName ? `${firstName} ${lastName}` : firstName
-          }
-          
+
+          const maskedName = maskFullName(otherProfile?.firstName, otherProfile?.lastName)
+
           // Determine match reason from needs (looking_for field)
           let matchReason = 'Connection'
           const needs = otherProfile?.needs
@@ -182,12 +171,24 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
             genderDisplay = genderDisplay.charAt(0).toUpperCase() + genderDisplay.slice(1).toLowerCase()
           }
           
+          // Pre-blurred server-side, same as the meme-connect anonymous
+          // avatar (see anonAvatar.service.ts) -- the client used to blur
+          // the real photo itself at render time (Image blurRadius +
+          // BlurView overlay), which turned out to render inconsistently
+          // across platforms (flat, unclipped, wrong-shaped box on iOS
+          // instead of an actual blurred circular photo). Shipping an
+          // already-blurred image means the client just renders a normal
+          // avatar with normal clipping -- there's no client-side blur/clip
+          // interaction left to go wrong.
+          const avatar = await getBlurredAvatarDataUri(otherUserId)
+
           blindDateMap.set(match.chatId, {
             isOngoing: true,
             matchReason,
             otherUserGender: genderDisplay || undefined,
             otherUserAge: age,
-            maskedName
+            maskedName,
+            avatar,
           })
         }
       }
@@ -199,7 +200,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     // the chat list exactly like it is inside the chat itself, until both
     // sides reveal (at which point this map simply won't contain that chat
     // anymore on the next load, and it reads exactly like a normal chat).
-    let memeConnectMap = new Map<string, { avatar: string | null }>()
+    let memeConnectMap = new Map<string, { avatar: string | null; maskedName: string }>()
     if (chatIds.length > 0) {
       const connectRows = await db
         .select({
@@ -218,9 +219,46 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
         await Promise.all(connectRows.map(async (row) => {
           if (!row.chatId) return
           const otherUserId = row.requesterId === userId ? row.targetId : row.requesterId
+          const [otherProfile] = await db
+            .select({ firstName: profiles.firstName, lastName: profiles.lastName })
+            .from(profiles)
+            .where(eq(profiles.id, otherUserId))
+            .limit(1)
           const avatar = await getBlurredAvatarDataUri(otherUserId)
-          memeConnectMap.set(row.chatId, { avatar })
+          const maskedName = maskFullName(otherProfile?.firstName, otherProfile?.lastName)
+          memeConnectMap.set(row.chatId, { avatar, maskedName })
         }))
+      }
+    }
+
+    // Chats that JUST came out of anonymity (revealed within the last 24h)
+    // still get a "From Blind Connect" / "From Meme Blind Connect" tag once
+    // they've moved into the normal chat list, so the reveal doesn't feel
+    // like the chat silently vanished and a new one appeared in its place.
+    let recentlyRevealedMap = new Map<string, 'blind_date' | 'meme_connect'>()
+    if (chatIds.length > 0) {
+      const recentBlindMatches = await db
+        .select({ chatId: blindDateMatches.chatId })
+        .from(blindDateMatches)
+        .where(and(
+          inArray(blindDateMatches.chatId, chatIds),
+          eq(blindDateMatches.status, 'revealed'),
+          sql`${blindDateMatches.revealedAt} > now() - interval '24 hours'`,
+        ))
+      for (const row of recentBlindMatches) {
+        if (row.chatId) recentlyRevealedMap.set(row.chatId, 'blind_date')
+      }
+
+      const recentConnectRows = await db
+        .select({ chatId: memeConnectRequests.chatId })
+        .from(memeConnectRequests)
+        .where(and(
+          inArray(memeConnectRequests.chatId, chatIds),
+          eq(memeConnectRequests.status, 'accepted'),
+          sql`${memeConnectRequests.revealedAt} IS NOT NULL AND ${memeConnectRequests.revealedAt} > now() - interval '24 hours'`,
+        ))
+      for (const row of recentConnectRows) {
+        if (row.chatId) recentlyRevealedMap.set(row.chatId, 'meme_connect')
       }
     }
 
@@ -268,10 +306,10 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           name: isBlindDateOngoing && blindDateInfo?.maskedName
             ? blindDateInfo.maskedName
             : isMemeConnectOngoing
-              ? 'Anonymous connection'
+              ? (memeConnectInfo?.maskedName || 'Anonymous')
               : item.otherName,
           profilePhoto: isBlindDateOngoing
-            ? item.otherProfilePhoto
+            ? (blindDateInfo?.avatar || '')
             : isMemeConnectOngoing
               ? (memeConnectInfo?.avatar || '')
               : item.otherProfilePhoto,
@@ -288,6 +326,15 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
           maskedName: blindDateInfo?.maskedName
         } : null,
         isMemeConnectOngoing,
+        memeConnectInfo: isMemeConnectOngoing ? {
+          maskedName: memeConnectInfo?.maskedName
+        } : null,
+        // Only relevant once the chat is no longer ongoing-anonymous --
+        // tags it as "From Blind Connect" / "From Meme Blind Connect" for
+        // the first 24h after both sides revealed.
+        recentlyRevealedFrom: (!isBlindDateOngoing && !isMemeConnectOngoing)
+          ? (recentlyRevealedMap.get(item.chat.id) || null)
+          : null,
       }
     })
 

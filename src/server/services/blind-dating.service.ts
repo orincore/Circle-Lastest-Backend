@@ -10,6 +10,20 @@ import { NotificationService } from './notificationService.js'
 import { PushNotificationService } from './pushNotificationService.js'
 import { randomUUID } from 'crypto'
 import { hashPassword } from '../utils/password.js'
+import { Redis } from 'ioredis'
+
+// Dedicated lock connection, same lightweight self-contained pattern as
+// workers/matchmaking-worker.ts's distributed lock -- lazyConnect so this
+// never opens a connection just from being imported.
+const lockRedis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379'),
+  maxRetriesPerRequest: 2,
+  lazyConnect: true,
+})
+const MATCHING_LOCK_KEY = 'blind_dating:matching_lock'
+const MATCHING_LOCK_TTL_SECONDS = 120
+const LOCK_OWNER_ID = `blind-dating-${process.pid}-${Date.now()}`
 
 /**
  * Blind Dating Service
@@ -62,6 +76,34 @@ export interface AnonymizedProfile {
   location_city?: string
   is_revealed: boolean
   anonymous_avatar?: string
+}
+
+// 'strict'    -- best-quality daily attempt: requires a real compatibility
+//                score and respects the re-match cooldown.
+// 'relaxed'   -- same candidate pool, drops the score requirement.
+// 'guarantee' -- last resort for a user about to go a full week without a
+//                match: ignores score AND the cooldown.
+export type MatchTier = 'strict' | 'relaxed' | 'guarantee'
+
+interface MatchingPassStats {
+  processed: number
+  matched: number
+  errors: number
+  expired: number
+  guaranteed: number
+  details: Array<{ userId: string; status: string; matchId?: string; error?: string }>
+}
+
+interface CandidateProfileRow {
+  id: string
+  age: number | null
+  gender: string | null
+  interests: string[] | null
+  needs: string[] | null
+  locationCity: string | null
+  locationCountry: string | null
+  agePreference: string | null
+  locationPreference: string | null
 }
 
 export interface MessageFilterResult {
@@ -168,7 +210,277 @@ export class BlindDatingService {
       return false
     }
   }
-  
+
+  // ===========================================================================
+  // Matching engine (tiered relaxation + weekly guarantee)
+  // ===========================================================================
+  //
+  // maxActiveMatches is intentionally never enforced anywhere below. With 68
+  // enabled users (47 male / 19 female) and a hard opposite-gender rule, the
+  // old 3-match cap left half the enabled population permanently stuck at
+  // "3/3" with zero path to a new match regardless of algorithm quality -- a
+  // live production run against all 68 enabled users produced zero new
+  // matches. Real engagement is self-limiting anyway (nobody keeps ten
+  // conversations going), and expireStaleMatches() now means abandoned
+  // matches no longer accumulate forever, so the cap was doing more harm
+  // (blocking rotation) than good (prevented nothing real).
+
+  private static readonly RECENT_PARTNER_COOLDOWN_DAYS = 21
+
+  /** Batched replacement for the old one-friendship-check-per-candidate loop. */
+  private static async getFriendIdSet(userId: string, candidateIds: string[]): Promise<Set<string>> {
+    if (candidateIds.length === 0) return new Set()
+    try {
+      const rows = await db.select({ user1: friendships.user1Id, user2: friendships.user2Id })
+        .from(friendships)
+        .where(and(
+          inArray(friendships.status, ['active', 'accepted']),
+          or(
+            and(eq(friendships.user1Id, userId), inArray(friendships.user2Id, candidateIds)),
+            and(eq(friendships.user2Id, userId), inArray(friendships.user1Id, candidateIds)),
+          ),
+        ))
+      const set = new Set<string>()
+      for (const r of rows) set.add(r.user1 === userId ? r.user2 : r.user1)
+      return set
+    } catch (error) {
+      logger.error({ error, userId }, 'Error batch-checking friendships')
+      return new Set()
+    }
+  }
+
+  /**
+   * Anyone this user has an ENDED or EXPIRED match with, and how recently --
+   * used to softly de-prioritize (not permanently block) re-pairing the same
+   * two people over and over in a small pool.
+   */
+  private static async getRecentPartnerMap(userId: string): Promise<Map<string, number>> {
+    try {
+      const rows = await db.select({
+        userA: blindDateMatches.userA,
+        userB: blindDateMatches.userB,
+        endedAt: blindDateMatches.endedAt,
+        matchedAt: blindDateMatches.matchedAt,
+      })
+        .from(blindDateMatches)
+        .where(and(
+          or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
+          inArray(blindDateMatches.status, ['ended', 'expired']),
+        ))
+
+      const map = new Map<string, number>()
+      for (const row of rows) {
+        const partnerId = row.userA === userId ? row.userB : row.userA
+        const when = new Date(row.endedAt || row.matchedAt || 0).getTime()
+        const existing = map.get(partnerId)
+        if (!existing || when > existing) map.set(partnerId, when)
+      }
+      return map
+    } catch (error) {
+      logger.error({ error, userId }, 'Error loading recent partner history')
+      return new Map()
+    }
+  }
+
+  /**
+   * Age-preference- and location-preference-aware compatibility score.
+   * Wraps CompatibilityService.calculateEnhancedCompatibility (interests /
+   * needs / age / neutral-location) and folds in two profile fields that
+   * already existed but blind dating never read: agePreference
+   * (close/similar/flexible/open/any -- same scale explore.routes.ts /
+   * matchmaking-optimized.ts already use) and locationPreference
+   * (nearby/international). Both are soft nudges, never hard filters, so
+   * they can't shrink an already-small pool.
+   */
+  private static readonly AGE_PREFERENCE_RANGE: Record<string, number | null> = {
+    close: 2, similar: 5, flexible: 10, open: 15, any: null,
+  }
+
+  private static scoreCandidate(
+    userProfile: { age?: number | null; interests?: string[] | null; needs?: string[] | null; agePreference?: string | null; locationPreference?: string | null; locationCity?: string | null; locationCountry?: string | null },
+    candidate: { age?: number | null; interests?: string[] | null; needs?: string[] | null; locationCity?: string | null; locationCountry?: string | null },
+  ): number {
+    const base = CompatibilityService.calculateEnhancedCompatibility(
+      { age: userProfile.age ?? undefined, interests: userProfile.interests ?? undefined, needs: userProfile.needs ?? undefined },
+      { age: candidate.age ?? undefined, interests: candidate.interests ?? undefined, needs: candidate.needs ?? undefined },
+    )
+
+    let score = base.score
+
+    if (userProfile.age != null && candidate.age != null) {
+      const range = this.AGE_PREFERENCE_RANGE[userProfile.agePreference || 'flexible']
+      if (range != null) {
+        const diff = Math.abs(userProfile.age - candidate.age)
+        score += diff <= range ? 3 : -3
+      }
+    }
+
+    if (userProfile.locationCity && candidate.locationCity && userProfile.locationCity === candidate.locationCity) {
+      score += 4
+    } else if (userProfile.locationCountry && candidate.locationCountry && userProfile.locationCountry === candidate.locationCountry) {
+      score += 2
+    } else if ((userProfile.locationPreference || 'nearby') === 'nearby' && userProfile.locationCountry && candidate.locationCountry && userProfile.locationCountry !== candidate.locationCountry) {
+      score -= 2
+    }
+
+    return Math.round(score * 10) / 10
+  }
+
+  /**
+   * Gathers every gender-compatible, non-friend, not-currently-matched
+   * candidate for a user -- the shared pool all three tiers score against.
+   */
+  private static async getCandidatePool(
+    userId: string,
+    userProfile: { gender?: string | null },
+    excludeUserIds: Set<string>,
+  ): Promise<CandidateProfileRow[]> {
+    const enabledSettingsRows = await db.select({ userId: blindDatingSettings.userId })
+      .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
+
+    const candidateIds = enabledSettingsRows.map(s => s.userId).filter(id => !excludeUserIds.has(id))
+    if (candidateIds.length === 0) return []
+
+    const candidateProfiles = await db.select({
+      id: profiles.id, age: profiles.age, gender: profiles.gender, interests: profiles.interests,
+      needs: profiles.needs, locationCity: profiles.locationCity, locationCountry: profiles.locationCountry,
+      agePreference: profiles.agePreference, locationPreference: profiles.locationPreference,
+    })
+      .from(profiles)
+      .where(and(
+        inArray(profiles.id, candidateIds),
+        isNull(profiles.deletedAt),
+        eq(profiles.isSuspended, false),
+        eq(profiles.invisibleMode, false),
+      ))
+      .limit(200)
+
+    const userGender = userProfile.gender?.toLowerCase()
+    const genderFiltered = candidateProfiles.filter(p => this.isGenderCompatible(userGender, p.gender?.toLowerCase()))
+    if (genderFiltered.length === 0) return []
+
+    const friendIds = await this.getFriendIdSet(userId, genderFiltered.map(p => p.id))
+    return genderFiltered.filter(p => !friendIds.has(p.id))
+  }
+
+  /**
+   * Single entry point for creating a match at a given relaxation tier.
+   * Tries only this tier -- callers (findMatch / the weekly guarantee
+   * sweep) decide whether to retry at a looser tier when this returns null.
+   */
+  static async attemptMatch(
+    userId: string,
+    tier: MatchTier = 'strict',
+    excludeUserIds: Set<string> = new Set(),
+  ): Promise<BlindDateMatch | null> {
+    try {
+      const settings = await this.getSettings(userId)
+      if (!settings?.is_enabled) return null
+
+      const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1)
+      if (!userProfile) {
+        logger.error({ userId }, 'Failed to get user profile')
+        return null
+      }
+
+      // Currently-active/revealed partners are off-limits at every tier --
+      // you can't "guarantee-match" someone you're already matched with.
+      const existingMatches = await db.select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
+        .from(blindDateMatches)
+        .where(and(
+          or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
+          inArray(blindDateMatches.status, ['active', 'revealed']),
+        ))
+
+      const fullyExcluded = new Set<string>([userId, ...excludeUserIds])
+      existingMatches.forEach(m => { fullyExcluded.add(m.userA); fullyExcluded.add(m.userB) })
+
+      const pool = await this.getCandidatePool(userId, userProfile, fullyExcluded)
+      if (pool.length === 0) {
+        logger.info({ userId, tier }, 'No eligible candidates in pool')
+        return null
+      }
+
+      const recentPartners = tier === 'guarantee' ? new Map<string, number>() : await this.getRecentPartnerMap(userId)
+      const cooldownCutoff = Date.now() - this.RECENT_PARTNER_COOLDOWN_DAYS * 24 * 60 * 60 * 1000
+
+      const scored = pool.map(candidate => {
+        const rawScore = this.scoreCandidate(userProfile, candidate)
+        const lastPartneredAt = recentPartners.get(candidate.id)
+        const onCooldown = lastPartneredAt != null && lastPartneredAt > cooldownCutoff
+        return { candidate, rawScore, onCooldown }
+      })
+
+      const MIN_SCORE: Record<MatchTier, number> = { strict: 12, relaxed: -Infinity, guarantee: -Infinity }
+
+      // Prefer candidates not on cooldown; only reach for one on cooldown if
+      // that's genuinely all that's left, and only at the guarantee tier --
+      // a repeat match beats no match at all in a small pool.
+      const notOnCooldown = scored.filter(s => !s.onCooldown && s.rawScore >= MIN_SCORE[tier])
+      const pickFrom = notOnCooldown.length > 0 ? notOnCooldown : (tier === 'guarantee' ? scored : [])
+
+      if (pickFrom.length === 0) return null
+
+      pickFrom.sort((a, b) => b.rawScore - a.rawScore)
+      const best = pickFrom[0]
+
+      return this.createMatchRecord(userId, best.candidate.id, Math.max(best.rawScore, 5), settings)
+    } catch (error) {
+      logger.error({ error, userId, tier }, 'Error attempting blind date match')
+      return null
+    }
+  }
+
+  /**
+   * Finalizes a chosen pairing: creates the chat, the match row, updates
+   * lastMatchAt for both, and sends notifications.
+   */
+  private static async createMatchRecord(
+    userId: string,
+    matchUserId: string,
+    score: number,
+    settings: BlindDateSettings,
+  ): Promise<BlindDateMatch | null> {
+    try {
+      const [userA, userB] = [userId, matchUserId].sort()
+      const chat = await ensureChatForUsers(userId, matchUserId)
+
+      let matchRow: typeof blindDateMatches.$inferSelect
+      try {
+        [matchRow] = await db.insert(blindDateMatches).values({
+          userA, userB, chatId: chat.id,
+          compatibilityScore: String(score),
+          status: 'active',
+          messageCount: 0,
+          revealThreshold: settings.preferred_reveal_threshold,
+          userARevealed: false,
+          userBRevealed: false,
+          matchedAt: new Date().toISOString(),
+        }).returning()
+      } catch (matchError) {
+        // Unique constraint (userA, userB, status) -- another concurrent run
+        // already paired these same two people. Not a real failure, just a
+        // lost race for this specific pair.
+        logger.warn({ error: matchError, userId, matchUserId }, 'Failed to create match record (likely already matched)')
+        return null
+      }
+
+      await Promise.all([
+        db.update(blindDatingSettings).set({ lastMatchAt: new Date().toISOString() }).where(eq(blindDatingSettings.userId, userId)),
+        db.update(blindDatingSettings).set({ lastMatchAt: new Date().toISOString() }).where(eq(blindDatingSettings.userId, matchUserId)),
+      ])
+
+      logger.info({ matchId: matchRow.id, userId, matchUserId, score }, 'Blind date match created')
+
+      const matchData = rowToBlindDateMatchRow(matchRow)
+      await this.notifyMatchCreated(userId, matchUserId, matchData)
+      return matchData
+    } catch (error) {
+      logger.error({ error, userId, matchUserId }, 'Error creating match record')
+      return null
+    }
+  }
+
   /**
    * Get or create blind dating settings for a user
    */
@@ -316,404 +628,23 @@ export class BlindDatingService {
   }
 
   /**
-   * Find and create a new blind date match for a user
+   * Find and create a new blind date match for a user (on-demand, e.g. a
+   * user-triggered "find me a match" action). Tries strict quality first,
+   * falls back to relaxed if nothing qualifies -- never uses the guarantee
+   * tier, which is reserved for the weekly scheduler sweep (see
+   * runWeeklyGuaranteeSweep).
    */
   static async findMatch(userId: string): Promise<BlindDateMatch | null> {
-    try {
-      // Check if user has blind dating enabled
-      const settings = await this.getSettings(userId)
-      if (!settings?.is_enabled) {
-        logger.info({ userId }, 'Blind dating not enabled for user')
-        return null
-      }
-
-      // Check if user has reached max active matches (allow multiple, default 3)
-      const activeMatches = await this.getActiveMatches(userId)
-      if (activeMatches.length >= settings.max_active_matches) {
-        logger.info({ userId, activeMatches: activeMatches.length, max: settings.max_active_matches }, 'User has reached max active blind dates')
-        return null
-      }
-
-      // Get user profile for compatibility scoring
-      const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1)
-
-      if (!userProfile) {
-        logger.error({ userId }, 'Failed to get user profile')
-        return null
-      }
-
-      // Get users already in active matches with this user (to exclude)
-      const existingMatches = await db.select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
-        .from(blindDateMatches)
-        .where(and(
-          or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
-          inArray(blindDateMatches.status, ['active', 'revealed']),
-        ))
-
-      const excludedUserIds = new Set<string>([userId])
-      existingMatches.forEach(m => {
-        excludedUserIds.add(m.userA)
-        excludedUserIds.add(m.userB)
-      })
-
-      logger.info({ userId, excludedCount: excludedUserIds.size - 1 }, 'Finding eligible users for blind dating')
-
-      // Try RPC first, but use robust fallback
-      let eligibleUsers: Array<{ user_id: string; compatibility_data: any }> = []
-
-      try {
-        const rpcResult: any = await db.execute(sql`select * from find_blind_dating_eligible_users(${userId}::uuid, 100)`)
-        if (rpcResult.rows.length > 0) {
-          eligibleUsers = rpcResult.rows.map((r: any) => ({ user_id: r.user_id, compatibility_data: r.compatibility_data }))
-          logger.info({ userId, count: eligibleUsers.length }, 'Found eligible users via RPC')
-        }
-      } catch (eligibleError) {
-        logger.warn({ error: eligibleError, userId }, 'RPC failed, using fallback query')
-      }
-
-      // If RPC returned no results or failed, use fallback
-      if (eligibleUsers.length === 0) {
-        logger.info({ userId }, 'Using fallback query for eligible users')
-
-        // Get all users with blind dating enabled
-        let enabledSettingsRows: Array<{ userId: string; maxActiveMatches: number | null }> = []
-        try {
-          enabledSettingsRows = await db.select({ userId: blindDatingSettings.userId, maxActiveMatches: blindDatingSettings.maxActiveMatches })
-            .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
-        } catch (settingsError) {
-          logger.error({ error: settingsError, userId }, 'Failed to get blind dating settings')
-          return null
-        }
-
-        const enabledUserIds = enabledSettingsRows
-          .map(s => s.userId)
-          .filter(id => !excludedUserIds.has(id))
-
-        if (enabledUserIds.length === 0) {
-          logger.info({ userId }, 'No other users have blind dating enabled')
-          return null
-        }
-
-        // Get profiles of enabled users (exclude suspended and deleted)
-        let candidateProfiles: Array<{ id: string; age: number | null; gender: string | null; interests: string[] | null; needs: string[] | null; locationCity: string | null; locationCountry: string | null }> = []
-        try {
-          candidateProfiles = await db.select({
-            id: profiles.id, age: profiles.age, gender: profiles.gender, interests: profiles.interests,
-            needs: profiles.needs, locationCity: profiles.locationCity, locationCountry: profiles.locationCountry,
-          })
-            .from(profiles)
-            .where(and(inArray(profiles.id, enabledUserIds), isNull(profiles.deletedAt), eq(profiles.isSuspended, false)))
-            .limit(100)
-        } catch (profilesError) {
-          logger.error({ error: profilesError, userId }, 'Failed to get profiles')
-          return null
-        }
-
-        // Filter out suspended/invisible users, check max matches, and enforce gender compatibility
-        const validProfiles: typeof candidateProfiles = []
-        const userGender = userProfile.gender?.toLowerCase()
-
-        for (const profile of candidateProfiles) {
-          // IMPORTANT: Only match compatible genders (opposite genders only)
-          const candidateGender = profile.gender?.toLowerCase()
-          if (!this.isGenderCompatible(userGender, candidateGender)) {
-            logger.debug({ userId, candidateId: profile.id, userGender, candidateGender }, 'Skipping incompatible gender candidate')
-            continue
-          }
-
-          // Check if candidate has reached their max active matches
-          const candidateSettings = enabledSettingsRows.find(s => s.userId === profile.id)
-          const maxMatches = candidateSettings?.maxActiveMatches || 3
-
-          const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(blindDateMatches)
-            .where(and(
-              or(eq(blindDateMatches.userA, profile.id), eq(blindDateMatches.userB, profile.id)),
-              inArray(blindDateMatches.status, ['active', 'revealed']),
-            ))
-
-          // Include candidates who haven't reached their max
-          if (count < maxMatches) {
-            validProfiles.push(profile)
-          } else {
-            logger.debug({ userId, candidateId: profile.id, activeMatches: count, max: maxMatches }, 'Skipping candidate - reached max active blind dates')
-          }
-        }
-
-        eligibleUsers = validProfiles.map(p => ({
-          user_id: p.id,
-          compatibility_data: p
-        }))
-
-        logger.info({ userId, count: eligibleUsers.length }, 'Found eligible users via fallback')
-      }
-
-      if (eligibleUsers.length === 0) {
-        logger.info({ userId }, 'No eligible users found for blind dating')
-        return null
-      }
-
-      return this.createMatchFromCandidates(userId, userProfile, eligibleUsers, settings)
-    } catch (error) {
-      logger.error({ error, userId }, 'Error finding blind date match')
-      return null
-    }
+    return (await this.attemptMatch(userId, 'strict')) ?? (await this.attemptMatch(userId, 'relaxed'))
   }
 
   /**
-   * Find a match for a user, excluding specific user IDs (used for batch matching)
-   * This ensures each user only gets ONE match per matching run
+   * Same as findMatch, but excludes a caller-supplied set of user IDs --
+   * used by batch runs so nobody gets paired with someone already matched
+   * earlier in the same run.
    */
   static async findMatchExcluding(userId: string, excludeUserIds: Set<string>): Promise<BlindDateMatch | null> {
-    try {
-      // Check if user has blind dating enabled
-      const settings = await this.getSettings(userId)
-      if (!settings?.is_enabled) {
-        logger.info({ userId }, 'Blind dating not enabled for user')
-        return null
-      }
-
-      // Check if user has reached max active matches
-      const activeMatches = await this.getActiveMatches(userId)
-      if (activeMatches.length >= settings.max_active_matches) {
-        logger.info({ userId, activeMatches: activeMatches.length, max: settings.max_active_matches }, 'User has reached max active blind dates')
-        return null
-      }
-
-      // Get user profile for compatibility scoring
-      const [userProfile] = await db.select().from(profiles).where(eq(profiles.id, userId)).limit(1)
-
-      if (!userProfile) {
-        logger.error({ userId }, 'Failed to get user profile')
-        return null
-      }
-
-      // Get users already in active matches with this user (to exclude)
-      const existingMatches = await db.select({ userA: blindDateMatches.userA, userB: blindDateMatches.userB })
-        .from(blindDateMatches)
-        .where(and(
-          or(eq(blindDateMatches.userA, userId), eq(blindDateMatches.userB, userId)),
-          inArray(blindDateMatches.status, ['active', 'revealed']),
-        ))
-
-      const excludedUserIds = new Set<string>([userId, ...excludeUserIds])
-      existingMatches.forEach(m => {
-        excludedUserIds.add(m.userA)
-        excludedUserIds.add(m.userB)
-      })
-
-      logger.info({ userId, excludedCount: excludedUserIds.size - 1 }, 'Finding eligible users (with exclusions)')
-
-      // Get all users with blind dating enabled
-      let enabledSettingsRows: Array<{ userId: string; maxActiveMatches: number | null }> = []
-      try {
-        enabledSettingsRows = await db.select({ userId: blindDatingSettings.userId, maxActiveMatches: blindDatingSettings.maxActiveMatches })
-          .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
-      } catch (settingsError) {
-        logger.error({ error: settingsError, userId }, 'Failed to get blind dating settings')
-        return null
-      }
-
-      const enabledUserIds = enabledSettingsRows
-        .map(s => s.userId)
-        .filter(id => !excludedUserIds.has(id))
-
-      if (enabledUserIds.length === 0) {
-        logger.info({ userId }, 'No other users available for matching')
-        return null
-      }
-
-      // Get profiles of enabled users
-      let candidateProfiles: Array<{ id: string; age: number | null; gender: string | null; interests: string[] | null; needs: string[] | null; locationCity: string | null; locationCountry: string | null }> = []
-      try {
-        candidateProfiles = await db.select({
-          id: profiles.id, age: profiles.age, gender: profiles.gender, interests: profiles.interests,
-          needs: profiles.needs, locationCity: profiles.locationCity, locationCountry: profiles.locationCountry,
-        })
-          .from(profiles)
-          .where(and(inArray(profiles.id, enabledUserIds), isNull(profiles.deletedAt)))
-          .limit(100)
-      } catch (profilesError) {
-        logger.error({ error: profilesError, userId }, 'Failed to get profiles')
-        return null
-      }
-
-      // Filter for gender compatibility and max matches
-      const validProfiles: typeof candidateProfiles = []
-      const userGender = userProfile.gender?.toLowerCase()
-
-      for (const profile of candidateProfiles) {
-        const candidateGender = profile.gender?.toLowerCase()
-        if (!this.isGenderCompatible(userGender, candidateGender)) {
-          continue
-        }
-
-        // Check if candidate has reached their max active matches
-        const candidateSettings = enabledSettingsRows.find(s => s.userId === profile.id)
-        const maxMatches = candidateSettings?.maxActiveMatches || 3
-
-        const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(blindDateMatches)
-          .where(and(
-            or(eq(blindDateMatches.userA, profile.id), eq(blindDateMatches.userB, profile.id)),
-            inArray(blindDateMatches.status, ['active', 'revealed']),
-          ))
-
-        if (count < maxMatches) {
-          validProfiles.push(profile)
-        }
-      }
-
-      const eligibleUsers = validProfiles.map(p => ({
-        user_id: p.id,
-        compatibility_data: p
-      }))
-
-      if (eligibleUsers.length === 0) {
-        logger.info({ userId }, 'No eligible users found for blind dating')
-        return null
-      }
-
-      return this.createMatchFromCandidates(userId, userProfile, eligibleUsers, settings)
-    } catch (error) {
-      logger.error({ error, userId }, 'Error finding blind date match with exclusions')
-      return null
-    }
-  }
-
-  /**
-   * Create a match from candidate users
-   */
-  private static async createMatchFromCandidates(
-    userId: string,
-    userProfile: any,
-    candidates: Array<{ user_id: string; compatibility_data: any }>,
-    settings: BlindDateSettings
-  ): Promise<BlindDateMatch | null> {
-    try {
-      const userGender = userProfile.gender?.toLowerCase()
-      
-      // Filter candidates to only compatible genders and score them
-      const scoredCandidates = candidates
-        .map(candidate => {
-          const data = typeof candidate.compatibility_data === 'string'
-            ? JSON.parse(candidate.compatibility_data)
-            : candidate.compatibility_data
-          
-          const candidateGender = data.gender?.toLowerCase()
-          
-          // CRITICAL: Only match compatible genders
-          if (!this.isGenderCompatible(userGender, candidateGender)) {
-            return null // Skip incompatible gender candidates
-          }
-          
-          const compatibility = CompatibilityService.calculateEnhancedCompatibility(
-            {
-              age: userProfile.age,
-              interests: userProfile.interests,
-              needs: userProfile.needs
-            },
-            {
-              age: data.age,
-              interests: data.interests,
-              needs: data.needs
-            }
-          )
-          
-          // Add a base score to ensure matches happen even with low compatibility
-          // This ensures users get matched even if they have few common interests
-          const baseScore = 5 // Minimum base score for any potential match
-          const adjustedScore = Math.max(compatibility.score, baseScore)
-          
-          return {
-            userId: candidate.user_id,
-            score: adjustedScore,
-            rawScore: compatibility.score,
-            compatibility
-          }
-        })
-        .filter((c): c is NonNullable<typeof c> => c !== null) // Remove null entries (same-gender)
-
-      // Sort by score (highest first)
-      scoredCandidates.sort((a, b) => b.score - a.score)
-
-      logger.info({
-        userId,
-        candidateCount: scoredCandidates.length,
-        topScores: scoredCandidates.slice(0, 5).map(c => ({ userId: c.userId, score: c.score, rawScore: c.rawScore }))
-      }, 'Scored candidates for blind dating')
-
-      // Find the best match that is NOT already a friend
-      let bestMatch = null
-      for (const candidate of scoredCandidates) {
-        // Check if they are already friends - skip if so
-        const areFriends = await this.areUsersFriends(userId, candidate.userId)
-        if (areFriends) {
-          logger.debug({ userId, candidateId: candidate.userId }, 'Skipping candidate - already friends')
-          continue
-        }
-        bestMatch = candidate
-        break
-      }
-      
-      if (!bestMatch) {
-        logger.info({ userId, userGender }, 'No compatible candidates available for matching (all are friends or incompatible)')
-        return null
-      }
-      
-      // Log if we're matching with low compatibility (for monitoring)
-      if (bestMatch.rawScore < 10) {
-        logger.info({ 
-          userId, 
-          matchUserId: bestMatch.userId,
-          rawScore: bestMatch.rawScore,
-          adjustedScore: bestMatch.score 
-        }, 'Creating match with low compatibility score (this is OK for blind dating)')
-      }
-
-      // Create the blind date match
-      const [userA, userB] = [userId, bestMatch.userId].sort() // Ensure consistent ordering
-      
-      // Create chat first
-      const chat = await ensureChatForUsers(userId, bestMatch.userId)
-
-      let matchRow: typeof blindDateMatches.$inferSelect
-      try {
-        [matchRow] = await db.insert(blindDateMatches).values({
-          userA, userB, chatId: chat.id,
-          compatibilityScore: String(bestMatch.score),
-          status: 'active',
-          messageCount: 0,
-          revealThreshold: settings.preferred_reveal_threshold,
-          userARevealed: false,
-          userBRevealed: false,
-          matchedAt: new Date().toISOString(),
-        }).returning()
-      } catch (matchError) {
-        logger.error({ error: matchError, userId, matchUserId: bestMatch.userId }, 'Failed to create blind date match')
-        throw matchError
-      }
-
-      // Update last match time for both users
-      await Promise.all([
-        db.update(blindDatingSettings).set({ lastMatchAt: new Date().toISOString() }).where(eq(blindDatingSettings.userId, userId)),
-        db.update(blindDatingSettings).set({ lastMatchAt: new Date().toISOString() }).where(eq(blindDatingSettings.userId, bestMatch.userId)),
-      ])
-
-      logger.info({
-        matchId: matchRow.id,
-        userId,
-        matchUserId: bestMatch.userId,
-        score: bestMatch.score
-      }, 'Blind date match created')
-
-      // Notify both users
-      const matchData = rowToBlindDateMatchRow(matchRow)
-      await this.notifyMatchCreated(userId, bestMatch.userId, matchData)
-
-      return matchData
-    } catch (error) {
-      logger.error({ error, userId }, 'Error creating match from candidates')
-      return null
-    }
+    return (await this.attemptMatch(userId, 'strict', excludeUserIds)) ?? (await this.attemptMatch(userId, 'relaxed', excludeUserIds))
   }
 
   /**
@@ -1336,6 +1267,74 @@ export class BlindDatingService {
   }
 
   /**
+   * Auto-expire matches nobody ever used, freeing their maxActiveMatches
+   * slot back up for real matching.
+   *
+   * This is the single highest-impact fix for "running out of blind
+   * connects": production data showed 91 of 96 'active' matches had
+   * exchanged zero messages (some since December), permanently occupying
+   * slots and leaving ~half of enabled users pinned at their 3-match cap
+   * with nothing anyone could do about it -- a live matching run against
+   * all 68 enabled users produced zero new matches. A match that's sat
+   * untouched for a full week is clearly abandoned; recycling it is what
+   * lets a fresh, better-fitting match take its place. The existing 24h
+   * inactivity reminder already gives people a nudge before this kicks in,
+   * so nobody loses a match without warning.
+   *
+   * Should run at the start of every matching cycle, before eligibility is
+   * computed, so freed slots are usable in the same run.
+   */
+  static readonly STALE_MATCH_DAYS = 7
+
+  static async expireStaleMatches(): Promise<{ expired: number }> {
+    try {
+      const cutoff = new Date(Date.now() - this.STALE_MATCH_DAYS * 24 * 60 * 60 * 1000).toISOString()
+
+      const expiredRows = await db.update(blindDateMatches)
+        .set({
+          status: 'expired',
+          endedAt: new Date().toISOString(),
+          endReason: 'auto_expired_inactive',
+          updatedAt: new Date().toISOString(),
+        })
+        .where(and(
+          eq(blindDateMatches.status, 'active'),
+          eq(blindDateMatches.messageCount, 0),
+          sql`${blindDateMatches.matchedAt} < ${cutoff}`,
+        ))
+        .returning({ id: blindDateMatches.id, userA: blindDateMatches.userA, userB: blindDateMatches.userB, chatId: blindDateMatches.chatId })
+
+      if (expiredRows.length === 0) {
+        return { expired: 0 }
+      }
+
+      logger.info({ count: expiredRows.length }, '⏳ Auto-expired stale zero-message blind date matches')
+
+      // Best-effort, low-key notification -- not a failure state, just lets
+      // them know a fresh match is coming rather than the old one silently
+      // vanishing. Never let a notification failure block the expiry itself.
+      for (const row of expiredRows) {
+        for (const userId of [row.userA, row.userB]) {
+          try {
+            emitToUser(userId, 'blind_date:expired', {
+              matchId: row.id,
+              chatId: row.chatId,
+              message: 'Your blind date match went quiet, so we freed it up for a fresh one.',
+            })
+          } catch (notifyError) {
+            logger.error({ error: notifyError, matchId: row.id, userId }, 'Failed to notify user of auto-expired match')
+          }
+        }
+      }
+
+      return { expired: expiredRows.length }
+    } catch (error) {
+      logger.error({ error }, 'Error expiring stale blind date matches')
+      return { expired: 0 }
+    }
+  }
+
+  /**
    * Get match status for a chat
    */
   static async getChatBlindDateStatus(chatId: string, userId: string): Promise<{
@@ -1406,42 +1405,115 @@ export class BlindDatingService {
     }
   }
 
+  private static readonly WEEKLY_GUARANTEE_DAYS = 7
+
   /**
-   * Process daily matches for all enabled users
-   * This should be called by a scheduled job (cron)
+   * One full matching pass across all enabled+autoMatch users: expires
+   * stale matches first (freeing slots), then attempts strict -> relaxed
+   * for everyone, ordered so whoever has gone longest without a match is
+   * tried first (fairest use of a small, gender-imbalanced pool -- 47 male
+   * / 19 female in production means first-come-first-served order would
+   * let whoever's processed early hog every fresh match). Anyone still
+   * unmatched afterward who is within a day of the weekly guarantee
+   * deadline gets one more attempt at the guarantee tier, which ignores
+   * score and cooldown -- a repeat match beats no match in a small pool.
+   *
+   * Shared by processDailyMatches (the scheduled cron) and
+   * forceMatchAllUsers (admin on-demand trigger) -- both want the exact
+   * same engine, just invoked on different schedules.
    */
-  static async processDailyMatches(): Promise<{ processed: number; matched: number; errors: number }> {
-    const stats = { processed: 0, matched: 0, errors: 0 }
-    
+
+  /**
+   * Redis-locked entry point. Two things can trigger a matching pass --
+   * the daily cron (blind-dating-scheduler.ts) and admin on-demand routes
+   * calling forceMatchAllUsers -- and a production run already showed real
+   * damage from unlocked concurrent runs: two users ended up with 4 active
+   * matches against their own 3-match cap because two overlapping runs both
+   * read "under the cap" before either had committed its insert. The cap
+   * itself is gone now, but the same race would still let the same pair of
+   * users get matched TWICE in one pass. If the lock can't be acquired,
+   * something else is already running -- skip this invocation entirely
+   * rather than block waiting, so an admin-triggered run never hangs behind
+   * the nightly cron.
+   */
+  static async runMatchingPass(): Promise<MatchingPassStats> {
+    const emptyStats: MatchingPassStats = { processed: 0, matched: 0, errors: 0, expired: 0, guaranteed: 0, details: [] }
+
+    let lockAcquired = false
     try {
-      const today = new Date().toISOString().split('T')[0]
-      
-      // Get users already processed today
+      const result = await lockRedis.set(MATCHING_LOCK_KEY, LOCK_OWNER_ID, 'EX', MATCHING_LOCK_TTL_SECONDS, 'NX')
+      lockAcquired = result === 'OK'
+    } catch (error) {
+      // Redis unreachable -- fail OPEN rather than silently never matching
+      // anyone again. The N+1-free batched queries and the unique
+      // (userA,userB,status) DB constraint still make a genuine double-match
+      // very unlikely even without the lock; missing a lock is far less
+      // harmful than blind dating quietly stopping altogether.
+      logger.error({ error }, 'Failed to acquire blind dating matching lock -- proceeding without it')
+      lockAcquired = true
+    }
+
+    if (!lockAcquired) {
+      logger.info('Blind dating matching pass already running elsewhere -- skipping this invocation')
+      return emptyStats
+    }
+
+    try {
+      return await this.runMatchingPassUnlocked()
+    } finally {
+      try {
+        const script = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
+        await lockRedis.eval(script, 1, MATCHING_LOCK_KEY, LOCK_OWNER_ID)
+      } catch (error) {
+        logger.error({ error }, 'Failed to release blind dating matching lock')
+      }
+    }
+  }
+
+  private static async runMatchingPassUnlocked(): Promise<MatchingPassStats> {
+    const stats: MatchingPassStats = { processed: 0, matched: 0, errors: 0, expired: 0, guaranteed: 0, details: [] }
+    const today = new Date().toISOString().split('T')[0]
+
+    try {
+      const { expired } = await this.expireStaleMatches()
+      stats.expired = expired
+
+      // Skip anyone a same-day run already matched -- extra defense-in-depth
+      // on top of the lock above, so a duplicate match on the same day can't
+      // happen even if the lock is ever bypassed (Redis down) or its TTL is
+      // exceeded by an unusually slow run.
       const processedToday = await db.select({ userId: blindDateDailyQueue.userId }).from(blindDateDailyQueue)
         .where(and(eq(blindDateDailyQueue.scheduledDate, today), eq(blindDateDailyQueue.status, 'matched')))
-
       const processedUserIds = new Set(processedToday.map(u => u.userId))
 
-      // Get all users with blind dating enabled
-      let allEnabledUsers: Array<{ userId: string }> = []
-      try {
-        allEnabledUsers = await db.select({ userId: blindDatingSettings.userId }).from(blindDatingSettings)
-          .where(and(eq(blindDatingSettings.isEnabled, true), eq(blindDatingSettings.autoMatch, true)))
-      } catch (error) {
-        logger.error({ error }, 'Failed to get enabled users for daily matching')
-        return stats
-      }
+      const enabledRows = await db.select({ userId: blindDatingSettings.userId, lastMatchAt: blindDatingSettings.lastMatchAt })
+        .from(blindDatingSettings)
+        .where(and(eq(blindDatingSettings.isEnabled, true), eq(blindDatingSettings.autoMatch, true)))
 
-      // Filter out already processed users
-      const enabledUsers = allEnabledUsers.filter(u => !processedUserIds.has(u.userId))
+      const candidates = enabledRows.filter(u => !processedUserIds.has(u.userId))
 
-      logger.info({ userCount: enabledUsers.length }, 'Processing daily blind date matches')
+      // Longest-overdue first: never-matched users (null lastMatchAt) sort
+      // before anyone with a timestamp.
+      const ordered = [...candidates].sort((a, b) => {
+        const aTime = a.lastMatchAt ? new Date(a.lastMatchAt).getTime() : 0
+        const bTime = b.lastMatchAt ? new Date(b.lastMatchAt).getTime() : 0
+        return aTime - bTime
+      })
 
-      for (const user of enabledUsers) {
+      logger.info({ userCount: ordered.length }, 'Processing blind date matching pass')
+
+      const matchedInThisRun = new Set<string>()
+      const stillUnmatched: Array<{ userId: string; lastMatchAt: string | null }> = []
+
+      for (const user of ordered) {
         stats.processed++
 
+        if (matchedInThisRun.has(user.userId)) {
+          stats.details.push({ userId: user.userId, status: 'skipped', error: 'Already matched with someone in this run' })
+          continue
+        }
+
         try {
-          // Create queue entry
           await db.insert(blindDateDailyQueue)
             .values({ userId: user.userId, scheduledDate: today, status: 'pending' })
             .onConflictDoUpdate({
@@ -1449,147 +1521,106 @@ export class BlindDatingService {
               set: { status: 'pending' },
             })
 
-          // Try to find a match
-          const match = await this.findMatch(user.userId)
+          const match = await this.findMatchExcluding(user.userId, matchedInThisRun)
 
           if (match) {
             stats.matched++
+            const partnerId = match.user_a === user.userId ? match.user_b : match.user_a
+            matchedInThisRun.add(user.userId)
+            matchedInThisRun.add(partnerId)
+            stats.details.push({ userId: user.userId, status: 'matched', matchId: match.id })
 
-            // Update queue entry
             await db.update(blindDateDailyQueue).set({
               status: 'matched',
-              matchedUserId: match.user_a === user.userId ? match.user_b : match.user_a,
+              matchedUserId: partnerId,
               matchId: match.id,
-              processedAt: new Date().toISOString()
+              processedAt: new Date().toISOString(),
             }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today)))
           } else {
-            // No match found
+            stillUnmatched.push(user)
+            stats.details.push({ userId: user.userId, status: 'no_match', error: 'No eligible candidates found' })
+
             await db.update(blindDateDailyQueue).set({
               status: 'no_match',
-              processedAt: new Date().toISOString()
+              processedAt: new Date().toISOString(),
             }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today)))
           }
         } catch (error) {
           stats.errors++
-          logger.error({ error, userId: user.userId }, 'Error processing daily match for user')
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+          stats.details.push({ userId: user.userId, status: 'error', error: errorMsg })
+          logger.error({ error, userId: user.userId }, 'Error in matching pass')
 
           await db.update(blindDateDailyQueue).set({
             status: 'error',
-            errorMessage: error instanceof Error ? error.message : 'Unknown error',
-            processedAt: new Date().toISOString()
-          }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today)))
+            errorMessage: errorMsg,
+            processedAt: new Date().toISOString(),
+          }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today))).catch(() => {})
         }
       }
 
-      logger.info(stats, 'Daily blind date matching completed')
+      // Weekly guarantee sweep.
+      const guaranteeCutoff = Date.now() - (this.WEEKLY_GUARANTEE_DAYS - 1) * 24 * 60 * 60 * 1000
+      for (const user of stillUnmatched) {
+        if (matchedInThisRun.has(user.userId)) continue
+        const lastMatchTime = user.lastMatchAt ? new Date(user.lastMatchAt).getTime() : 0
+        if (lastMatchTime > guaranteeCutoff) continue // not overdue yet
+
+        try {
+          const match = await this.attemptMatch(user.userId, 'guarantee', matchedInThisRun)
+          if (match) {
+            stats.matched++
+            stats.guaranteed++
+            const partnerId = match.user_a === user.userId ? match.user_b : match.user_a
+            matchedInThisRun.add(user.userId)
+            matchedInThisRun.add(partnerId)
+            const detail = stats.details.find(d => d.userId === user.userId)
+            if (detail) { detail.status = 'matched'; detail.matchId = match.id; detail.error = undefined }
+
+            await db.update(blindDateDailyQueue).set({
+              status: 'matched',
+              matchedUserId: partnerId,
+              matchId: match.id,
+              processedAt: new Date().toISOString(),
+            }).where(and(eq(blindDateDailyQueue.userId, user.userId), eq(blindDateDailyQueue.scheduledDate, today)))
+
+            logger.info({ userId: user.userId, matchId: match.id }, '🔒 Weekly guarantee match created')
+          }
+        } catch (error) {
+          logger.error({ error, userId: user.userId }, 'Error in weekly guarantee sweep')
+        }
+      }
+
+      logger.info(stats, '✅ Blind dating matching pass completed')
       return stats
     } catch (error) {
-      logger.error({ error }, 'Error in daily match processing')
+      logger.error({ error }, 'Error in blind dating matching pass')
       return stats
     }
   }
 
   /**
-   * Force run matching for all eligible users (admin function)
-   * This bypasses the daily queue and tries to match everyone
+   * Process daily matches for all enabled users. Called by the scheduled
+   * cron job (see workers/blind-dating-scheduler.ts).
    */
-  static async forceMatchAllUsers(): Promise<{ 
-    processed: number; 
-    matched: number; 
-    errors: number;
+  static async processDailyMatches(): Promise<{ processed: number; matched: number; errors: number }> {
+    const { processed, matched, errors } = await this.runMatchingPass()
+    return { processed, matched, errors }
+  }
+
+  /**
+   * Force run matching for all eligible users (admin function). Runs the
+   * exact same engine as processDailyMatches -- kept as a separate name
+   * since existing admin routes call it on demand outside the daily
+   * schedule.
+   */
+  static async forceMatchAllUsers(): Promise<{
+    processed: number
+    matched: number
+    errors: number
     details: Array<{ userId: string; status: string; matchId?: string; error?: string }>
   }> {
-    const stats = { 
-      processed: 0, 
-      matched: 0, 
-      errors: 0,
-      details: [] as Array<{ userId: string; status: string; matchId?: string; error?: string }>
-    }
-    
-    try {
-      // Get all users with blind dating enabled
-      let enabledUsers: Array<{ user_id: string; max_active_matches: number | null }> = []
-      try {
-        enabledUsers = await db.select({ user_id: blindDatingSettings.userId, max_active_matches: blindDatingSettings.maxActiveMatches })
-          .from(blindDatingSettings).where(eq(blindDatingSettings.isEnabled, true))
-      } catch (error) {
-        logger.error({ error }, 'Failed to get enabled users for force matching')
-        return stats
-      }
-
-      logger.info({ userCount: enabledUsers.length }, '🚀 Force matching all blind dating users')
-
-      // Track users who got matched in THIS run to ensure 1:1 per run
-      const matchedInThisRun = new Set<string>()
-
-      // Process each user
-      for (const user of enabledUsers) {
-        stats.processed++
-        
-        // Skip if user was already matched with someone in this run
-        if (matchedInThisRun.has(user.user_id)) {
-          stats.details.push({ 
-            userId: user.user_id, 
-            status: 'skipped', 
-            error: 'Already matched with someone in this run (1 match per run)' 
-          })
-          continue
-        }
-        
-        try {
-          // Check if user has reached max active matches
-          const activeMatches = await this.getActiveMatches(user.user_id)
-          const maxMatches = user.max_active_matches || 3
-          
-          if (activeMatches.length >= maxMatches) {
-            stats.details.push({ 
-              userId: user.user_id, 
-              status: 'skipped', 
-              error: `Already has ${activeMatches.length}/${maxMatches} active matches` 
-            })
-            continue
-          }
-          
-          // Try to find a match (excluding users already matched in this run)
-          const match = await this.findMatchExcluding(user.user_id, matchedInThisRun)
-          
-          if (match) {
-            stats.matched++
-            // Mark both users as matched in this run
-            matchedInThisRun.add(user.user_id)
-            matchedInThisRun.add(match.user_a === user.user_id ? match.user_b : match.user_a)
-            
-            stats.details.push({ 
-              userId: user.user_id, 
-              status: 'matched', 
-              matchId: match.id 
-            })
-            logger.info({ userId: user.user_id, matchId: match.id }, '✅ Match created')
-          } else {
-            stats.details.push({ 
-              userId: user.user_id, 
-              status: 'no_match', 
-              error: 'No eligible candidates found' 
-            })
-          }
-        } catch (error) {
-          stats.errors++
-          const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-          stats.details.push({ 
-            userId: user.user_id, 
-            status: 'error', 
-            error: errorMsg 
-          })
-          logger.error({ error, userId: user.user_id }, 'Error in force matching')
-        }
-      }
-
-      logger.info(stats, '🏁 Force matching completed')
-      return stats
-    } catch (error) {
-      logger.error({ error }, 'Error in force match all users')
-      return stats
-    }
+    return this.runMatchingPass()
   }
 
   /**

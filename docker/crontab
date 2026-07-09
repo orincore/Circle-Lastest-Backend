@@ -16,6 +16,12 @@
 # Age resync (recompute profiles.age from date_of_birth) - Daily at midnight UTC
 0 0 * * * cd /app && node dist/server/workers/age-resync.js >> /var/log/cron/age-resync.log 2>&1
 
+# Smart engagement notifications (friend-liked-meme, birthdays, weather check-ins) - Daily at 5:00 AM UTC
+0 5 * * * cd /app && node dist/server/workers/engagement-notifications-scheduler.js >> /var/log/cron/engagement-notifications.log 2>&1
+
+# Meme discovery notifications (4-8/day/recipient, deterministic per-user slot selection) - Every 3 hours
+0 */3 * * * cd /app && node dist/server/workers/meme-discovery-scheduler.js >> /var/log/cron/meme-discovery.log 2>&1
+
 # Health check heartbeat - Every minute (writes timestamp for monitoring)
 * * * * * echo "$(date): Cron worker alive" >> /var/log/cron/heartbeat.log
 

@@ -41,7 +41,12 @@ export type NotificationType =
   | 'verification_rejected'
   | 'blind_date_match'
   | 'blind_date_reveal'
-  | 'blind_date_ended';
+  | 'blind_date_ended'
+  | 'meme_liked_by_friend'
+  | 'meme_discovery'
+  | 'birthday_self'
+  | 'friend_birthday'
+  | 'weather_checkin';
 
 export class NotificationService {
   /**

@@ -31,6 +31,7 @@ import exploreRouter from './routes/explore.routes.js'
 import circleStatsRouter from './routes/circle-stats.routes.js'
 import socialAccountsRouter from './routes/social-accounts.routes.js'
 import notificationsRouter from './routes/notifications.routes.js'
+import sessionsRouter from './routes/sessions.routes.js'
 import contactRouter from './routes/contact.routes.js'
 import adminRouter from './routes/admin.routes.js'
 import adminUsersRouter from './routes/admin-users.routes.js'
@@ -285,6 +286,7 @@ app.use('/api/explore', exploreRouter)
 app.use('/api/circle', circleStatsRouter)
 app.use('/api/social', socialAccountsRouter)
 app.use('/api/notifications', notificationsRouter)
+app.use('/api/sessions', sessionsRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/contact', contactRouter)
 app.use('/api/careers', careersRouter)

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../config/db.js';
 import { profiles, pushTokens } from '../db/schema.js';
 import { logger } from '../config/logger.js';
@@ -133,6 +133,37 @@ export class PushNotificationService {
    * Without this, dead tokens accumulate forever and every send to them
    * silently goes nowhere.
    */
+  /**
+   * Disables push_tokens rows for a specific device (and/or exact token, as
+   * a fallback for rows still missing a deviceId) -- used by logout and
+   * remote session-terminate so a logged-out device stops receiving pushes
+   * immediately, without touching that user's other logged-in devices.
+   */
+  static async disablePushTokensForDevice(
+    userId: string,
+    opts: { deviceId?: string | null; token?: string | null },
+  ): Promise<void> {
+    const { deviceId, token } = opts;
+    let condition;
+    if (deviceId && token) {
+      condition = and(eq(pushTokens.userId, userId), or(eq(pushTokens.deviceId, deviceId), eq(pushTokens.token, token)));
+    } else if (deviceId) {
+      condition = and(eq(pushTokens.userId, userId), eq(pushTokens.deviceId, deviceId));
+    } else if (token) {
+      condition = and(eq(pushTokens.userId, userId), eq(pushTokens.token, token));
+    } else {
+      return; // nothing to disable by -- not an error, just a no-op
+    }
+
+    try {
+      await db.update(pushTokens)
+        .set({ enabled: false, updatedAt: new Date().toISOString() })
+        .where(condition);
+    } catch (error) {
+      logger.error({ error, userId, deviceId, token }, 'Failed to disable push tokens for device');
+    }
+  }
+
   private static async disableDeadTokens(tokens: string[], source: 'ticket' | 'receipt'): Promise<void> {
     if (tokens.length === 0) return;
     try {

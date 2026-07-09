@@ -255,6 +255,42 @@ export const memeLikes = pgTable("meme_likes", {
 	unique("meme_likes_meme_id_user_id_key").on(table.memeId, table.userId),
 ]);
 
+// Tracks every "smart engagement" push sent (friend-liked-a-meme, meme
+// discovery, birthday, weather check-in) so each feature's rate-limit /
+// don't-repeat-yourself rule is just an INSERT ... ON CONFLICT DO NOTHING
+// against UNIQUE(recipient_id, notification_type, dedupe_key) -- see
+// migrations/create_engagement_notifications_table.sql for what dedupe_key
+// means per type.
+export const engagementNotifications = pgTable("engagement_notifications", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	recipientId: uuid("recipient_id").notNull(),
+	notificationType: varchar("notification_type", { length: 40 }).notNull(),
+	dedupeKey: varchar("dedupe_key", { length: 120 }).notNull(),
+	relatedUserId: uuid("related_user_id"),
+	relatedMemeId: uuid("related_meme_id"),
+	sentAt: timestamp("sent_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("idx_engagement_notifications_recipient_type").using("btree", table.recipientId.asc().nullsLast().op("uuid_ops"), table.notificationType.asc().nullsLast().op("text_ops"), table.sentAt.asc().nullsLast().op("timestamptz_ops")),
+	index("idx_engagement_notifications_sent_at").using("btree", table.sentAt.asc().nullsLast().op("timestamptz_ops")),
+	foreignKey({
+			columns: [table.recipientId],
+			foreignColumns: [profiles.id],
+			name: "engagement_notifications_recipient_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.relatedUserId],
+			foreignColumns: [profiles.id],
+			name: "engagement_notifications_related_user_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.relatedMemeId],
+			foreignColumns: [memes.id],
+			name: "engagement_notifications_related_meme_id_fkey"
+		}).onDelete("cascade"),
+	unique("engagement_notifications_recipient_type_dedupe_key").on(table.recipientId, table.notificationType, table.dedupeKey),
+	check("engagement_notifications_type_check", sql`(notification_type)::text = ANY ((ARRAY['meme_liked_by_friend'::character varying, 'meme_discovery'::character varying, 'birthday_self'::character varying, 'friend_birthday'::character varying, 'weather_checkin'::character varying])::text[])`),
+]);
+
 export const memeComments = pgTable("meme_comments", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
 	memeId: uuid("meme_id").notNull(),
@@ -1955,6 +1991,13 @@ export const pushTokens = pgTable("push_tokens", {
 	token: text().notNull(),
 	deviceType: text("device_type"),
 	deviceName: text("device_name"),
+	// Stable per-install identifier generated client-side (see CircleReact's
+	// src/services/deviceId.js) -- the real dedup key for a physical device,
+	// since `token` itself rotates on reinstall/cache-clear/FCM refresh and
+	// previously caused an unbounded pile-up of orphaned rows per device.
+	// Nullable for backward compat with app builds that predate this column.
+	deviceId: text("device_id"),
+	ipAddress: inet("ip_address"),
 	enabled: boolean().default(true),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
@@ -1964,6 +2007,12 @@ export const pushTokens = pgTable("push_tokens", {
 	index("idx_push_tokens_token").using("btree", table.token.asc().nullsLast().op("text_ops")),
 	index("idx_push_tokens_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
 	uniqueIndex("idx_push_tokens_user_token").using("btree", table.userId.asc().nullsLast().op("uuid_ops"), table.token.asc().nullsLast().op("uuid_ops")),
+	// Partial: Postgres never treats NULLs as equal in a unique index, so
+	// rows from clients that don't yet send device_id (nothing has a
+	// device_id) never collide here -- this index only dedupes rows that
+	// DO have a device_id, alongside the pre-existing token-based index
+	// above which stays as the fallback path for those older clients.
+	uniqueIndex("idx_push_tokens_user_device").using("btree", table.userId.asc().nullsLast().op("uuid_ops"), table.deviceId.asc().nullsLast().op("text_ops")).where(sql`device_id IS NOT NULL`),
 	foreignKey({
 			columns: [table.userId],
 			foreignColumns: [profiles.id],
@@ -2349,6 +2398,36 @@ export const userSessions = pgTable("user_sessions", {
 	unique("user_sessions_session_id_key").on(table.sessionId),
 	pgPolicy("Users can view their own sessions", { as: "permissive", for: "select", to: ["public"], using: sql`(auth.uid() = user_id)` }),
 	pgPolicy("Service role can manage all sessions", { as: "permissive", for: "all", to: ["public"] }),
+]);
+
+// Real login-session tracking (jti-per-issued-JWT), distinct from the
+// unused `user_sessions` analytics telemetry table below (screen
+// views/crash counts, never referenced by any route/service code -- do not
+// confuse the two or repurpose it).
+export const authSessions = pgTable("auth_sessions", {
+	id: uuid().default(sql`extensions.uuid_generate_v4()`).primaryKey().notNull(),
+	userId: uuid("user_id").notNull(),
+	jti: uuid().notNull(),
+	deviceId: text("device_id"),
+	deviceType: text("device_type"),
+	deviceName: text("device_name"),
+	ipAddress: inet("ip_address"),
+	locationCity: text("location_city"),
+	locationCountry: text("location_country"),
+	userAgent: text("user_agent"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	lastActiveAt: timestamp("last_active_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	revokedAt: timestamp("revoked_at", { withTimezone: true, mode: 'string' }),
+	revokedReason: text("revoked_reason"),
+}, (table) => [
+	index("idx_auth_sessions_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")).where(sql`revoked_at IS NULL`),
+	index("idx_auth_sessions_jti").using("btree", table.jti.asc().nullsLast().op("uuid_ops")),
+	uniqueIndex("idx_auth_sessions_jti_unique").using("btree", table.jti.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [profiles.id],
+			name: "auth_sessions_user_id_fkey"
+		}).onDelete("cascade"),
 ]);
 
 export const verificationAttempts = pgTable("verification_attempts", {

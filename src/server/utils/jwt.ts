@@ -5,6 +5,10 @@ export interface JwtPayload {
   sub: string
   email: string
   username: string
+  // Session id, tying this specific issued token to an auth_sessions row.
+  // Optional so tokens issued before this field existed keep verifying
+  // fine -- see middleware/auth.ts for how the two cases are told apart.
+  jti?: string
 }
 
 export function signJwt(payload: JwtPayload, expiresIn: string = '7d'): string {

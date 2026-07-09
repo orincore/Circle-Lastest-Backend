@@ -8,8 +8,13 @@ import {
   DuplicateRequestError,
   NotFoundError,
   ForbiddenError,
+  AlreadyConnectedError,
 } from '../services/memeConnect.service.js'
 import { getBlurredAvatarDataUri } from '../services/anonAvatar.service.js'
+import { db } from '../config/db.js'
+import { profiles } from '../db/schema.js'
+import { eq } from 'drizzle-orm'
+import { maskFullName } from '../utils/maskName.js'
 const router = Router()
 
 const requestToJson = (r: any) => ({
@@ -45,19 +50,34 @@ router.post('/connect-requests', requireAuth, async (req: AuthRequest, res) => {
     if (e instanceof NotFoundError) return res.status(404).json({ error: e.message })
     if (e instanceof ForbiddenError) return res.status(400).json({ error: e.message })
     if (e instanceof DuplicateRequestError) return res.status(409).json({ error: e.message })
+    // Already fully connected -- hand back the existing chat_id so the
+    // client can just open that chat instead of dead-ending on an error.
+    if (e instanceof AlreadyConnectedError) {
+      return res.status(409).json({ error: e.message, alreadyConnected: true, chat_id: e.chatId })
+    }
     console.error('create connect request error:', e)
     return res.status(500).json({ error: 'Failed to create connect request' })
   }
 })
 
 // The chat/share-picker UI shows a blurred version of the *other* party's
-// real profile photo for these still-anonymous connections (same
-// server-side blur as comment avatars -- see anonAvatar.service.ts). Which
-// side is "the other party" depends on whether this viewer is the requester
-// or the target, so it's resolved here rather than in the stateless
-// `requestToJson` helper.
+// real profile photo, plus a masked-initials name (same style as blind-date
+// chats, e.g. "A***** S*******"), for these still-anonymous connections.
+// Which side is "the other party" depends on whether this viewer is the
+// requester or the target, so it's resolved here rather than in the
+// stateless `requestToJson` helper.
 async function withOtherPartyAvatar(rows: ReturnType<typeof requestToJson>[], otherIdKey: 'requester_id' | 'target_id') {
-  return Promise.all(rows.map(async (r) => ({ ...r, avatar: await getBlurredAvatarDataUri(r[otherIdKey]) })))
+  return Promise.all(rows.map(async (r) => {
+    const otherUserId = r[otherIdKey]
+    const [avatar, [otherProfile]] = await Promise.all([
+      getBlurredAvatarDataUri(otherUserId),
+      db.select({ firstName: profiles.firstName, lastName: profiles.lastName })
+        .from(profiles)
+        .where(eq(profiles.id, otherUserId))
+        .limit(1),
+    ])
+    return { ...r, avatar, maskedName: maskFullName(otherProfile?.firstName, otherProfile?.lastName) }
+  }))
 }
 
 router.get('/connect-requests', requireAuth, async (req: AuthRequest, res) => {
@@ -84,7 +104,23 @@ router.post('/connect-requests/:id/respond', requireAuth, async (req: AuthReques
     }
 
     const row = await respondToConnectRequest(id, req.user!.id, accept)
-    return res.json({ request: requestToJson(row) })
+    const json = requestToJson(row)
+
+    // On accept, the client navigates straight into the new chat and needs
+    // a display name for the other party immediately -- it can't wait for
+    // the next chat-list refresh. Give it the same masked-initials name the
+    // chat list itself will show, instead of a placeholder.
+    if (accept) {
+      const otherUserId = json.requester_id === req.user!.id ? json.target_id : json.requester_id
+      const [otherProfile] = await db
+        .select({ firstName: profiles.firstName, lastName: profiles.lastName })
+        .from(profiles)
+        .where(eq(profiles.id, otherUserId))
+        .limit(1)
+      ;(json as any).maskedName = maskFullName(otherProfile?.firstName, otherProfile?.lastName)
+    }
+
+    return res.json({ request: json })
   } catch (e) {
     if (e instanceof NotFoundError) return res.status(404).json({ error: e.message })
     if (e instanceof ForbiddenError) return res.status(403).json({ error: e.message })

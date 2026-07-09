@@ -1,9 +1,21 @@
 /**
+ * DEPRECATED / NOT DEPLOYED -- removed from docker/ecosystem.matchmaking.config.cjs.
+ *
+ * This called the same matching engine as the 3:30AM daily cron
+ * (workers/blind-dating-scheduler.ts) every 4-5h instead of once a day,
+ * with no distributed lock between the two -- confirmed in production to
+ * cause real data corruption (two users ended up with 4 active matches
+ * against their own 3-match cap from overlapping unlocked runs). The
+ * matching engine now has its own Redis lock and a weekly-guarantee
+ * fallback tier, so the single daily cron is sufficient. Left in place for
+ * reference only; do not re-add to the PM2 ecosystem without also removing
+ * the redundant schedule or accepting the wasted DB load.
+ *
  * Continuous Blind Dating Matcher
- * 
+ *
  * Runs every 4-5 hours (randomized) to create blind date matches for compatible users
  * This replaces the once-daily 9AM matching with more frequent opportunities
- * 
+ *
  * Usage:
  * - Run as a background service: node dist/server/workers/continuous-blind-matching.js
  * - Or via PM2/systemd for continuous operation
