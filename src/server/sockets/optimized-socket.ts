@@ -4,8 +4,8 @@ import { createAdapter } from '@socket.io/redis-adapter'
 import { logger } from '../config/logger.js'
 import { verifyJwt } from '../utils/jwt.js'
 import { setTyping, getTyping } from '../services/chat.js'
-import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction, invalidateChatCaches, consumeViewOnceMessage } from '../repos/chat.repo.js'
-import { and, desc, eq, gt, inArray, ne, notExists, notInArray, or, sql } from 'drizzle-orm'
+import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction, invalidateChatCaches, consumeViewOnceMessage, getChatUnreadCount } from '../repos/chat.repo.js'
+import { and, desc, eq, gt, inArray, ne, notInArray, or, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import {
   blindDateMatches,
@@ -30,31 +30,18 @@ import { setupFriendRequestHandlers } from '../handlers/friendRequestHandler.js'
 import { setupBlindDatingHandlers } from '../handlers/blindDatingHandler.js'
 import { setupPromptMatchingHandlers } from '../handlers/promptMatchingHandler.js'
 import { setupJamHandlers, cleanupJamPresenceOnDisconnect } from '../handlers/jamHandler.js'
+import { markUserOnline, markUserOffline, isUserOnline, isUserActiveInChat, markChatActive, markChatInactive } from '../services/presence.service.js'
 import { Redis } from 'ioredis'
 
-// Helper function to calculate and emit unread count for a specific chat
+// Helper function to calculate and emit unread count for a specific chat.
+// getChatUnreadCount (chat.repo.ts) is the same deletion-aware query
+// computeUserInbox uses for the REST inbox -- this used to reimplement the
+// count inline WITHOUT the chat-cleared cutoff, so a message landing in a
+// chat the recipient had cleared could push a live badge count here that
+// disagreed with what their inbox actually showed.
 async function emitUnreadCountUpdate(chatId: string, userId: string) {
   try {
-    // Messages from others in this chat that this user has no 'read' receipt for
-    const [row] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(messages)
-      .where(and(
-        eq(messages.chatId, chatId),
-        eq(messages.isDeleted, false),
-        ne(messages.senderId, userId),
-        notExists(
-          db.select({ one: sql`1` })
-            .from(messageReceipts)
-            .where(and(
-              eq(messageReceipts.messageId, messages.id),
-              eq(messageReceipts.userId, userId),
-              eq(messageReceipts.status, 'read'),
-            ))
-        ),
-      ))
-
-    const unreadCount = row?.count ?? 0
+    const unreadCount = await getChatUnreadCount(chatId, userId)
     emitToUser(userId, 'chat:unread_count', { chatId, unreadCount })
   } catch (error) {
     console.error('Error calculating/emitting unread count:', error)
@@ -75,14 +62,62 @@ async function fetchChatMemberIds(chatId: string): Promise<string[]> {
 // date, or an accepted-but-unrevealed meme-connect. Used everywhere the
 // server pushes a sender's name/photo out-of-band (push notifications,
 // reaction events) to keep those channels from leaking an identity the
-// in-chat UI is still masking.
+// in-chat UI is still masking. Cached (short TTL, same safety-net posture as
+// isBlocked/areFriends above): this used to be 2 uncached queries run on
+// every reaction AND, via a separately-duplicated copy of this exact same
+// logic, again on every message send's notification block -- both on the
+// hottest paths in the system.
 async function isChatStillAnonymous(chatId: string): Promise<boolean> {
+  const cacheKey = `chatanon:${chatId}`
+  const cached = await redis.get(cacheKey).catch(() => null)
+  if (cached !== null) return cached === '1'
+
   const [blindMatch] = await db
     .select({ id: blindDateMatches.id })
     .from(blindDateMatches)
     .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
     .limit(1)
-  if (blindMatch) return true
+
+  let isAnonymous = !!blindMatch
+  if (!isAnonymous) {
+    const [memeConnectMatch] = await db
+      .select({ id: memeConnectRequests.id })
+      .from(memeConnectRequests)
+      .where(and(
+        eq(memeConnectRequests.chatId, chatId),
+        eq(memeConnectRequests.status, 'accepted'),
+        sql`${memeConnectRequests.revealedAt} IS NULL`,
+      ))
+      .limit(1)
+    isAnonymous = !!memeConnectMatch
+  }
+
+  await redis.setex(cacheKey, 30, isAnonymous ? '1' : '0').catch(() => {})
+  return isAnonymous
+}
+
+// Same underlying check as isChatStillAnonymous, but split by type -- the
+// message-send notification block (unlike the reaction handler) needs to
+// know specifically whether it's a blind-date chat for the
+// `isBlindDateChat` field it emits, not just "is this chat anonymous at
+// all". Cached the same way, under its own key so a chat that's neither
+// type doesn't need two separate cache lookups.
+async function getChatAnonymityFlags(chatId: string): Promise<{ isBlindDateChat: boolean; isMemeConnectChat: boolean }> {
+  const cacheKey = `chatanontype:${chatId}`
+  const cached = await redis.get(cacheKey).catch(() => null)
+  if (cached !== null) {
+    try {
+      return JSON.parse(cached)
+    } catch {
+      // fall through to recompute on a corrupt cache entry
+    }
+  }
+
+  const [blindMatch] = await db
+    .select({ id: blindDateMatches.id })
+    .from(blindDateMatches)
+    .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
+    .limit(1)
 
   const [memeConnectMatch] = await db
     .select({ id: memeConnectRequests.id })
@@ -93,7 +128,10 @@ async function isChatStillAnonymous(chatId: string): Promise<boolean> {
       sql`${memeConnectRequests.revealedAt} IS NULL`,
     ))
     .limit(1)
-  return !!memeConnectMatch
+
+  const flags = { isBlindDateChat: !!blindMatch, isMemeConnectChat: !!memeConnectMatch }
+  await redis.setex(cacheKey, 30, JSON.stringify(flags)).catch(() => {})
+  return flags
 }
 
 // When a user (re)connects, mark every message they received while offline as
@@ -195,6 +233,15 @@ const redis = new Redis({
   port: parseInt(process.env.REDIS_PORT || '6379'),
   maxRetriesPerRequest: 3,
   lazyConnect: true,
+  // The highest-traffic Redis client in the system -- during a Redis blip
+  // (redis-deployment.yaml documents Redis as a deliberate single-replica
+  // SPOF, so this isn't hypothetical), the default offline queue would
+  // buffer every rate-limit check and cache read/write from every pod in
+  // process memory indefinitely instead of failing fast, growing memory
+  // pressure everywhere simultaneously during exactly the window you'd
+  // least want that. Fail fast instead; every call site here already treats
+  // a Redis error as a cache-miss/fail-open, not a hard failure.
+  enableOfflineQueue: false,
 })
 // ioredis doesn't crash the process without this (unlike pg.Pool), but an
 // error was previously invisible -- this is the highest-traffic Redis client
@@ -514,6 +561,13 @@ export async function initOptimizedSocket(server: Server) {
         retryStrategy: (times) => Math.min(times * 100, 3000),
         enableReadyCheck: true,
         lazyConnect: false, // Connect immediately
+        // Used by every cross-pod broadcast on every pod -- during a Redis
+        // blip, the default offline queue would buffer every publish in
+        // process memory indefinitely instead of failing fast, growing
+        // memory pressure on every pod simultaneously during exactly the
+        // outage window you'd least want that. subClient inherits this via
+        // duplicate() below.
+        enableOfflineQueue: false,
       })
       const subClient = pubClient.duplicate()
       
@@ -598,7 +652,6 @@ export async function initOptimizedSocket(server: Server) {
   })
 
   const roomCounts = new Map<string, number>() // key: chat:{chatId} -> count
-  const activeCounts = new Map<string, number>() // key: chat:{chatId} -> active viewers (foreground)
 
   function bumpRoom(io: IOServer, room: string, delta: number) {
     const prev = roomCounts.get(room) || 0
@@ -610,35 +663,11 @@ export async function initOptimizedSocket(server: Server) {
     // disconnect via broadcastPresenceToPartners and answered on chat:join.
   }
 
-  function bumpActive(io: IOServer, room: string, delta: number) {
-    const prev = activeCounts.get(room) || 0
-    const next = Math.max(0, prev + delta)
-    activeCounts.set(room, next)
-    const chatId = room.startsWith('chat:') ? room.slice(5) : undefined
-    if (chatId) {
-      const isActive = next > 0
-      io.to(room).emit('chat:presence:active', { chatId, isActive })
-    }
-  }
-
-  // Whether `userId` currently has this specific chat screen open on ANY of
-  // their connected devices (tracked per-socket via chat:active/chat:inactive
-  // — see those handlers below). activeCounts is a per-room aggregate that
-  // can't tell the two participants apart (the sender's own socket keeps a
-  // 1-on-1 chat's count >= 1 while they're mid-conversation), so push-
-  // notification gating needs to check the RECIPIENT's own sockets directly.
-  function isUserActiveInChat(io: IOServer, userId: string, chatId: string): boolean {
-    const room = io.sockets.adapter.rooms.get(userId)
-    if (!room) return false
-    for (const socketId of room) {
-      const sock = io.sockets.sockets.get(socketId)
-      const activeChats = (sock?.data as any)?.activeChats
-      if (Array.isArray(activeChats) && activeChats.includes(chatId)) {
-        return true
-      }
-    }
-    return false
-  }
+  // "chat-active" (foreground) presence and "is this user online at all"
+  // presence are now tracked in Redis (presence.service.ts) instead of a
+  // pod-local Map -- see that module's header comment for why: the old
+  // per-pod counters/`.sockets.sockets.get()` walk silently went wrong the
+  // moment a user's sockets spanned more than one pod.
 
   // Push notification body text lives in pushNotificationService
   // (describeMessageForNotification) so the socket path and the REST chat
@@ -684,10 +713,16 @@ export async function initOptimizedSocket(server: Server) {
         )
 
         // Announce online presence to chat partners on the user's FIRST live
-        // connection (connectionCounts was already incremented in auth mw).
-        if ((connectionCounts.get(user.id) || 0) === 1) {
-          broadcastPresenceToPartners(user.id, true).catch(() => {})
-        }
+        // connection cluster-wide. Uses the Redis presence set (not the local
+        // connectionCounts Map, which was already incremented in the auth mw
+        // but only counts THIS pod's connections) so a user connected to two
+        // different pods doesn't get a duplicate "online" broadcast, and so
+        // this is accurate when their other live socket is on another pod.
+        markUserOnline(user.id, socket.id).then((count) => {
+          if (count === 1) {
+            broadcastPresenceToPartners(user.id, true).catch(() => {})
+          }
+        }).catch((err) => logger.error({ err, userId: user.id }, 'Failed to mark user online'))
       } catch (error) {
         logger.error({ error, userId: user.id }, 'Failed to join user room')
       }
@@ -963,20 +998,30 @@ export async function initOptimizedSocket(server: Server) {
     // Chat: active/inactive indicators for "currently viewing this chat" status
     socket.on('chat:active', ({ chatId }: { chatId: string }) => {
       resetTimeout()
-      if (!chatId) return
-      const room = `chat:${chatId}`
-      bumpActive(io, room, 1)
+      if (!chatId || !userId) return
+
+      // Cluster-wide "does this user have this chat foregrounded" presence
+      // (presence.service.ts) -- replaces the old pod-local activeCounts Map,
+      // which couldn't see a second device's chat:active if it landed on a
+      // different pod.
+      markChatActive(chatId, userId, socket.id).then((total) => {
+        if (total !== null) {
+          io.to(`chat:${chatId}`).emit('chat:presence:active', { chatId, isActive: total > 0 })
+        }
+      }).catch((err) => logger.error({ err, chatId, userId }, 'Failed to mark chat active'))
 
       // Track active chats per socket so push service can avoid notifying
-      // when the user is already inside a specific conversation. Stored as a
-      // plain string[] rather than a Set: socket.data must stay
-      // JSON-serializable for io.fetchSockets()'s cross-pod path (the Redis
-      // adapter JSON.stringifies each remote socket's .data to answer a
-      // cross-pod query) -- a Set silently serializes to "{}" instead of
-      // throwing, so this used to silently break the "is the recipient
-      // already viewing this chat" check (pushNotificationService.ts)
-      // whenever sender and recipient were on different pods, sending a
-      // redundant push to someone actively looking at the conversation.
+      // when the user is already inside a specific conversation, and so this
+      // socket's own presence.service entries can be cleaned up on disconnect
+      // without a Redis SCAN. Stored as a plain string[] rather than a Set:
+      // socket.data must stay JSON-serializable for io.fetchSockets()'s
+      // cross-pod path (the Redis adapter JSON.stringifies each remote
+      // socket's .data to answer a cross-pod query) -- a Set silently
+      // serializes to "{}" instead of throwing, so this used to silently
+      // break the "is the recipient already viewing this chat" check
+      // (pushNotificationService.ts) whenever sender and recipient were on
+      // different pods, sending a redundant push to someone actively looking
+      // at the conversation.
       try {
         const data: any = socket.data || {}
         if (!Array.isArray(data.activeChats)) {
@@ -993,9 +1038,13 @@ export async function initOptimizedSocket(server: Server) {
 
     socket.on('chat:inactive', ({ chatId }: { chatId: string }) => {
       resetTimeout()
-      if (!chatId) return
-      const room = `chat:${chatId}`
-      bumpActive(io, room, -1)
+      if (!chatId || !userId) return
+
+      markChatInactive(chatId, userId, socket.id).then((total) => {
+        if (total !== null) {
+          io.to(`chat:${chatId}`).emit('chat:presence:active', { chatId, isActive: total > 0 })
+        }
+      }).catch((err) => logger.error({ err, chatId, userId }, 'Failed to mark chat inactive'))
 
       try {
         const data: any = socket.data || {}
@@ -1420,7 +1469,7 @@ export async function initOptimizedSocket(server: Server) {
         const members = await getCachedChatMembers(chatId)
         const otherId = (members || []).find(id => id !== userId)
         if (otherId) {
-          const otherOnline = (connectionCounts.get(otherId) || 0) > 0
+          const otherOnline = await isUserOnline(otherId)
           socket.emit('chat:presence', {
             chatId,
             userId: otherId,
@@ -1603,7 +1652,9 @@ export async function initOptimizedSocket(server: Server) {
           mediaType,
           thumbnail,
           replyToId,
-          isViewOnce
+          isViewOnce,
+          undefined,
+          memberIds
         )
         const msg = {
           id: row.id,
@@ -1651,25 +1702,11 @@ export async function initOptimizedSocket(server: Server) {
           // accepted-but-unrevealed meme-connect chat -- both need the
           // sender's name AND photo masked in the push notification,
           // otherwise the notification leaks the identity the in-chat UI is
-          // still hiding.
-          const [blindMatch] = await db
-            .select({ id: blindDateMatches.id })
-            .from(blindDateMatches)
-            .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
-            .limit(1)
-
-          const [memeConnectMatch] = await db
-            .select({ id: memeConnectRequests.id })
-            .from(memeConnectRequests)
-            .where(and(
-              eq(memeConnectRequests.chatId, chatId),
-              eq(memeConnectRequests.status, 'accepted'),
-              sql`${memeConnectRequests.revealedAt} IS NULL`,
-            ))
-            .limit(1)
-
-          const isBlindDateChat = !!blindMatch
-          const isMemeConnectChat = !!memeConnectMatch
+          // still hiding. getChatAnonymityFlags is cached (and shares its
+          // underlying logic with isChatStillAnonymous, used by the reaction
+          // handler) -- this used to be its own separate pair of uncached
+          // queries duplicating that same check on every single message send.
+          const { isBlindDateChat, isMemeConnectChat } = await getChatAnonymityFlags(chatId)
           const isAnonymousChat = isBlindDateChat || isMemeConnectChat
 
           // Use masked name for blind date / meme-connect chats, real name otherwise
@@ -1712,7 +1749,7 @@ export async function initOptimizedSocket(server: Server) {
                   // Record the receipt and tell the sender so the tick goes from
                   // single (sent) to double-grey (delivered) without relying on
                   // the client to round-trip a delivery event.
-                  if ((connectionCounts.get(memberId) || 0) > 0) {
+                  if (await isUserOnline(memberId)) {
                     try {
                       await insertReceipt(msg.id, memberId, 'delivered')
                       io.to(userId).emit('chat:message:delivery_receipt', {
@@ -1736,7 +1773,7 @@ export async function initOptimizedSocket(server: Server) {
                   // — but only if the recipient doesn't already have this chat
                   // open on some device; otherwise they'd get a redundant push
                   // for a message they're already looking at in real time.
-                  if (!isUserActiveInChat(io, memberId, chatId)) {
+                  if (!(await isUserActiveInChat(memberId, chatId))) {
                     import('../services/pushNotificationService.js').then(({ PushNotificationService, describeMessageForNotification }) => {
                       PushNotificationService.sendMessageNotification(
                         memberId,
@@ -1746,8 +1783,8 @@ export async function initOptimizedSocket(server: Server) {
                         msg.id
                       ).then(async (pushSent) => {
                         // Recipient has no live socket (app closed/backgrounded), so the
-                        // earlier connectionCounts-based delivered receipt above never
-                        // fired. A successful push send is the best signal we have that
+                        // earlier presence-based delivered receipt above never fired.
+                        // A successful push send is the best signal we have that
                         // the message reached the recipient's device — mark it delivered
                         // now so the sender's tick upgrades from single to double-grey
                         // instead of being stuck on "sent" until the recipient reopens
@@ -2241,12 +2278,28 @@ export async function initOptimizedSocket(server: Server) {
 
       if (userId) {
         cleanupJamPresenceOnDisconnect(io, socket, userId)
-      }
 
-      // If this was the user's LAST live connection, tell chat partners they're
-      // offline. (untrackConnection already decremented/removed the count.)
-      if (userId && (connectionCounts.get(userId) || 0) === 0) {
-        broadcastPresenceToPartners(userId, false).catch(() => {})
+        // Clear this socket out of the Redis chat-active presence store for
+        // every chat it had foregrounded (tracked locally on socket.data
+        // precisely so this cleanup doesn't need a Redis SCAN), and tell
+        // chat partners this user is offline if this was their LAST live
+        // connection cluster-wide.
+        const activeChats: string[] = Array.isArray((socket.data as any)?.activeChats)
+          ? (socket.data as any).activeChats
+          : []
+        for (const chatId of activeChats) {
+          markChatInactive(chatId, userId, socket.id).then((total) => {
+            if (total !== null) {
+              io.to(`chat:${chatId}`).emit('chat:presence:active', { chatId, isActive: total > 0 })
+            }
+          }).catch((err) => logger.error({ err, chatId, userId }, 'Failed to mark chat inactive on disconnect'))
+        }
+
+        markUserOffline(userId, socket.id).then((count) => {
+          if (count === 0) {
+            broadcastPresenceToPartners(userId, false).catch(() => {})
+          }
+        }).catch((err) => logger.error({ err, userId }, 'Failed to mark user offline'))
       }
 
       // Clean up any stale matchmaking state for disconnected user

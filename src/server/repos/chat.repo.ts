@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNull, lt, ne, notExists, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import { chats, chatMembers, messages, chatDeletions, profiles, messageReceipts, messageReactions, chatMuteSettings } from '../db/schema.js'
 import { cache, cacheKeys } from '../services/cache.js'
@@ -40,6 +40,46 @@ export async function invalidateChatCaches(chatId: string, memberIds?: string[])
 /** Invalidate a single user's inbox cache (e.g. when their unread count changes). */
 export async function invalidateInbox(userId: string): Promise<void> {
   await cache.incr(cacheKeys.inboxVersion(userId))
+}
+
+/**
+ * Unread count for a single chat, respecting the same "cleared chat" cutoff
+ * computeUserInbox() applies below (messages sent before the user's
+ * chatDeletions.deletedAt don't count). This used to be duplicated inline in
+ * optimized-socket.ts's emitUnreadCountUpdate WITHOUT that cutoff check, so
+ * a message arriving in a chat the recipient had cleared could push a live
+ * badge count that disagreed with what a subsequent inbox fetch showed.
+ * Kept as a targeted single-chat query (not routed through the cached
+ * getUserInbox) since this fires on every message send and only needs one
+ * chat's count, not the whole inbox.
+ */
+export async function getChatUnreadCount(chatId: string, userId: string): Promise<number> {
+  const [deletion] = await db.select({ deletedAt: chatDeletions.deletedAt })
+    .from(chatDeletions)
+    .where(and(eq(chatDeletions.chatId, chatId), eq(chatDeletions.userId, userId)))
+    .limit(1)
+  const deletedAt = deletion?.deletedAt
+
+  const conditions = [eq(messages.chatId, chatId), eq(messages.isDeleted, false), ne(messages.senderId, userId)]
+  if (deletedAt) conditions.push(gt(messages.createdAt, deletedAt))
+
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(messages)
+    .where(and(
+      ...conditions,
+      notExists(
+        db.select({ one: sql`1` })
+          .from(messageReceipts)
+          .where(and(
+            eq(messageReceipts.messageId, messages.id),
+            eq(messageReceipts.userId, userId),
+            eq(messageReceipts.status, 'read'),
+          ))
+      ),
+    ))
+
+  return row?.count ?? 0
 }
 
 export interface Chat {
@@ -196,14 +236,37 @@ async function computeUserInbox(userId: string) {
 
   const deletionMap = new Map(deletionRows.map((d) => [d.chatId, d.deletedAt]))
 
-  // --- Last message per chat (parallel instead of sequential) ---
-  const lastMessages = await Promise.all(userChats.map(async (chat) => {
+  // --- Last message per chat: one query, not N ---
+  // `DISTINCT ON (chat_id) ... ORDER BY chat_id, created_at DESC` gets the
+  // single latest (non-deleted) message per chat in one round trip using the
+  // existing (chat_id, created_at) index, replacing what used to be N
+  // parallel per-chat queries (still N round trips even though they ran
+  // concurrently). The per-chat "cleared chat" cutoff is applied after the
+  // fact in JS below rather than in the query itself (each chat can have a
+  // different deletedAt, which doesn't fit a single DISTINCT ON): if the
+  // globally-latest message for a chat is at or before that chat's cutoff,
+  // then by definition every message in that chat is at or before it too, so
+  // the result is the same as if the cutoff had been applied in SQL --
+  // just null it out instead of using it.
+  const latestPerChat = chatIds.length
+    ? await db.selectDistinctOn([messages.chatId])
+        .from(messages)
+        .where(and(inArray(messages.chatId, chatIds), eq(messages.isDeleted, false)))
+        .orderBy(messages.chatId, desc(messages.createdAt))
+    : []
+  const latestByChat = new Map(latestPerChat.map((row) => [row.chatId, row]))
+
+  const lastMessages = userChats.map((chat) => {
     const deletedAt = deletionMap.get(chat.id)
-    const conditions = [eq(messages.chatId, chat.id), eq(messages.isDeleted, false)]
-    if (deletedAt) conditions.push(gt(messages.createdAt, deletedAt))
-    const rows = await db.select().from(messages).where(and(...conditions)).orderBy(desc(messages.createdAt)).limit(1)
-    return { chat, deletedAt, lastMessage: rows[0] ? rowToChatMessage(rows[0]) : null }
-  }))
+    const row = latestByChat.get(chat.id)
+    // Date(...), not a raw string >: these columns are `timestamp(..., {
+    // mode: 'string' })`, i.e. raw Postgres text, not guaranteed to be
+    // lexicographically comparable -- same reasoning already applied to the
+    // deletion cutoff in the unread-count block below (`new Date(m.createdAt)
+    // > new Date(deletedAt)`), mirrored here for consistency.
+    const visibleRow = row && (!deletedAt || new Date(row.createdAt) > new Date(deletedAt)) ? row : undefined
+    return { chat, deletedAt, lastMessage: visibleRow ? rowToChatMessage(visibleRow) : null }
+  })
 
   // Keep only chats that should appear in the inbox (cleared+empty chats drop out).
   const visible = lastMessages.filter(({ deletedAt, lastMessage }) => !(deletedAt && !lastMessage))
@@ -416,7 +479,14 @@ export async function insertMessage(
   thumbnail?: string,
   replyToId?: string,
   isViewOnce?: boolean,
-  sharedMemeId?: string
+  sharedMemeId?: string,
+  // Optional: pass this when the caller already resolved the chat's member
+  // list moments earlier (e.g. optimized-socket.ts's chat:message handler
+  // via getCachedChatMembers) so invalidateChatCaches below doesn't have to
+  // re-fetch it from the DB again on every single message send. Callers that
+  // don't have it handy (REST routes) can omit it -- invalidateChatCaches
+  // fetches it itself when not given.
+  memberIds?: string[]
 ): Promise<ChatMessage> {
   // Insert the message
   const messageData: typeof messages.$inferInsert = {
@@ -442,7 +512,7 @@ export async function insertMessage(
   } catch {}
 
   // A new message changes both the chat history and every member's inbox.
-  await invalidateChatCaches(chatId)
+  await invalidateChatCaches(chatId, memberIds)
 
   return stripViewOnceMedia(data)
 }

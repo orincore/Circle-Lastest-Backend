@@ -1,6 +1,7 @@
 import { Server as IOServer, Socket } from 'socket.io'
 import { logger } from '../config/logger.js'
 import { findRecommendation } from '../services/youtube.service.js'
+import { isUserPresentInJam as isUserPresentInJamRedis, markJamPresence } from '../services/presence.service.js'
 import {
   addToQueue,
   computeLivePositionMs,
@@ -26,12 +27,18 @@ import {
  * in optimized-socket.ts) rather than a separate jam room — a jam session is
  * always scoped to a single 1:1 chat.
  *
- * Presence gating mirrors the `chat:active`/`chat:inactive` -> `activeChats`
- * pattern in optimized-socket.ts (see isUserActiveInChat there), but is
- * reimplemented here against a parallel `activeJamSessions` array on
- * socket.data (kept as a plain string[], not a Set -- socket.data must stay
- * JSON-serializable for io.fetchSockets()'s cross-pod path), since that
- * helper is private to the other module's closure.
+ * Presence gating mirrors the `chat:active`/`chat:inactive` pattern in
+ * optimized-socket.ts, and both now share the same Redis-backed presence
+ * store (presence.service.ts) rather than each keeping a pod-local
+ * approximation -- `io.sockets.sockets.get(socketId)` only resolves sockets
+ * connected to the CURRENT pod, so the old per-socket-data-walk version of
+ * this silently returned "not present" for a participant whose live socket
+ * happened to be on a different pod, incorrectly refusing to let jam
+ * playback start. `activeJamSessions` on socket.data is kept as a plain
+ * string[] purely as this socket's own local bookkeeping, so
+ * cleanupJamPresenceOnDisconnect knows which Redis entries to remove
+ * without a Redis SCAN (a Set would still break io.fetchSockets()'s
+ * cross-pod JSON serialization the same way activeChats did).
  * Unlike chat presence, jam presence is also cleaned up on disconnect (see
  * cleanupJamPresenceOnDisconnect) — a stuck "present" flag after an app kill
  * would mean playback never auto-pauses, which matters much more here than
@@ -42,21 +49,11 @@ function room(chatId: string) {
   return `chat:${chatId}`
 }
 
-function isUserPresentInJam(io: IOServer, userId: string, sessionId: string): boolean {
-  const userRoom = io.sockets.adapter.rooms.get(userId)
-  if (!userRoom) return false
-  for (const socketId of userRoom) {
-    const sock = io.sockets.sockets.get(socketId)
-    const active = (sock?.data as any)?.activeJamSessions
-    if (Array.isArray(active) && active.includes(sessionId)) return true
-  }
-  return false
-}
-
-async function computeBothPresent(io: IOServer, session: JamSession): Promise<boolean> {
+async function computeBothPresent(session: JamSession): Promise<boolean> {
   const memberIds = await getChatMemberIds(session.chat_id)
   if (memberIds.length < 2) return false
-  return memberIds.every((id) => isUserPresentInJam(io, id, session.id))
+  const presentFlags = await Promise.all(memberIds.map((id) => isUserPresentInJamRedis(session.id, id)))
+  return presentFlags.every(Boolean)
 }
 
 async function handlePresenceChange(
@@ -69,7 +66,9 @@ async function handlePresenceChange(
 ) {
   // Stored as a plain string[] rather than a Set: socket.data must stay
   // JSON-serializable for io.fetchSockets()'s cross-pod path (see the same
-  // fix applied to activeChats in optimized-socket.ts).
+  // fix applied to activeChats in optimized-socket.ts). This is purely this
+  // socket's own local bookkeeping of which sessions it's told Redis it's
+  // present in, so cleanupJamPresenceOnDisconnect can clean up without a scan.
   const data: any = socket.data || {}
   if (!Array.isArray(data.activeJamSessions)) data.activeJamSessions = []
   const wasPresent = data.activeJamSessions.includes(sessionId)
@@ -79,6 +78,14 @@ async function handlePresenceChange(
     data.activeJamSessions = data.activeJamSessions.filter((id: string) => id !== sessionId)
   }
   socket.data = data
+
+  // Must be awaited, not fire-and-forget: computeBothPresent() below (and the
+  // caller's own immediate re-check in jam:playback:play) reads this exact
+  // Redis state right after handlePresenceChange returns -- firing this
+  // without waiting would race the read against the write and could still
+  // see the pre-update state. (markJamPresence never rejects -- it catches
+  // and logs internally -- so this can't throw here.)
+  await markJamPresence(sessionId, userId, socket.id, isPresent)
 
   setParticipantPresence(sessionId, userId, isPresent).catch((err) =>
     logger.error({ err, sessionId, userId }, 'Failed to persist jam presence')
@@ -94,7 +101,7 @@ async function handlePresenceChange(
   const r = room(session.chat_id)
   io.to(r).emit('jam:presence', { sessionId, userId, isPresent })
 
-  const bothPresent = await computeBothPresent(io, session)
+  const bothPresent = await computeBothPresent(session)
   if (!bothPresent && session.is_playing) {
     const finalPositionMs = typeof positionMs === 'number' ? positionMs : computeLivePositionMs(session)
     await setPlaybackState(sessionId, { isPlaying: false, positionMs: finalPositionMs, pausedForPresence: true })
@@ -184,7 +191,7 @@ export function setupJamHandlers(io: IOServer, socket: Socket, userId: string) {
       // jam:presence when the flag actually flips, correcting any stale display on their end.)
       await handlePresenceChange(io, socket, userId, sessionId, true)
 
-      const bothPresent = await computeBothPresent(io, session)
+      const bothPresent = await computeBothPresent(session)
       if (!bothPresent) {
         socket.emit('jam:error', { sessionId, code: 'not_both_present', message: 'Both listeners must be present to play' })
         return

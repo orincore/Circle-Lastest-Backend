@@ -2,6 +2,7 @@ import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import { blindDateBlockedMessages, blindDateDailyQueue, blindDateMatches, blindDatingSettings, chatMembers, friendships, profiles } from '../db/schema.js'
 import { logger } from '../config/logger.js'
+import { cache } from './cache.js'
 import { ensureChatForUsers, getRecentChatTextMessagesForModeration } from '../repos/chat.repo.js'
 import { CompatibilityService } from './compatibility.service.js'
 import { ContentFilterService, type PersonalInfoAnalysis } from './ai/content-filter.service.js'
@@ -789,15 +790,32 @@ export class BlindDatingService {
   }
 
   /**
-   * Check if a chat is a blind date chat
+   * Check if a chat is a blind date chat. This used to be a plain uncached
+   * query, but it's called twice per message send (once to gate masking,
+   * once again in optimized-socket.ts's post-insert notification block) --
+   * on the hot path of every single message in the app, not just blind-date
+   * ones. A match's chat only transitions in/out of ['active','revealed']
+   * at a handful of well-defined points (match creation, reveal, end/expire)
+   * across a large surface of call sites in this file, so rather than
+   * chase every status-write site for exact invalidation (real risk of
+   * missing one and permanently caching a stale answer), this uses a short
+   * TTL as the correctness backstop -- same "cache is best-effort, TTL is
+   * the safety net" posture as cache.ts's own header comment, capping any
+   * staleness to well under the window a user would notice.
    */
   static async isBlindDateChat(chatId: string): Promise<boolean> {
+    const cacheKey = `chattype:blinddate:${chatId}`
+    const cached = await cache.getJSON<boolean>(cacheKey)
+    if (cached !== null) return cached
+
     try {
       const rows = await db.select({ id: blindDateMatches.id }).from(blindDateMatches)
         .where(and(eq(blindDateMatches.chatId, chatId), inArray(blindDateMatches.status, ['active', 'revealed'])))
         .limit(1)
 
-      return rows.length > 0
+      const isBlindDate = rows.length > 0
+      await cache.setJSON(cacheKey, isBlindDate, 60)
+      return isBlindDate
     } catch (error) {
       logger.error({ error, chatId }, 'Error checking blind date chat')
       return false

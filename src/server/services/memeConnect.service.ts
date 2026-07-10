@@ -4,6 +4,7 @@ import { memeConnectRequests, friendships, memeComments } from '../db/schema.js'
 import { ensureChatForUsers } from '../repos/chat.repo.js'
 import { NotificationService } from './notificationService.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
+import { cache } from './cache.js'
 
 // In-app + push notification for meme-connect events. Deliberately carries
 // NO sender_id and no name: meme comments are anonymous, so the notification
@@ -238,13 +239,28 @@ export async function requestReveal(requestId: string, userId: string): Promise<
   return updated
 }
 
+// Called twice per message send (once to gate masking, once again in
+// optimized-socket.ts's post-insert notification block) on the hot path of
+// EVERY chat message, not just meme-connect ones -- was previously an
+// uncached query every time. A meme_connect_requests row's chat_id, once
+// set, never changes (rows aren't deleted -- see the index migration
+// comment for this table), so this cache can't actually go stale in
+// practice; the short TTL below is just the same "safety net, not the
+// mechanism" posture used for isBlindDateChat rather than a sign this needs
+// active invalidation anywhere.
 export async function isMemeConnectChat(chatId: string): Promise<boolean> {
+  const cacheKey = `chattype:memeconnect:${chatId}`
+  const cached = await cache.getJSON<boolean>(cacheKey)
+  if (cached !== null) return cached
+
   const [row] = await db
     .select({ id: memeConnectRequests.id })
     .from(memeConnectRequests)
     .where(and(eq(memeConnectRequests.chatId, chatId)))
     .limit(1)
-  return !!row
+  const isMemeConnect = !!row
+  await cache.setJSON(cacheKey, isMemeConnect, 60)
+  return isMemeConnect
 }
 
 async function createFriendshipIfMissing(userA: string, userB: string): Promise<boolean> {

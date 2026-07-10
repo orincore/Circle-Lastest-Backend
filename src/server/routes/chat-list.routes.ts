@@ -1,14 +1,11 @@
 import { Router } from 'express'
 import { requireAuth, type AuthRequest } from '../middleware/auth.js'
-import { and, eq, gt, inArray, ne, notExists, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import {
   blindDateMatches,
-  chatDeletions,
   chatUserSettings,
   memeConnectRequests,
-  messageReceipts,
-  messages,
   profiles,
 } from '../db/schema.js'
 import { getUserInbox } from '../repos/chat.repo.js'
@@ -45,50 +42,16 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     }
 
     // Optionally load UNREAD counts (messages from others without a read
-    // receipt by this user). Previously this counted ALL messages in the chat,
-    // which made every badge wrong — so the client had it disabled and badges
-    // were 0 on launch until a realtime event arrived.
+    // receipt by this user). getUserInbox() above already computed these --
+    // via computeUserInbox's batched, deletion-aware, Redis-cached query --
+    // so this used to be a needless full second computation: a plain
+    // sequential `for` loop doing 2 more DB round trips PER CHAT (100 serial
+    // queries for a 50-chat inbox), reimplementing the same logic with its
+    // own separate (and previously inconsistent) deletion-cutoff handling.
+    // Just reuse the numbers already sitting on `inbox`.
     let countsMap = new Map<string, number>()
-    if (includeCounts && chatIds.length > 0) {
-      for (const chatId of chatIds) {
-        try {
-          // Count messages from others (post-clear, not deleted) that this
-          // user has no 'read' receipt for.
-          const [deletion] = await db
-            .select({ deletedAt: chatDeletions.deletedAt })
-            .from(chatDeletions)
-            .where(and(eq(chatDeletions.chatId, chatId), eq(chatDeletions.userId, userId)))
-            .limit(1)
-
-          const conditions = [
-            eq(messages.chatId, chatId),
-            eq(messages.isDeleted, false),
-            ne(messages.senderId, userId),
-            notExists(
-              db.select({ one: sql`1` })
-                .from(messageReceipts)
-                .where(and(
-                  eq(messageReceipts.messageId, messages.id),
-                  eq(messageReceipts.userId, userId),
-                  eq(messageReceipts.status, 'read'),
-                ))
-            ),
-          ]
-          if (deletion?.deletedAt) {
-            conditions.push(gt(messages.createdAt, deletion.deletedAt))
-          }
-
-          const [row] = await db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(messages)
-            .where(and(...conditions))
-
-          countsMap.set(chatId, row?.count ?? 0)
-        } catch (countError) {
-          console.error('chat-list unread count error for chat', chatId, countError)
-          countsMap.set(chatId, 0)
-        }
-      }
+    if (includeCounts) {
+      countsMap = new Map(inbox.map((i) => [i.chat.id, i.unreadCount]))
     }
 
     // Determine which chats are blind date chats with an ACTIVE match (ongoing, not yet revealed)
