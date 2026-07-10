@@ -13,11 +13,11 @@ import {
 } from '../db/schema.js'
 import { CirclePointsService } from '../services/circle-points.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
-import { 
-  getUserInbox, 
-  getChatMessages, 
-  insertMessage, 
-  editMessage, 
+import {
+  getUserInbox,
+  getChatMessages,
+  insertMessage,
+  editMessage,
   deleteMessage,
   addReaction,
   toggleReaction,
@@ -27,7 +27,9 @@ import {
   getChatMuteSetting,
   setChatMuteSetting,
   isChatMuted,
-  ensureChatForUsers
+  ensureChatForUsers,
+  searchChatMessages,
+  getChatMessagesAround
 } from '../repos/chat.repo.js'
 
 const router = Router()
@@ -161,6 +163,57 @@ router.get('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
     updated_at: m.updated_at ? new Date(m.updated_at).toISOString() : m.updated_at,
   }))
   res.json({ messages })
+})
+
+// Full-history text search within a chat -- the in-chat search UI previously only
+// filtered whatever messages happened to already be loaded client-side via
+// pagination (~30-50 at a time), so anything scrolled past was unsearchable.
+router.get('/:chatId/messages/search', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const chatId = req.params.chatId
+    const userId = req.user!.id
+    const q = String(req.query.q ?? '').trim()
+    if (!q) return res.json({ messages: [] })
+
+    const [membership] = await db.select({ userId: chatMembers.userId }).from(chatMembers)
+      .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId))).limit(1)
+    if (!membership) return res.status(403).json({ error: 'Not a member of this chat' })
+
+    const limit = Math.min(parseInt(String(req.query.limit || '50'), 10) || 50, 100)
+    const list = await searchChatMessages(chatId, userId, q, limit)
+    const results = list.map((m: any) => ({
+      ...m,
+      created_at: m.created_at ? new Date(m.created_at).toISOString() : m.created_at,
+    }))
+    res.json({ messages: results })
+  } catch (error) {
+    console.error('Search chat messages error:', error)
+    res.status(500).json({ error: 'Failed to search messages' })
+  }
+})
+
+// A window of messages around a specific one, for hydrating a search result (or any
+// message id) that has scrolled outside the client's currently-loaded pagination window.
+router.get('/:chatId/messages/around/:messageId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId, messageId } = req.params
+    const userId = req.user!.id
+
+    const [membership] = await db.select({ userId: chatMembers.userId }).from(chatMembers)
+      .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId))).limit(1)
+    if (!membership) return res.status(403).json({ error: 'Not a member of this chat' })
+
+    const list = await getChatMessagesAround(chatId, userId, messageId)
+    const messagesOut = list.map((m: any) => ({
+      ...m,
+      created_at: m.created_at ? new Date(m.created_at).toISOString() : m.created_at,
+      updated_at: m.updated_at ? new Date(m.updated_at).toISOString() : m.updated_at,
+    }))
+    res.json({ messages: messagesOut })
+  } catch (error) {
+    console.error('Get messages around error:', error)
+    res.status(500).json({ error: 'Failed to load messages' })
+  }
 })
 
 router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
@@ -345,7 +398,12 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
             sharedMemeId: msg.shared_meme_id,
           }),
           chatId,
-          msg.id
+          msg.id,
+          // Don't reveal identity via the notification for still-anonymous
+          // blind-date chats -- name is already masked above; the avatar
+          // must be withheld the same way, not just the display name.
+          isBlindDateChat ? undefined : userId,
+          isBlindDateChat ? null : senderAvatar
         )
       } catch (pushError) {
         console.error('Failed to send push notification:', pushError)

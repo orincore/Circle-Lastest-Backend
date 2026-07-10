@@ -46,7 +46,9 @@ export type NotificationType =
   | 'meme_discovery'
   | 'birthday_self'
   | 'friend_birthday'
-  | 'weather_checkin';
+  | 'weather_checkin'
+  | 'jam_session_started'
+  | 'jam_session_left';
 
 export class NotificationService {
   /**
@@ -346,6 +348,52 @@ export class NotificationService {
       title: 'New Match!',
       message: `You matched with ${matchedUserName}`,
       data: { action: 'new_match' }
+    });
+  }
+
+  /**
+   * Notify the other chat participant that a jam session was just started for their chat.
+   */
+  static async notifyJamSessionStarted(recipientId: string, starterId: string, starterName: string, chatId: string): Promise<void> {
+    await this.createNotification({
+      recipient_id: recipientId,
+      sender_id: starterId,
+      type: 'jam_session_started',
+      title: '🎧 Jam Session',
+      message: `${starterName} started a Jamming session, waiting for you!`,
+      data: {
+        action: 'jam_session_started',
+        chatId,
+        senderId: starterId,
+        senderName: starterName,
+        screen: 'chat-conversation',
+        params: { id: chatId },
+      },
+    });
+  }
+
+  /**
+   * Notify a chat participant that the other member left/ended the jam session.
+   */
+  static async notifyJamSessionLeft(recipientId: string, leaverId: string, leaverName: string, chatId: string): Promise<void> {
+    await this.createNotification({
+      recipient_id: recipientId,
+      sender_id: leaverId,
+      type: 'jam_session_left',
+      title: '🎧 Jam Session',
+      message: `${leaverName} left the jamming session`,
+      data: {
+        action: 'jam_session_left',
+        chatId,
+        senderId: leaverId,
+        senderName: leaverName,
+        screen: 'chat-conversation',
+        params: { id: chatId },
+      },
+      // This fires for both participants (including the person who just
+      // tapped "end" themselves) -- their own client already knows they
+      // left, a push would be redundant noise for them.
+      push: recipientId !== leaverId,
     });
   }
 

@@ -631,7 +631,9 @@ router.post('/memes/:id/share', requireAuth, async (req: AuthRequest, res) => {
           senderName,
           describeMessageForNotification({ sharedMemeId: message.shared_meme_id }),
           chat_id,
-          message.id
+          message.id,
+          userId,
+          senderInfo?.profilePhotoUrl || null
         )
       } catch (pushError) {
         console.error('feed share push notification error:', pushError)

@@ -46,6 +46,14 @@ export interface PushNotificationData {
   sound?: string;
   badge?: number;
   priority?: 'default' | 'normal' | 'high';
+  /**
+   * Shows an image in the notification itself (e.g. the sender's avatar)
+   * instead of just the static app icon. Android renders this out of the
+   * box; iOS requires a Notification Service Extension to actually fetch
+   * and attach it (not currently configured in this app, so this field is
+   * effectively Android-only today) -- see Expo's `richContent` docs.
+   */
+  richContent?: { image: string };
 }
 
 export class PushNotificationService {
@@ -235,6 +243,9 @@ export class PushNotificationService {
         priority: notification.priority || 'high',
         channelId: 'default', // Android notification channel
       };
+      if (notification.richContent?.image) {
+        baseMessage.richContent = { image: notification.richContent.image };
+      }
       if (isIncomingCall) {
         baseMessage.categoryId = 'call';
       } else if (isNewMessage) {
@@ -308,7 +319,9 @@ export class PushNotificationService {
     senderName: string,
     messageText: string,
     chatId: string,
-    messageId: string
+    messageId: string,
+    senderId?: string,
+    senderAvatarUrl?: string | null
   ): Promise<boolean> {
     try {
       // If user is actively viewing this chat in the foreground, skip push
@@ -354,10 +367,17 @@ export class PushNotificationService {
           type: 'new_message',
           chatId,
           messageId,
+          senderId,
           senderName,
+          senderAvatar: senderAvatarUrl || undefined,
         },
         sound: 'default',
         priority: 'high',
+        // Only a plain HTTPS URL is usable here -- the anonymous-chat path
+        // passes a server-rendered blurred *data URI* instead (see callers),
+        // which would blow past Expo's push payload size limit, so callers
+        // must not forward that one through.
+        richContent: senderAvatarUrl ? { image: senderAvatarUrl } : undefined,
       });
     } catch (error) {
       logger.error({ error, recipientId }, 'Error sending message push notification');

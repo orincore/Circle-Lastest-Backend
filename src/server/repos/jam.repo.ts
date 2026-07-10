@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
-import { chatMembers, jamSessionParticipants, jamSessionQueue, jamSessions } from '../db/schema.js'
+import { chatMembers, jamSessionParticipants, jamSessionQueue, jamSessions, profiles } from '../db/schema.js'
 
 export interface JamQueueItem {
   id: string
@@ -96,6 +96,15 @@ export async function getOtherChatMemberId(chatId: string, userId: string): Prom
   const rows = await db.select({ userId: chatMembers.userId }).from(chatMembers)
     .where(and(eq(chatMembers.chatId, chatId), ne(chatMembers.userId, userId))).limit(1)
   return rows[0]?.userId ?? null
+}
+
+export async function getUserDisplayName(userId: string): Promise<string> {
+  const rows = await db.select({ firstName: profiles.firstName, lastName: profiles.lastName, username: profiles.username })
+    .from(profiles).where(eq(profiles.id, userId)).limit(1)
+  const p = rows[0]
+  if (!p) return 'Someone'
+  const full = `${p.firstName || ''} ${p.lastName || ''}`.trim()
+  return full || p.username || 'Someone'
 }
 
 export async function getActiveSessionForChat(chatId: string): Promise<JamSession | null> {

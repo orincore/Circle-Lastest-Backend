@@ -1780,7 +1780,15 @@ export async function initOptimizedSocket(server: Server) {
                         senderName, // Already masked for blind date
                         describeMessageForNotification(msg),
                         chatId,
-                        msg.id
+                        msg.id,
+                        // Withhold identity for still-anonymous chats -- and
+                        // even when not anonymous, `senderAvatar` above may be
+                        // a server-rendered blurred *data URI* rather than a
+                        // plain URL (see its own comment); richContent needs
+                        // a real HTTPS URL, so use the raw profile photo URL
+                        // directly rather than forwarding that variable.
+                        isAnonymousChat ? undefined : userId,
+                        isAnonymousChat ? null : (senderInfo?.profilePhotoUrl || null)
                       ).then(async (pushSent) => {
                         // Recipient has no live socket (app closed/backgrounded), so the
                         // earlier presence-based delivered receipt above never fired.

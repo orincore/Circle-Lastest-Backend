@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNull, lt, ne, notExists, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNull, lt, ne, notExists, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import { chats, chatMembers, messages, chatDeletions, profiles, messageReceipts, messageReactions, chatMuteSettings } from '../db/schema.js'
 import { cache, cacheKeys } from '../services/cache.js'
@@ -433,22 +433,107 @@ export async function getChatMessages(chatId: string, limit = 30, before?: strin
     },
   })
 
-  const rows = rowsRaw
+  const rows = mapMessageRowsWithReactions(rowsRaw)
+
+  if (cacheable) await cache.setJSON(histKey, rows, HISTORY_TTL)
+  return rows
+}
+
+function mapMessageRowsWithReactions(rowsRaw: Array<any>) {
+  return rowsRaw
     .map((m) => ({
       ...rowToChatMessage(m),
-      reactions: m.messageReactions.map((r) => ({
+      reactions: m.messageReactions.map((r: any) => ({
         id: r.id,
         message_id: m.id,
         user_id: r.userId,
         emoji: r.emoji,
         created_at: r.createdAt ?? '',
       })),
-      receipts: m.messageReceipts.map((r) => ({ user_id: r.userId, status: r.status })),
+      receipts: m.messageReceipts.map((r: any) => ({ user_id: r.userId, status: r.status })),
     }))
     .map(stripViewOnceMedia)
+}
 
-  if (cacheable) await cache.setJSON(histKey, rows, HISTORY_TTL)
+/** The per-user "cleared chat before X" cutoff applied to message queries, or undefined if none. */
+async function getClearedChatCutoff(chatId: string, userId?: string): Promise<string | undefined> {
+  if (!userId) return undefined
+  const delRows = await db.select({ deletedAt: chatDeletions.deletedAt }).from(chatDeletions)
+    .where(and(eq(chatDeletions.chatId, chatId), eq(chatDeletions.userId, userId))).limit(1)
+  return delRows[0]?.deletedAt
+}
+
+/** Escapes LIKE/ILIKE wildcard characters in user input so a search for e.g. "50%" or "a_b" matches literally. */
+function escapeLikePattern(input: string): string {
+  return input.replace(/[\\%_]/g, (ch) => `\\${ch}`)
+}
+
+/**
+ * Full-history text search within a chat (unlike getChatMessages, this is not limited to the
+ * most recent page/cache -- the in-chat search UI previously only filtered whatever messages
+ * happened to already be loaded client-side via pagination, so anything scrolled past was
+ * unsearchable). Applies the same soft-delete + per-user "cleared chat" filtering as history.
+ */
+export async function searchChatMessages(chatId: string, userId: string, query: string, limit = 50) {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  const deletedAfter = await getClearedChatCutoff(chatId, userId)
+  const whereConditions = [
+    eq(messages.chatId, chatId),
+    eq(messages.isDeleted, false),
+    ilike(messages.text, `%${escapeLikePattern(trimmed)}%`),
+  ]
+  if (deletedAfter) whereConditions.push(gt(messages.createdAt, deletedAfter))
+
+  const rows = await db.select({
+    id: messages.id,
+    chat_id: messages.chatId,
+    sender_id: messages.senderId,
+    text: messages.text,
+    created_at: messages.createdAt,
+  }).from(messages).where(and(...whereConditions)).orderBy(desc(messages.createdAt)).limit(limit)
+
   return rows
+}
+
+/**
+ * A window of messages centered on a specific message (half before, half at-or-after),
+ * for hydrating a search result that scrolled out of the currently-loaded pagination
+ * window before the client can scroll to it. Includes reactions/receipts like
+ * getChatMessages so a hydrated message renders identically to one loaded normally.
+ */
+export async function getChatMessagesAround(chatId: string, userId: string, aroundMessageId: string, spanEachSide = 15) {
+  const [target] = await db.select({ createdAt: messages.createdAt })
+    .from(messages).where(and(eq(messages.id, aroundMessageId), eq(messages.chatId, chatId))).limit(1)
+  if (!target) return []
+
+  const deletedAfter = await getClearedChatCutoff(chatId, userId)
+  const baseConditions = [eq(messages.chatId, chatId), eq(messages.isDeleted, false)]
+  if (deletedAfter) baseConditions.push(gt(messages.createdAt, deletedAfter))
+
+  const [olderRowsRaw, newerRowsRaw] = await Promise.all([
+    db.query.messages.findMany({
+      where: and(...baseConditions, lt(messages.createdAt, target.createdAt)),
+      orderBy: desc(messages.createdAt),
+      limit: spanEachSide,
+      with: {
+        messageReactions: { columns: { id: true, userId: true, emoji: true, createdAt: true } },
+        messageReceipts: { columns: { userId: true, status: true } },
+      },
+    }),
+    db.query.messages.findMany({
+      where: and(...baseConditions, gte(messages.createdAt, target.createdAt)),
+      orderBy: asc(messages.createdAt),
+      limit: spanEachSide + 1,
+      with: {
+        messageReactions: { columns: { id: true, userId: true, emoji: true, createdAt: true } },
+        messageReceipts: { columns: { userId: true, status: true } },
+      },
+    }),
+  ])
+
+  return mapMessageRowsWithReactions([...olderRowsRaw.reverse(), ...newerRowsRaw])
 }
 
 export async function getRecentChatTextMessagesForModeration(chatId: string, limit = 10) {
@@ -626,6 +711,17 @@ export async function deleteMessage(chatId: string, messageId: string, userId: s
   await invalidateChatCaches(chatId)
 }
 
+/** Look up a message's chatId and invalidate that chat's cached history pages. */
+async function invalidateReactionCache(messageId: string): Promise<void> {
+  try {
+    const rows = await db.select({ chatId: messages.chatId }).from(messages).where(eq(messages.id, messageId)).limit(1)
+    const chatId = rows[0]?.chatId
+    if (chatId) await invalidateChatCaches(chatId)
+  } catch {
+    // best-effort
+  }
+}
+
 export async function toggleReaction(messageId: string, userId: string, emoji: string): Promise<{ action: 'added' | 'removed', reaction?: MessageReaction }> {
   // Check if reaction already exists
   const existingRows = await db.select().from(messageReactions)
@@ -633,15 +729,24 @@ export async function toggleReaction(messageId: string, userId: string, emoji: s
     .limit(1)
   const existing = existingRows[0]
 
+  let result: { action: 'added' | 'removed', reaction?: MessageReaction }
   if (existing) {
     // Reaction exists, remove it
     await db.delete(messageReactions).where(eq(messageReactions.id, existing.id))
-    return { action: 'removed', reaction: rowToMessageReaction(existing) }
+    result = { action: 'removed', reaction: rowToMessageReaction(existing) }
+  } else {
+    // Add new reaction
+    const insertedRows = await db.insert(messageReactions).values({ messageId, userId, emoji }).returning()
+    result = { action: 'added', reaction: rowToMessageReaction(insertedRows[0]) }
   }
 
-  // Add new reaction
-  const insertedRows = await db.insert(messageReactions).values({ messageId, userId, emoji }).returning()
-  return { action: 'added', reaction: rowToMessageReaction(insertedRows[0]) }
+  // Without this, the cached first page of chat history (which embeds each
+  // message's reactions, HISTORY_TTL = 120s) keeps serving the pre-mutation
+  // reaction list until it naturally expires -- reactions added/removed live
+  // appear to "disappear" on the next chat:join/refresh and only "come back"
+  // once the TTL lapses and a fresh DB read repopulates the cache.
+  await invalidateReactionCache(messageId)
+  return result
 }
 
 // Keep the old function for backward compatibility
@@ -657,6 +762,7 @@ export async function removeReaction(messageId: string, userId: string, emoji: s
   await db.delete(messageReactions).where(
     and(eq(messageReactions.messageId, messageId), eq(messageReactions.userId, userId), eq(messageReactions.emoji, emoji))
   )
+  await invalidateReactionCache(messageId)
 }
 
 function rowToMessageReaction(row: typeof messageReactions.$inferSelect): MessageReaction {

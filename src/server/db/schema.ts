@@ -1107,6 +1107,58 @@ export const jamSessionQueue = pgTable("jam_session_queue", {
 		}),
 ]);
 
+// Playlists for jam sessions, scoped to the CHAT (the pair of users) rather than a
+// single owner -- both chat members can create/edit/reorder/delete these mutually,
+// same as they mutually control the jam session's own queue. Deliberately
+// independent of jamSessions/jamSessionQueue (session-scoped, cleared when a
+// session ends) so a saved playlist survives ending the jam session it was built
+// or played in.
+export const jamPlaylists = pgTable("jam_playlists", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	chatId: uuid("chat_id").notNull(),
+	createdBy: uuid("created_by").notNull(),
+	name: text().notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_jam_playlists_chat").using("btree", table.chatId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.chatId],
+			foreignColumns: [chats.id],
+			name: "jam_playlists_chat_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.createdBy],
+			foreignColumns: [profiles.id],
+			name: "jam_playlists_created_by_fkey"
+		}),
+]);
+
+export const jamPlaylistTracks = pgTable("jam_playlist_tracks", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	playlistId: uuid("playlist_id").notNull(),
+	youtubeVideoId: text("youtube_video_id").notNull(),
+	title: text().notNull(),
+	channelTitle: text("channel_title"),
+	thumbnailUrl: text("thumbnail_url"),
+	durationSeconds: integer("duration_seconds"),
+	position: doublePrecision().notNull(),
+	addedBy: uuid("added_by").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_jam_playlist_tracks_playlist_position").using("btree", table.playlistId.asc().nullsLast().op("uuid_ops"), table.position.asc().nullsLast().op("float8_ops")),
+	foreignKey({
+			columns: [table.playlistId],
+			foreignColumns: [jamPlaylists.id],
+			name: "jam_playlist_tracks_playlist_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.addedBy],
+			foreignColumns: [profiles.id],
+			name: "jam_playlist_tracks_added_by_fkey"
+		}),
+]);
+
 export const campaignAnalytics = pgTable("campaign_analytics", {
 	id: uuid().default(sql`extensions.uuid_generate_v4()`).primaryKey().notNull(),
 	campaignId: uuid("campaign_id"),

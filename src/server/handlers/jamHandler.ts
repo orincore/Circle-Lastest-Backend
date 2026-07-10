@@ -210,6 +210,7 @@ export function setupJamHandlers(io: IOServer, socket: Socket, userId: string) {
         positionMs: session.playback_position_ms,
         currentQueueItemId: session.current_queue_item_id,
         serverTime: Date.now(),
+        reason: 'play',
       })
       setPlaybackState(sessionId, { isPlaying: true, pausedForPresence: false }).catch((err) =>
         logger.error({ err, sessionId, userId }, 'Failed to persist jam play state')
@@ -246,12 +247,17 @@ export function setupJamHandlers(io: IOServer, socket: Socket, userId: string) {
       // Same fire-and-forget rationale as jam:play above — a seek doesn't change is_playing
       // or current_queue_item_id, so the pre-write `session` already has everything needed
       // for the broadcast; no need to write, then read it all back before telling clients.
+      // `reason: 'seek'` tells the receiving client this is a deliberate, exact repositioning
+      // -- unlike a periodic drift-correction poll, it must always hard-seek, never be
+      // filtered out by drift-tolerance leniency (a small scrub, e.g. a 1s nudge, is well
+      // under that tolerance and was previously silently dropped on the other device).
       io.to(room(session.chat_id)).emit('jam:playback:state', {
         sessionId,
         isPlaying: session.is_playing,
         positionMs,
         currentQueueItemId: session.current_queue_item_id,
         serverTime: Date.now(),
+        reason: 'seek',
       })
       setPlaybackState(sessionId, { positionMs }).catch((err) =>
         logger.error({ err, sessionId, userId }, 'Failed to persist jam seek state')
@@ -324,6 +330,7 @@ export function setupJamHandlers(io: IOServer, socket: Socket, userId: string) {
         positionMs: computeLivePositionMs(session),
         currentQueueItemId: session.current_queue_item_id,
         serverTime: Date.now(),
+        reason: 'sync',
       })
     } catch (err) {
       logger.error({ err, sessionId, userId }, 'jam:sync:request failed')
