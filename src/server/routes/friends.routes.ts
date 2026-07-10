@@ -584,7 +584,12 @@ router.get('/user/:userId/profile', requireAuth, async (req: AuthRequest, res) =
       locationCity: profile.locationCity || null,
       locationCountry: profile.locationCountry || null,
       phone: profile.phoneNumber || null,
-      joinedDate: profile.createdAt || null,
+      // profile.createdAt is a raw Postgres timestamptz string (Drizzle's
+      // `mode: 'string'`), e.g. "2024-01-15 10:30:00.123456+00" -- Node's V8
+      // parses that leniently, but React Native's Hermes engine doesn't, so
+      // sending it as-is produced "Invalid Date" once `new Date(...)` ran on
+      // the client. Normalize to ISO 8601 here so every client can parse it.
+      joinedDate: profile.createdAt ? new Date(profile.createdAt).toISOString() : null,
       verification_status: profile.verificationStatus || 'unverified',
       email_verified: profile.emailVerified || false,
       stats: stats

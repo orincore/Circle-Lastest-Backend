@@ -147,7 +147,20 @@ router.get('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
   const limit = Math.min(parseInt(String(req.query.limit || '30'), 10) || 30, 100)
   const before = (req.query.before as string | undefined) || undefined
   const list = await getChatMessages(chatId, limit, before, userId)
-  res.json({ messages: list })
+  // created_at/updated_at come back as raw Postgres timestamptz text
+  // (Drizzle `mode: 'string'`, e.g. "2024-01-15 10:30:00.123456+00") --
+  // Node's V8 parses that leniently, but the mobile client's Hermes engine
+  // doesn't, so `new Date(r.created_at).getTime()` on the client silently
+  // produced NaN for every message loaded via scroll-back pagination,
+  // showing "Invalid Date" divider labels and garbled bubble times. The
+  // realtime socket path (chat:history / chat:message) already normalizes
+  // this the same way; this REST path just hadn't been getting it.
+  const messages = list.map((m: any) => ({
+    ...m,
+    created_at: m.created_at ? new Date(m.created_at).toISOString() : m.created_at,
+    updated_at: m.updated_at ? new Date(m.updated_at).toISOString() : m.updated_at,
+  }))
+  res.json({ messages })
 })
 
 router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {

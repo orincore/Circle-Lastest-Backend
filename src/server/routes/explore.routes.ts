@@ -302,7 +302,11 @@ async function getAllSectionsLogic(currentUserId: string) {
       gender: user.gender,
       interests: user.interests || [],
       needs: user.needs || [],
-      joinedDate: user.created_at,
+      // Raw Postgres timestamptz text (Drizzle `mode: 'string'`) isn't
+      // reliably parsed by React Native's Hermes engine -- normalize to ISO
+      // 8601 so clients don't render "Invalid Date". Still fine for the
+      // server-side sort by joinedDate below since it's still a valid date string.
+      joinedDate: user.created_at ? new Date(user.created_at as string).toISOString() : null,
       isOnline: false,
       isFriend: false, // Already filtered out friends, so this is always false
       compatibilityScore,
@@ -747,7 +751,8 @@ router.get('/user/:userId', requireAuth, async (req: AuthRequest, res) => {
       about: userProfile.about,
       interests: userProfile.interests || [],
       needs: userProfile.needs || [],
-      joinedDate: userProfile.created_at,
+      // See the /all-sections handler above for why this needs normalizing.
+      joinedDate: userProfile.created_at ? new Date(userProfile.created_at as string).toISOString() : null,
       isOnline: false, // TODO: Add online status logic
       stats: {
         friends: friendsCount || 0,

@@ -276,7 +276,13 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 
       return {
         chatId: item.chat.id,
-        lastMessageAt: item.chat.last_message_at,
+        // Raw Postgres timestamptz text (Drizzle `mode: 'string'`) isn't
+        // reliably parsed by the mobile client's Hermes engine -- normalize
+        // to ISO 8601 so the chat list's relative-time label doesn't
+        // silently go blank (see friends.routes.ts joinedDate for the same
+        // fix, and chat.routes.ts /:chatId/messages for the message-bubble
+        // equivalent).
+        lastMessageAt: item.chat.last_message_at ? new Date(item.chat.last_message_at).toISOString() : null,
         unreadCount: item.unreadCount,
         lastMessage: item.lastMessage ? {
           id: item.lastMessage.id,
