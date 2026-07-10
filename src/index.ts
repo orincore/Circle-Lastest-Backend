@@ -4,6 +4,23 @@ import { env } from './server/config/env.js'
 import { logger } from './server/config/logger.js'
 import { prepareApp } from './server/bootstrap.js'
 
+// Node (v15+) already terminates the process on an unhandled rejection by
+// default, and always has for uncaught exceptions -- these handlers don't
+// change that, they just log a diagnosable line first instead of losing the
+// error to a raw crash dump. Same pattern as matchmaking-worker.ts. Exiting
+// (rather than trying to "continue" in a possibly-corrupted state) is
+// intentional: this process runs behind multiple replicas, so letting the
+// orchestrator restart a fresh one is the safe default.
+process.on('uncaughtException', (error) => {
+  logger.error({ error }, 'Uncaught exception - process exiting')
+  process.exit(1)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error({ reason, promise }, 'Unhandled rejection - process exiting')
+  process.exit(1)
+})
+
 async function bootstrap() {
   const app = await prepareApp()
   const server = http.createServer(app)

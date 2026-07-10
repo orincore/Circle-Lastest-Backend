@@ -9,6 +9,9 @@ const redis = new Redis({
   maxRetriesPerRequest: 3,
   lazyConnect: true,
 })
+redis.on('error', (err) => {
+  logger.error({ err }, 'Monitoring Redis client error')
+})
 
 interface SystemMetrics {
   timestamp: number
@@ -176,8 +179,19 @@ class MonitoringService {
     }
   }> {
     try {
-      // Get metrics from all instances in the last 5 minutes
-      const keys = await redis.keys('metrics:*')
+      // Get metrics from all instances in the last 5 minutes.
+      // Uses SCAN (cursor-based, non-blocking) rather than KEYS -- this Redis
+      // instance is shared with the Socket.IO adapter's pub/sub and the rate
+      // limiter, so a KEYS scan (which blocks Redis single-threadedly for its
+      // full duration) stalls cross-pod message broadcast and rate-limit
+      // checks for the whole cluster while it runs.
+      const keys: string[] = []
+      let cursor = '0'
+      do {
+        const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', 'metrics:*', 'COUNT', 100)
+        cursor = nextCursor
+        keys.push(...batch)
+      } while (cursor !== '0')
       const recentKeys = keys.filter((key: string) => {
         const timestamp = parseInt(key.split(':')[2])
         return Date.now() - timestamp < 300000 // 5 minutes

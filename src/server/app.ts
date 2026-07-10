@@ -22,8 +22,7 @@ import authRouter from './routes/auth.routes.js'
 import careersRouter from './routes/careers.routes.js'
 import storageRouter from './routes/storage.routes.js'
 import matchmakingRouter from './routes/matchmaking.routes.js'
-import { heartbeat } from './services/matchmaking-optimized.js'
-import { monitoringService, performanceMiddleware } from './services/monitoring.js'
+import { performanceMiddleware } from './services/monitoring.js'
 import chatRouter from './routes/chat.routes.js'
 import jamRouter from './routes/jam.routes.js'
 import friendsRouter from './routes/friends.routes.js'
@@ -331,13 +330,13 @@ app.use('/api/ml-matching', mlMatchingRouter)
 
 // GraphQL will be set up in index.ts before error handlers
 
-// Start monitoring service
-monitoringService.startMonitoring(30000) // Every 30 seconds
-
-// Matchmaking heartbeat (reduced frequency since we have a dedicated worker)
-setInterval(() => {
-  try { heartbeat() } catch {}
-}, 30_000) // Reduced to 30 seconds since worker handles most processing
+// Monitoring and the matchmaking heartbeat are started in bootstrap.ts's
+// initializeApp() instead of here -- this used to also start them
+// unconditionally at module load, which ran a SECOND copy of both
+// setInterval loops alongside bootstrap.ts's (already correctly gated
+// behind !isServerlessRuntime) ones, silently doubling DB/Redis polling
+// load on every pod. app.ts is only ever imported by bootstrap.ts, so
+// nothing depended on starting them here too.
 
 // Error handlers will be added in index.ts after GraphQL setup
 

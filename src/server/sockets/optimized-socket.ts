@@ -208,6 +208,23 @@ const CONNECTION_TIMEOUT = 120000           // 2 minutes - more lenient for mobi
 const connectionCounts = new Map<string, number>() // userId -> connection count
 let totalConnections = 0
 
+// Per-socket timer handles, keyed by socket.id -- deliberately NOT stored on
+// socket.data. socket.data must stay JSON-serializable: io.fetchSockets()
+// (used by pushNotificationService.ts and voiceCallHandler.ts) resolves
+// sockets living on OTHER pods via the Socket.IO Redis adapter, which
+// answers by JSON.stringify-ing each remote socket's `.data`. A raw
+// setTimeout/setInterval handle is a circular object (Timeout <-> internal
+// TimersList) that JSON.stringify cannot serialize -- it used to be stored
+// directly on socket.data here, and the resulting "Converting circular
+// structure to JSON" throw happened inside the Redis adapter's internal
+// request handler (an unhandled rejection with no try/catch around it),
+// which crashed the entire process on every cross-pod fetchSockets() call
+// against an affected socket -- the root cause of the socket pods' crash
+// loop (confirmed via production logs: TypeError: Converting circular
+// structure to JSON, at RedisAdapter.onrequest).
+const socketTimeouts = new Map<string, NodeJS.Timeout>()
+const socketRoomVerificationIntervals = new Map<string, NodeJS.Timeout>()
+
 // Rate limiting helper
 async function checkEventRateLimit(userId: string, event: string): Promise<boolean> {
   try {
@@ -562,8 +579,8 @@ export async function initOptimizedSocket(server: Server) {
         logger.info({ socketId: socket.id, userId }, 'Socket connection timed out')
         socket.disconnect(true)
       }, CONNECTION_TIMEOUT)
-      
-      ;(socket.data as any).timeout = timeout
+
+      socketTimeouts.set(socket.id, timeout)
       ;(socket.data as any).userId = userId
       
       next()
@@ -671,13 +688,13 @@ export async function initOptimizedSocket(server: Server) {
 
     // Reset connection timeout on activity
     const resetTimeout = () => {
-      const timeout = (socket.data as any).timeout
+      const timeout = socketTimeouts.get(socket.id)
       if (timeout) {
         clearTimeout(timeout)
-        ;(socket.data as any).timeout = setTimeout(() => {
+        socketTimeouts.set(socket.id, setTimeout(() => {
           logger.info({ socketId: socket.id, userId }, 'Socket connection timed out')
           socket.disconnect(true)
-        }, CONNECTION_TIMEOUT)
+        }, CONNECTION_TIMEOUT))
       }
     }
 
@@ -2157,7 +2174,7 @@ export async function initOptimizedSocket(server: Server) {
       }, 30000); // Check every 30 seconds
       
       // Store interval for cleanup
-      (socket.data as any).roomVerificationInterval = roomVerificationInterval;
+      socketRoomVerificationIntervals.set(socket.id, roomVerificationInterval);
       
       // Handle room membership verification requests from frontend
       socket.on('verify-room-membership', () => {
@@ -2203,17 +2220,19 @@ export async function initOptimizedSocket(server: Server) {
     socket.on('disconnect', (reason) => {
       const user = (socket.data as any).user
       const userId = (socket.data as any).userId
-      const timeout = (socket.data as any).timeout
-      const roomVerificationInterval = (socket.data as any).roomVerificationInterval
-      
+      const timeout = socketTimeouts.get(socket.id)
+      const roomVerificationInterval = socketRoomVerificationIntervals.get(socket.id)
+
       if (timeout) {
         clearTimeout(timeout)
+        socketTimeouts.delete(socket.id)
       }
-      
+
       if (roomVerificationInterval) {
         clearInterval(roomVerificationInterval)
+        socketRoomVerificationIntervals.delete(socket.id)
       }
-      
+
       untrackConnection(userId)
 
       if (userId) {
