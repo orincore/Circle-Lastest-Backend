@@ -128,6 +128,19 @@ function rowToBlindDateSettingsRow(row: typeof blindDatingSettings.$inferSelect)
   }
 }
 
+// Raw Postgres timestamptz text (Drizzle `mode: 'string'`, e.g.
+// "2026-07-05 10:30:00.123456+00") parses leniently under Node's V8 (and
+// therefore in a browser client hitting this API), but React Native's
+// Hermes engine rejects it and silently produces an Invalid Date -- which
+// made `matched_at` comparisons like "was this match made today?" always
+// false on iOS/Android while working fine on web. Normalize to ISO 8601 so
+// every client can parse it.
+function toIsoOrUndefined(value: string | null | undefined): string | undefined {
+  if (!value) return undefined
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+}
+
 function rowToBlindDateMatchRow(row: typeof blindDateMatches.$inferSelect): BlindDateMatch {
   return {
     id: row.id,
@@ -140,11 +153,11 @@ function rowToBlindDateMatchRow(row: typeof blindDateMatches.$inferSelect): Blin
     reveal_threshold: row.revealThreshold ?? 30,
     user_a_revealed: row.userARevealed ?? false,
     user_b_revealed: row.userBRevealed ?? false,
-    revealed_at: row.revealedAt ?? undefined,
+    revealed_at: toIsoOrUndefined(row.revealedAt),
     reveal_requested_by: row.revealRequestedBy ?? undefined,
-    reveal_requested_at: row.revealRequestedAt ?? undefined,
-    matched_at: row.matchedAt ?? '',
-    ended_at: row.endedAt ?? undefined,
+    reveal_requested_at: toIsoOrUndefined(row.revealRequestedAt),
+    matched_at: toIsoOrUndefined(row.matchedAt) ?? '',
+    ended_at: toIsoOrUndefined(row.endedAt),
     ended_by: row.endedBy ?? undefined,
     end_reason: row.endReason ?? undefined,
   }
