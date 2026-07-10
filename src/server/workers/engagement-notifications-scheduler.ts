@@ -35,6 +35,9 @@ const lockRedis = new Redis({
   maxRetriesPerRequest: 2,
   lazyConnect: true,
 })
+lockRedis.on('error', (err) => {
+  logger.error({ err }, 'Engagement notifications lock Redis client error')
+})
 const LOCK_KEY = 'engagement:notifications_lock'
 const LOCK_TTL_SECONDS = 600 // whole pass (4 features, one full user scan each) gets more headroom than matching's 120s
 const LOCK_OWNER_ID = `engagement-notifications-${process.pid}-${Date.now()}`

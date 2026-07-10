@@ -24,9 +24,9 @@ process.on('unhandledRejection', (reason, promise) => {
 async function bootstrap() {
   const app = await prepareApp()
   const server = http.createServer(app)
-  
+
   // Initialize Socket.IO with Redis adapter (async for proper Redis connection)
-  await initOptimizedSocket(server)
+  const io = await initOptimizedSocket(server)
 
   server.listen(env.PORT, () => {
     console.log('\n')
@@ -38,9 +38,43 @@ async function bootstrap() {
     console.log(`📡 WebSocket: ws://localhost:${env.PORT}/ws`)
     console.log(`🔗 GraphQL: http://localhost:${env.PORT}/graphql`)
     console.log(`💚 Health: http://localhost:${env.PORT}/health\n`)
-    
+
     logger.info({ port: env.PORT, env: env.NODE_ENV }, 'Server started')
   })
+
+  // Graceful shutdown: k8s sends SIGTERM on every rolling deploy, scale-down,
+  // or node drain -- the deployment manifests (k8s/base/{api,socket}-
+  // deployment.yaml) already budget time for this via preStop + a
+  // terminationGracePeriodSeconds window (their own comments note the app
+  // "doesn't drain on signal"), but with no handler at all Node's default
+  // action hard-kills the process the instant the signal arrives, dropping
+  // every live WebSocket with zero notice. io.close() disconnects every
+  // socket on this pod (clients' own reconnect logic then lands on a
+  // healthy pod) and closes the underlying HTTP server; the fallback timer
+  // force-exits well within the shortest grace-period budget (socket pods:
+  // 20s total, 10s already spent in preStop) in case some connection hangs
+  // past that instead of closing promptly.
+  let shuttingDown = false
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    logger.info({ signal }, 'Received shutdown signal, draining connections')
+
+    const forceExit = setTimeout(() => {
+      logger.warn('Shutdown grace period elapsed, forcing exit')
+      process.exit(0)
+    }, 8000)
+    forceExit.unref()
+
+    io.close(() => {
+      logger.info('Server closed cleanly')
+      clearTimeout(forceExit)
+      process.exit(0)
+    })
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
 bootstrap().catch((err) => {

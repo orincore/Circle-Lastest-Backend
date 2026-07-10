@@ -338,6 +338,12 @@ export const memeConnectRequests = pgTable("meme_connect_requests", {
 	uniqueIndex("idx_meme_connect_pending_pair").using("btree", table.requesterId.asc().nullsLast().op("uuid_ops"), table.targetId.asc().nullsLast().op("uuid_ops")).where(sql`((status)::text = 'pending'::text)`),
 	index("idx_meme_connect_requester").using("btree", table.requesterId.asc().nullsLast().op("uuid_ops"), table.status.asc().nullsLast().op("uuid_ops")),
 	index("idx_meme_connect_target").using("btree", table.targetId.asc().nullsLast().op("uuid_ops"), table.status.asc().nullsLast().op("text_ops")),
+	// chat_id has an FK to chats.id but Postgres never auto-indexes FK
+	// columns. isMemeConnectChat(chatId) (memeConnect.service.ts) runs this
+	// exact WHERE on every single chat message send (not just meme-connect
+	// ones, called twice per send) -- without this index it was a full
+	// table scan that only gets worse as the table grows.
+	index("idx_meme_connect_requests_chat_id").using("btree", table.chatId.asc().nullsLast().op("uuid_ops")),
 	foreignKey({
 			columns: [table.chatId],
 			foreignColumns: [chats.id],

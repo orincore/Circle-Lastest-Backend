@@ -28,8 +28,10 @@ import {
  *
  * Presence gating mirrors the `chat:active`/`chat:inactive` -> `activeChats`
  * pattern in optimized-socket.ts (see isUserActiveInChat there), but is
- * reimplemented here against a parallel `activeJamSessions` set on
- * socket.data, since that helper is private to the other module's closure.
+ * reimplemented here against a parallel `activeJamSessions` array on
+ * socket.data (kept as a plain string[], not a Set -- socket.data must stay
+ * JSON-serializable for io.fetchSockets()'s cross-pod path), since that
+ * helper is private to the other module's closure.
  * Unlike chat presence, jam presence is also cleaned up on disconnect (see
  * cleanupJamPresenceOnDisconnect) — a stuck "present" flag after an app kill
  * would mean playback never auto-pauses, which matters much more here than
@@ -46,7 +48,7 @@ function isUserPresentInJam(io: IOServer, userId: string, sessionId: string): bo
   for (const socketId of userRoom) {
     const sock = io.sockets.sockets.get(socketId)
     const active = (sock?.data as any)?.activeJamSessions
-    if (active instanceof Set && active.has(sessionId)) return true
+    if (Array.isArray(active) && active.includes(sessionId)) return true
   }
   return false
 }
@@ -65,11 +67,17 @@ async function handlePresenceChange(
   isPresent: boolean,
   positionMs?: number
 ) {
+  // Stored as a plain string[] rather than a Set: socket.data must stay
+  // JSON-serializable for io.fetchSockets()'s cross-pod path (see the same
+  // fix applied to activeChats in optimized-socket.ts).
   const data: any = socket.data || {}
-  if (!data.activeJamSessions) data.activeJamSessions = new Set<string>()
-  const wasPresent = data.activeJamSessions.has(sessionId)
-  if (isPresent) data.activeJamSessions.add(sessionId)
-  else data.activeJamSessions.delete(sessionId)
+  if (!Array.isArray(data.activeJamSessions)) data.activeJamSessions = []
+  const wasPresent = data.activeJamSessions.includes(sessionId)
+  if (isPresent) {
+    if (!wasPresent) data.activeJamSessions.push(sessionId)
+  } else {
+    data.activeJamSessions = data.activeJamSessions.filter((id: string) => id !== sessionId)
+  }
   socket.data = data
 
   setParticipantPresence(sessionId, userId, isPresent).catch((err) =>
@@ -318,8 +326,8 @@ export function setupJamHandlers(io: IOServer, socket: Socket, userId: string) {
 
 /** Called from the main socket disconnect handler so an app kill / network drop doesn't leave a session stuck "present" forever. */
 export function cleanupJamPresenceOnDisconnect(io: IOServer, socket: Socket, userId: string) {
-  const active: Set<string> | undefined = (socket.data as any)?.activeJamSessions
-  if (!active || !active.size) return
+  const active: string[] | undefined = (socket.data as any)?.activeJamSessions
+  if (!active || !active.length) return
   for (const sessionId of Array.from(active)) {
     handlePresenceChange(io, socket, userId, sessionId, false).catch((err) =>
       logger.error({ err, sessionId, userId }, 'Failed to clean up jam presence on disconnect')

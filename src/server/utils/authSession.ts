@@ -127,6 +127,11 @@ const revocationRedis = new Redis({
   retryStrategy: (times) => Math.min(times * 30, 100),
   lazyConnect: true,
 })
+// Hit on every authenticated HTTP request -- previously had no error
+// listener, so a Redis blip here was invisible.
+revocationRedis.on('error', (err) => {
+  logger.error({ err }, 'Auth revocation Redis client error')
+})
 
 // A revoked jti only ever needs to be remembered for as long as the token
 // itself could still verify -- past its max lifetime it's rejected on

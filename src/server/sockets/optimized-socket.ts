@@ -196,6 +196,13 @@ const redis = new Redis({
   maxRetriesPerRequest: 3,
   lazyConnect: true,
 })
+// ioredis doesn't crash the process without this (unlike pg.Pool), but an
+// error was previously invisible -- this is the highest-traffic Redis client
+// in the system (every rate-limit check, cache read/write for chat
+// members/blocks/friends goes through it).
+redis.on('error', (err) => {
+  logger.error({ err }, 'Main Redis client error')
+})
 
 // Connection limits and rate limiting constants - optimized for high traffic
 const MAX_CONNECTIONS_PER_USER = 5          // Allow more devices per user
@@ -626,7 +633,7 @@ export async function initOptimizedSocket(server: Server) {
     for (const socketId of room) {
       const sock = io.sockets.sockets.get(socketId)
       const activeChats = (sock?.data as any)?.activeChats
-      if (activeChats instanceof Set && activeChats.has(chatId)) {
+      if (Array.isArray(activeChats) && activeChats.includes(chatId)) {
         return true
       }
     }
@@ -961,13 +968,23 @@ export async function initOptimizedSocket(server: Server) {
       bumpActive(io, room, 1)
 
       // Track active chats per socket so push service can avoid notifying
-      // when the user is already inside a specific conversation
+      // when the user is already inside a specific conversation. Stored as a
+      // plain string[] rather than a Set: socket.data must stay
+      // JSON-serializable for io.fetchSockets()'s cross-pod path (the Redis
+      // adapter JSON.stringifies each remote socket's .data to answer a
+      // cross-pod query) -- a Set silently serializes to "{}" instead of
+      // throwing, so this used to silently break the "is the recipient
+      // already viewing this chat" check (pushNotificationService.ts)
+      // whenever sender and recipient were on different pods, sending a
+      // redundant push to someone actively looking at the conversation.
       try {
         const data: any = socket.data || {}
-        if (!data.activeChats) {
-          data.activeChats = new Set<string>()
+        if (!Array.isArray(data.activeChats)) {
+          data.activeChats = []
         }
-        data.activeChats.add(chatId)
+        if (!data.activeChats.includes(chatId)) {
+          data.activeChats.push(chatId)
+        }
         socket.data = data
       } catch (err) {
         logger.error({ err, chatId }, 'Failed to track active chat on socket')
@@ -982,8 +999,8 @@ export async function initOptimizedSocket(server: Server) {
 
       try {
         const data: any = socket.data || {}
-        if (data.activeChats && data.activeChats instanceof Set) {
-          data.activeChats.delete(chatId)
+        if (Array.isArray(data.activeChats)) {
+          data.activeChats = data.activeChats.filter((id: string) => id !== chatId)
         }
       } catch (err) {
         logger.error({ err, chatId }, 'Failed to untrack active chat on socket')
@@ -1430,32 +1447,10 @@ export async function initOptimizedSocket(server: Server) {
     })
 
     // Chat: typing indicator with rate limiting
-    socket.on('chat:typing', async ({ chatId, typing }: { chatId: string; typing: boolean }) => {
-      resetTimeout()
-      const userId: string | undefined = user?.id
-      if (!chatId || !userId) return
-      
-      if (!(await checkEventRateLimit(userId, 'chat:typing'))) {
-        return // Silently ignore typing rate limits to avoid spam
-      }
-      
-      setTyping(chatId, userId, !!typing)
-      
-      // Send to chat room (for users actively in the chat)
-      socket.to(`chat:${chatId}`).emit('chat:typing', { chatId, users: getTyping(chatId) })
-      
-      // Also send to all chat members individually (for chat list updates)
-      try {
-        const memberIds = await fetchChatMemberIds(chatId)
-        for (const memberId of memberIds) {
-          if (memberId !== userId) { // Don't send to sender
-            io.to(memberId).emit('chat:typing', { chatId, users: getTyping(chatId) })
-          }
-        }
-      } catch (error) {
-        logger.error({ error, chatId, userId }, 'Failed to send typing indicator to members')
-      }
-    })
+    // (chat:typing itself is handled once, above -- this used to be
+    // registered a second time here, which silently doubled the rate-limit
+    // cost, ran the member lookup twice, and double-broadcast every typing
+    // keystroke, for the single highest-frequency event in the system.)
 
     // Chat: send message with enhanced rate limiting and validation
     socket.on('chat:message', async ({
@@ -1946,15 +1941,21 @@ export async function initOptimizedSocket(server: Server) {
           // Send to chat room
           io.to(`chat:${chatId}`).emit('chat:reaction:added', { chatId, messageId, reaction: reactionData })
           
-          // Send to individual members with sender info for notifications
+          // Send to individual members with sender info for notifications.
+          // These 4 lookups used to run sequentially (member-fetch, then
+          // sender profile, then message text, then the anonymity check) --
+          // 4 uncached-or-serial DB round trips one after another before
+          // this ever reached the wire, which was exactly why reactions
+          // landed noticeably late for anyone relying on this path (recipients
+          // not currently inside the open chat room, who don't get the fast
+          // room broadcast above). getCachedChatMembers (Redis-cached, same
+          // as the main message-send path) replaces the uncached
+          // fetchChatMemberIds, and the remaining 3 lookups run concurrently
+          // instead of one after another.
           try {
-            const memberIds = await fetchChatMemberIds(chatId)
-
-            let senderInfo:
-              | { firstName: string | null; lastName: string | null; username: string | null; email: string | null }
-              | undefined
-            try {
-              const rows = await db
+            const [memberIds, senderRows, messageRows, isAnonymous] = await Promise.all([
+              getCachedChatMembers(chatId),
+              db
                 .select({
                   firstName: profiles.firstName,
                   lastName: profiles.lastName,
@@ -1964,16 +1965,19 @@ export async function initOptimizedSocket(server: Server) {
                 .from(profiles)
                 .where(eq(profiles.id, userId))
                 .limit(1)
-              senderInfo = rows[0]
-            } catch (senderError) {
-              logger.error({ error: senderError, userId }, 'Error fetching sender info for reaction')
-            }
+                .catch((senderError) => {
+                  logger.error({ error: senderError, userId }, 'Error fetching sender info for reaction')
+                  return [] as Array<{ firstName: string | null; lastName: string | null; username: string | null; email: string | null }>
+                }),
+              db
+                .select({ text: messages.text })
+                .from(messages)
+                .where(eq(messages.id, messageId))
+                .limit(1),
+              isChatStillAnonymous(chatId),
+            ])
 
-            const [messageInfo] = await db
-              .select({ text: messages.text })
-              .from(messages)
-              .where(eq(messages.id, messageId))
-              .limit(1)
+            const senderInfo = senderRows[0]
 
             const realName = senderInfo
               ? (senderInfo.firstName && senderInfo.lastName
@@ -1984,11 +1988,11 @@ export async function initOptimizedSocket(server: Server) {
             // Same masking as the message-notification path above -- this
             // event previously always carried the reactor's real name, even
             // for a still-anonymous blind-date/meme-connect chat.
-            const senderName = (await isChatStillAnonymous(chatId))
+            const senderName = isAnonymous
               ? maskFullName(senderInfo?.firstName || null, senderInfo?.lastName || null)
               : realName
 
-            for (const memberId of memberIds) {
+            for (const memberId of memberIds || []) {
               if (memberId !== userId) {
                 io.to(memberId).emit('chat:reaction:added', {
                   chatId,
@@ -1997,7 +2001,7 @@ export async function initOptimizedSocket(server: Server) {
                     ...reactionData,
                     senderName
                   },
-                  messageText: messageInfo?.text || 'a message'
+                  messageText: messageRows[0]?.text || 'a message'
                 })
               }
             }

@@ -29,6 +29,9 @@ const redis = new Redis({
   maxRetriesPerRequest: 3,
   lazyConnect: true,
 })
+redis.on('error', (err) => {
+  logger.error({ err }, 'Matchmaking worker Redis client error')
+})
 
 const WORKER_ID = `matchmaking-worker-${process.pid}-${Date.now()}`
 const HEARTBEAT_INTERVAL = 5000 // 5 seconds

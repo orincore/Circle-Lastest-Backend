@@ -326,7 +326,7 @@ export class PushNotificationService {
             for (const socket of recipientSockets) {
               const data: any = socket.data || {};
               const activeChats: any = data.activeChats;
-              if (activeChats && activeChats instanceof Set && activeChats.has(chatId)) {
+              if (Array.isArray(activeChats) && activeChats.includes(chatId)) {
                 isActivelyViewingChat = true;
                 break;
               }

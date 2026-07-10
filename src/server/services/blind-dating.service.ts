@@ -21,6 +21,9 @@ const lockRedis = new Redis({
   maxRetriesPerRequest: 2,
   lazyConnect: true,
 })
+lockRedis.on('error', (err) => {
+  logger.error({ err }, 'Blind dating lock Redis client error')
+})
 const MATCHING_LOCK_KEY = 'blind_dating:matching_lock'
 const MATCHING_LOCK_TTL_SECONDS = 120
 const LOCK_OWNER_ID = `blind-dating-${process.pid}-${Date.now()}`

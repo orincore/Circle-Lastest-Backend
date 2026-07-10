@@ -30,6 +30,9 @@ const lockRedis = new Redis({
   maxRetriesPerRequest: 2,
   lazyConnect: true,
 })
+lockRedis.on('error', (err) => {
+  logger.error({ err }, 'Meme discovery lock Redis client error')
+})
 const LOCK_KEY = 'engagement:meme_discovery_lock'
 const LOCK_TTL_SECONDS = 300
 const LOCK_OWNER_ID = `meme-discovery-${process.pid}-${Date.now()}`

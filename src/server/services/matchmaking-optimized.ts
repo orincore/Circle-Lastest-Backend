@@ -18,6 +18,9 @@ const redis = new Redis({
   maxRetriesPerRequest: 3,
   lazyConnect: true,
 })
+redis.on('error', (err) => {
+  logger.error({ err }, 'Matchmaking Redis client error')
+})
 
 // Redis keys
 const KEYS = {

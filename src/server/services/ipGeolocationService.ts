@@ -38,6 +38,9 @@ const geoRedis = new Redis({
   maxRetriesPerRequest: 2,
   lazyConnect: true,
 })
+geoRedis.on('error', (err) => {
+  logger.error({ err }, 'IP geolocation Redis client error')
+})
 
 function cacheKey(ip: string): string {
   return `geoip:${ip}`
