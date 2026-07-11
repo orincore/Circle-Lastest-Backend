@@ -376,12 +376,13 @@ export class NotificationService {
    * Notify a chat participant that the other member left/ended the jam session.
    */
   static async notifyJamSessionLeft(recipientId: string, leaverId: string, leaverName: string, chatId: string): Promise<void> {
+    const isSelf = recipientId === leaverId;
     await this.createNotification({
       recipient_id: recipientId,
       sender_id: leaverId,
       type: 'jam_session_left',
       title: '🎧 Jam Session',
-      message: `${leaverName} left the jamming session`,
+      message: isSelf ? 'You left the jamming session' : `${leaverName} left the jamming session`,
       data: {
         action: 'jam_session_left',
         chatId,

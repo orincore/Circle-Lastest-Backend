@@ -216,6 +216,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Verify Your Email - Circle</title>
         <style>
             body {
@@ -356,8 +358,10 @@ https://circle.orincore.com
             .footer-logo {
                 font-size: 24px;
                 font-weight: 700;
+                color: #7C2B86;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
+                background-clip: text;
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 16px;
             }
@@ -395,13 +399,19 @@ https://circle.orincore.com
                 .header, .content, .footer { padding: 24px; }
                 .otp-code { font-size: 36px; letter-spacing: 8px; }
             }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -414,7 +424,7 @@ https://circle.orincore.com
                 
                 <div class="otp-container">
                     <div class="otp-label">Verification Code</div>
-                    <div class="otp-code">${otp}</div>
+                    <div class="otp-code"><span class="gmail-blend-screen"><span class="gmail-blend-difference">${otp}</span></span></div>
                 </div>
                 
                 <div class="instructions">
@@ -531,6 +541,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Welcome to Circle!</title>
         <style>
             body {
@@ -713,8 +725,10 @@ https://circle.orincore.com
             .footer-logo {
                 font-size: 24px;
                 font-weight: 700;
+                color: #7C2B86;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
+                background-clip: text;
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 16px;
             }
@@ -743,14 +757,20 @@ https://circle.orincore.com
                 .features-grid { grid-template-columns: 1fr; }
                 .welcome-title { font-size: 24px; }
             }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
-                <div class="welcome-badge">Account Verified</div>
+                </div>
+                </div>
+                <div class="welcome-badge"><span class="gmail-blend-screen"><span class="gmail-blend-difference">Account Verified</span></span></div>
             </div>
             
             <div class="content">
@@ -783,25 +803,25 @@ https://circle.orincore.com
                 <div class="cta-section">
                     <div class="cta-title">Ready to start your journey?</div>
                     <div class="cta-text">Complete your profile and start connecting with amazing people today!</div>
-                    <a href="#" class="cta-button">Complete Your Profile</a>
+                    <a href="#" class="cta-button"><span class="gmail-blend-screen"><span class="gmail-blend-difference">Complete Your Profile</span></span></a>
                 </div>
                 
                 <div class="tips-section">
                     <div class="tips-title">Tips for Success</div>
                     <div class="tip-item">
-                        <div class="tip-number">1</div>
+                        <div class="tip-number"><span class="gmail-blend-screen"><span class="gmail-blend-difference">1</span></span></div>
                         <div class="tip-text">Add a great profile photo that shows your personality</div>
                     </div>
                     <div class="tip-item">
-                        <div class="tip-number">2</div>
+                        <div class="tip-number"><span class="gmail-blend-screen"><span class="gmail-blend-difference">2</span></span></div>
                         <div class="tip-text">Share your interests to find people with common hobbies</div>
                     </div>
                     <div class="tip-item">
-                        <div class="tip-number">3</div>
+                        <div class="tip-number"><span class="gmail-blend-screen"><span class="gmail-blend-difference">3</span></span></div>
                         <div class="tip-text">Be authentic and genuine in your conversations</div>
                     </div>
                     <div class="tip-item">
-                        <div class="tip-number">4</div>
+                        <div class="tip-number"><span class="gmail-blend-screen"><span class="gmail-blend-difference">4</span></span></div>
                         <div class="tip-text">Stay safe and report any inappropriate behavior</div>
                     </div>
                 </div>
@@ -995,6 +1015,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>New Login Alert - Circle</title>
         <style>
             body {
@@ -1079,16 +1101,6 @@ https://circle.orincore.com
                 font-weight: 700;
                 margin: 0 0 16px 0;
             }
-            .detail-item {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 8px 0;
-                border-bottom: 1px solid rgba(124, 43, 134, 0.1);
-            }
-            .detail-item:last-child {
-                border-bottom: none;
-            }
             .detail-label {
                 font-weight: 600;
                 color: #7C2B86;
@@ -1097,8 +1109,6 @@ https://circle.orincore.com
             .detail-value {
                 font-size: 14px;
                 color: #4A4A4A;
-                text-align: right;
-                max-width: 60%;
                 word-break: break-word;
             }
             .security-section {
@@ -1189,8 +1199,10 @@ https://circle.orincore.com
             .footer-logo {
                 font-size: 24px;
                 font-weight: 700;
+                color: #7C2B86;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
+                background-clip: text;
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 16px;
             }
@@ -1212,17 +1224,21 @@ https://circle.orincore.com
                 .container { margin: 10px; }
                 .header, .content, .footer { padding: 24px; }
                 .action-buttons { flex-direction: column; }
-                .detail-item { flex-direction: column; align-items: flex-start; }
-                .detail-value { max-width: 100%; text-align: left; margin-top: 4px; }
             }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Security Alert</div>
-                <div class="alert-badge">New Login Detected</div>
+                </div>
+                </div>
+                <div class="alert-badge"><span class="gmail-blend-screen"><span class="gmail-blend-difference">New Login Detected</span></span></div>
             </div>
             
             <div class="content">
@@ -1235,24 +1251,26 @@ https://circle.orincore.com
                 
                 <div class="login-details">
                     <h3>Login Details</h3>
-                    <div class="detail-item">
-                        <span class="detail-label">Time</span>
-                        <span class="detail-value">${timestamp}</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Device</span>
-                        <span class="detail-value">${device}</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Location</span>
-                        <span class="detail-value">${location}</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">IP Address</span>
-                        <span class="detail-value">${ip}</span>
-                    </div>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                        <tr>
+                            <td class="detail-label" style="padding: 8px 0; border-bottom: 1px solid rgba(124, 43, 134, 0.1); vertical-align: top;">Time</td>
+                            <td class="detail-value" style="padding: 8px 0; border-bottom: 1px solid rgba(124, 43, 134, 0.1); text-align: right; vertical-align: top;">${timestamp}</td>
+                        </tr>
+                        <tr>
+                            <td class="detail-label" style="padding: 8px 0; border-bottom: 1px solid rgba(124, 43, 134, 0.1); vertical-align: top;">Device</td>
+                            <td class="detail-value" style="padding: 8px 0; border-bottom: 1px solid rgba(124, 43, 134, 0.1); text-align: right; vertical-align: top;">${device}</td>
+                        </tr>
+                        <tr>
+                            <td class="detail-label" style="padding: 8px 0; border-bottom: 1px solid rgba(124, 43, 134, 0.1); vertical-align: top;">Location</td>
+                            <td class="detail-value" style="padding: 8px 0; border-bottom: 1px solid rgba(124, 43, 134, 0.1); text-align: right; vertical-align: top;">${location}</td>
+                        </tr>
+                        <tr>
+                            <td class="detail-label" style="padding: 8px 0; vertical-align: top;">IP Address</td>
+                            <td class="detail-value" style="padding: 8px 0; text-align: right; vertical-align: top;">${ip}</td>
+                        </tr>
+                    </table>
                 </div>
-                
+
                 <div class="security-section">
                     <div class="title">Didn't recognize this login?</div>
                     <div class="text">
@@ -1260,7 +1278,7 @@ https://circle.orincore.com
                         and prevent unauthorized access.
                     </div>
                     <div class="action-buttons">
-                        <a href="#" class="btn btn-primary">Secure My Account</a>
+                        <a href="#" class="btn btn-primary"><span class="gmail-blend-screen"><span class="gmail-blend-difference">Secure My Account</span></span></a>
                         <a href="#" class="btn btn-secondary">Change Password</a>
                     </div>
                 </div>
@@ -1332,6 +1350,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Password Reset - Circle</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%); }
@@ -1352,13 +1372,19 @@ https://circle.orincore.com
             .footer { background: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #eee; }
             .footer-logo { font-size: 24px; font-weight: bold; color: #7C2B86; margin-bottom: 10px; }
             .footer-text { color: #666; font-size: 14px; }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-text">Password Reset Request</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -1406,6 +1432,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Password Reset Successful - Circle</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: linear-gradient(135deg, #1F1147 0%, #7C2B86 100%); }
@@ -1428,13 +1456,19 @@ https://circle.orincore.com
             .footer { background: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #eee; }
             .footer-logo { font-size: 24px; font-weight: bold; color: #7C2B86; margin-bottom: 10px; }
             .footer-text { color: #666; font-size: 14px; }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-text">Password Reset Successful</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -1497,6 +1531,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>You've Been Gifted ${planName}! - Circle</title>
         <style>
             body {
@@ -1638,6 +1674,7 @@ https://circle.orincore.com
             .footer-logo {
                 font-size: 24px;
                 font-weight: 700;
+                color: #7C2B86;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
                 background-clip: text;
@@ -1663,14 +1700,20 @@ https://circle.orincore.com
                 .subscription-details table { font-size: 14px; }
                 .subscription-details td { padding: 12px 16px !important; }
             }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
-                <div class="gift-badge">Sponsored by Circle</div>
+                </div>
+                </div>
+                <div class="gift-badge"><span class="gmail-blend-screen"><span class="gmail-blend-difference">Sponsored by Circle</span></span></div>
             </div>
             
             <div class="content">
@@ -1775,6 +1818,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Welcome to ${planName}! - Circle</title>
         <style>
             body {
@@ -1942,8 +1987,10 @@ https://circle.orincore.com
             .footer-logo {
                 font-size: 24px;
                 font-weight: 700;
+                color: #7C2B86;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
+                background-clip: text;
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 16px;
             }
@@ -1966,14 +2013,20 @@ https://circle.orincore.com
                 .subscription-details table { font-size: 14px; }
                 .subscription-details td { padding: 12px 16px !important; }
             }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
-                <div class="premium-badge">${planName} Member</div>
+                </div>
+                </div>
+                <div class="premium-badge"><span class="gmail-blend-screen"><span class="gmail-blend-difference">${planName} Member</span></span></div>
             </div>
             
             <div class="content">
@@ -2072,6 +2125,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Subscription Cancelled - Circle</title>
         <style>
             body {
@@ -2169,6 +2224,7 @@ https://circle.orincore.com
             .footer-logo {
                 font-size: 24px;
                 font-weight: 700;
+                color: #7C2B86;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
                 background-clip: text;
@@ -2188,13 +2244,19 @@ https://circle.orincore.com
                 .subscription-details table { font-size: 14px; }
                 .subscription-details td { padding: 12px 16px !important; }
             }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -2268,6 +2330,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Subscription Expired - Circle</title>
         <style>
             body {
@@ -2383,6 +2447,7 @@ https://circle.orincore.com
             .footer-logo {
                 font-size: 24px;
                 font-weight: 700;
+                color: #7C2B86;
                 background: linear-gradient(135deg, #7C2B86, #E91E63);
                 -webkit-background-clip: text;
                 background-clip: text;
@@ -2402,13 +2467,19 @@ https://circle.orincore.com
                 .subscription-details table { font-size: 14px; }
                 .subscription-details td { padding: 12px 16px !important; }
             }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -2609,6 +2680,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Refund Request Received - Circle</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8f9fa; }
@@ -2628,14 +2701,20 @@ https://circle.orincore.com
             .footer { text-align: center; padding: 40px 20px; background: #f8f9fa; color: #6B7280; }
             .footer-logo { font-size: 24px; font-weight: 800; color: #7C2B86; margin-bottom: 12px; }
             .footer-text { font-size: 14px; margin-bottom: 8px; }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">C</div>
                 <div class="title">Refund Request Received</div>
                 <div class="subtitle">We've received your refund request</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -2704,6 +2783,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Refund Approved - Circle</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8f9fa; }
@@ -2723,14 +2804,20 @@ https://circle.orincore.com
             .footer { text-align: center; padding: 40px 20px; background: #f8f9fa; color: #6B7280; }
             .footer-logo { font-size: 24px; font-weight: 800; color: #7C2B86; margin-bottom: 12px; }
             .footer-text { font-size: 14px; margin-bottom: 8px; }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">C</div>
                 <div class="title">Refund Approved</div>
                 <div class="subtitle">Your refund has been processed</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -2799,6 +2886,8 @@ https://circle.orincore.com
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <title>Refund Request Update - Circle</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8f9fa; }
@@ -2821,14 +2910,20 @@ https://circle.orincore.com
             .footer { text-align: center; padding: 40px 20px; background: #f8f9fa; color: #6B7280; }
             .footer-logo { font-size: 24px; font-weight: 800; color: #7C2B86; margin-bottom: 12px; }
             .footer-text { font-size: 14px; margin-bottom: 8px; }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">C</div>
                 <div class="title">Refund Request Update</div>
                 <div class="subtitle">We've reviewed your refund request</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -2965,6 +3060,8 @@ https://circle.orincore.com
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5; }
             .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; }
@@ -2982,18 +3079,24 @@ https://circle.orincore.com
             .feature-item:before { content: ""; position: absolute; left: 0; }
             .footer { background-color: #f8f9fa; padding: 30px; text-align: center; color: #6c757d; font-size: 14px; }
             .urgent-badge { display: inline-block; background-color: #FF6B6B; color: white; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 15px; }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-text">Beacon Helper Request</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
                 <div style="text-align: center;">
-                    <span class="urgent-badge">RESPONSE NEEDED</span>
+                    <span class="urgent-badge"><span class="gmail-blend-screen"><span class="gmail-blend-difference">RESPONSE NEEDED</span></span></span>
                 </div>
                 <div class="title">Someone Needs Your Help!</div>
                 
@@ -3009,7 +3112,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div style="text-align: center;">
-                    <a href="https://circle.orincore.com" class="cta-button">Open Circle & Respond</a>
+                    <a href="https://circle.orincore.com" class="cta-button"><span class="gmail-blend-screen"><span class="gmail-blend-difference">Open Circle & Respond</span></span></a>
                 </div>
                 
                 <div class="features">
@@ -3054,6 +3157,8 @@ https://circle.orincore.com
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5; }
             .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; }
@@ -3068,13 +3173,19 @@ https://circle.orincore.com
             .feature-item { margin: 10px 0; padding-left: 25px; position: relative; }
             .feature-item:before { content: ""; position: absolute; left: 0; }
             .footer { background-color: #f8f9fa; padding: 30px; text-align: center; color: #6c757d; font-size: 14px; }
+            u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+            u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
         </style>
     </head>
-    <body>
+    <body class="body">
         <div class="container">
             <div class="header">
+                <div class="gmail-blend-screen">
+                <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
                 <div class="header-text">Your Blind Date is Waiting!</div>
+                </div>
+                </div>
             </div>
             
             <div class="content">
@@ -3088,7 +3199,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div style="text-align: center;">
-                    <a href="https://circle.orincore.com" class="cta-button">Open Circle & Start Chatting</a>
+                    <a href="https://circle.orincore.com" class="cta-button"><span class="gmail-blend-screen"><span class="gmail-blend-difference">Open Circle & Start Chatting</span></span></a>
                 </div>
                 
                 <div class="features">
