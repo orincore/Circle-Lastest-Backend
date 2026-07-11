@@ -1,29 +1,10 @@
-import nodemailer from 'nodemailer';
+import type nodemailer from 'nodemailer';
+import { sesTransport } from '../server/config/sesTransport.js';
+import { EMAIL_SENDERS } from '../server/config/emailSenders.js';
 
-// Email service using Brevo (Sendinblue) SMTP
+// Email service using AWS SES (src/server/config/sesTransport.ts)
 class EmailService {
-  private transporter: nodemailer.Transporter;
-
-  constructor() {
-    this.transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: false, // Use TLS
-      auth: {
-        user: process.env.SMTP_USER || '',
-        pass: process.env.SMTP_PASSWORD || '',
-      },
-    });
-
-    // Verify connection configuration
-    this.transporter.verify((error: Error | null, success: boolean) => {
-      if (error) {
-        console.error('❌ Email service connection failed:', error);
-      } else {
-        //console.log('✅ Email service ready to send messages');
-      }
-    });
-  }
+  private transporter: nodemailer.Transporter | null = sesTransport;
 
   async sendEmail(options: {
     to: string;
@@ -33,9 +14,12 @@ class EmailService {
     from?: string;
   }) {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>';
+      if (!this.transporter) {
+        throw new Error('AWS SES transport is not configured (missing AWS credentials/region)');
+      }
+
       const mailOptions = {
-        from: options.from || defaultFrom,
+        from: options.from || EMAIL_SENDERS.marketing,
         to: options.to,
         subject: options.subject,
         html: options.html,

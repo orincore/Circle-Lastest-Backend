@@ -15,14 +15,6 @@ const envSchema = z.object({
   AWS_ACCESS_KEY_ID: z.string().optional().default(''),
   AWS_SECRET_ACCESS_KEY: z.string().optional().default(''),
   DEFAULT_PROFILE_PHOTO_URL: z.string().url().optional().default('https://placehold.co/200x200?text=Profile'),
-  // SMTP for transactional emails
-  SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().optional(),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
-  SMTP_PASSWORD: z.string().optional(), // Alternative to SMTP_PASS
-  SMTP_FROM: z.string().optional(),
-  SMTP_FROM_EMAIL: z.string().optional(), // Alternative to SMTP_FROM
   // Google Play Console (service account)
   GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().optional(),
   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: z.string().optional(),

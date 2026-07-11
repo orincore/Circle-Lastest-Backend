@@ -1,7 +1,9 @@
-import nodemailer from 'nodemailer'
+import type nodemailer from 'nodemailer'
 import { eq, lt } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import { emailOtps } from '../db/schema.js'
+import { sesTransport } from '../config/sesTransport.js'
+import { EMAIL_SENDERS } from '../config/emailSenders.js'
 
 interface EmailOTP {
   email: string
@@ -12,32 +14,16 @@ interface EmailOTP {
 }
 
 class EmailService {
-  private transporter: nodemailer.Transporter
-  private defaultFrom: string
+  // Sent via AWS SES (src/server/config/sesTransport.ts) -- verification
+  // itself, and readiness logging, happen once when that module loads.
+  private transporter: nodemailer.Transporter | null = sesTransport
+  private defaultFrom: string = EMAIL_SENDERS.verify
 
-  constructor() {
-    
-    this.defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle - Dating App" <verify@circle.orincore.com>'
-
-    // Configure email transporter using SMTP (same as campaigns)
-    this.transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: false, // Use TLS
-      auth: {
-        user: process.env.SMTP_USER || '',
-        pass: process.env.SMTP_PASSWORD || '',
-      },
-    })
-
-    // Verify connection configuration
-    this.transporter.verify((error, success) => {
-      if (error) {
-        console.error('❌ Email service connection failed:', error)
-      } else {
-        //console.log('✅ Email service ready to send messages')
-      }
-    })
+  private async send(mailOptions: Record<string, unknown>) {
+    if (!this.transporter) {
+      throw new Error('AWS SES transport is not configured (missing AWS credentials/region)')
+    }
+    return this.transporter.sendMail(mailOptions as any)
   }
 
   /**
@@ -70,7 +56,7 @@ class EmailService {
         priority: 'high' as 'high'
       }
 
-      const result = await this.transporter.sendMail(mailOptions) as any
+      const result = await this.send(mailOptions) as any
       console.log('✅ OTP email sent:', result?.messageId)
       return true
     } catch (error) {
@@ -419,7 +405,7 @@ https://circle.orincore.com
             </div>
             
             <div class="content">
-                <div class="greeting">Hi${name ? ` ${name}` : ' there'}! 👋</div>
+                <div class="greeting">Hi${name ? ` ${name}` : ' there'}!</div>
                 
                 <div class="message">
                     Welcome to <strong>Circle</strong>! We're excited to have you join our community of amazing people. 
@@ -432,7 +418,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="instructions">
-                    <h3>📱 How to verify:</h3>
+                    <h3>How to verify:</h3>
                     <ul>
                         <li>Open the Circle app on your device</li>
                         <li>Enter this 6-digit code in the verification screen</li>
@@ -442,7 +428,6 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="security-notice">
-                    <div class="icon">🔒</div>
                     <div class="title">Security Notice</div>
                     <div class="text">
                         This code expires in <strong>10 minutes</strong> and can only be used once. 
@@ -453,7 +438,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Thanks for joining our community! 💜</div>
+                <div class="footer-text">Thanks for joining our community!</div>
                 <div class="footer-text">Need help? We're here for you.</div>
                 
                 <div class="footer-links">
@@ -478,15 +463,14 @@ https://circle.orincore.com
    */
   async sendPasswordResetEmail(email: string, otp: string, name: string): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.verify,
         to: email,
         subject: 'Password Reset Code - Circle',
         html: this.getPasswordResetEmailTemplate(name, otp),
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Password reset email sent:', result.messageId)
       return true
     } catch (error) {
@@ -500,15 +484,14 @@ https://circle.orincore.com
    */
   async sendPasswordResetConfirmation(email: string, name: string): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.security,
         to: email,
         subject: 'Password Reset Successful - Circle',
         html: this.getPasswordResetConfirmationTemplate(name),
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Password reset confirmation email sent:', result.messageId)
       return true
     } catch (error) {
@@ -522,15 +505,14 @@ https://circle.orincore.com
    */
   async sendWelcomeEmail(email: string, name: string): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle App" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.noreply,
         to: email,
-        subject: 'Welcome to Circle! 🎉',
+        subject: 'Welcome to Circle',
         html: this.getWelcomeEmailTemplate(name),
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Welcome email sent:', result.messageId)
       return true
     } catch (error) {
@@ -577,7 +559,7 @@ https://circle.orincore.com
                 position: relative;
             }
             .header::after {
-                content: '🎉';
+                content: '';
                 position: absolute;
                 top: 20px;
                 right: 30px;
@@ -768,11 +750,11 @@ https://circle.orincore.com
             <div class="header">
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
-                <div class="welcome-badge">✨ Account Verified</div>
+                <div class="welcome-badge">Account Verified</div>
             </div>
             
             <div class="content">
-                <div class="welcome-title">Welcome to Circle, ${name}! 🎉</div>
+                <div class="welcome-title">Welcome to Circle, ${name}!</div>
                 
                 <div class="welcome-message">
                     Your email has been verified successfully! You're now part of our amazing community. 
@@ -781,35 +763,31 @@ https://circle.orincore.com
                 
                 <div class="features-grid">
                     <div class="feature-card">
-                        <span class="feature-icon">💕</span>
                         <div class="feature-title">Smart Matching</div>
                         <div class="feature-desc">Find people who truly connect with you</div>
                     </div>
                     <div class="feature-card">
-                        <span class="feature-icon">💬</span>
                         <div class="feature-title">Instant Chat</div>
                         <div class="feature-desc">Start meaningful conversations</div>
                     </div>
                     <div class="feature-card">
-                        <span class="feature-icon">👫</span>
                         <div class="feature-title">True Friendships</div>
                         <div class="feature-desc">Build lasting relationships</div>
                     </div>
                     <div class="feature-card">
-                        <span class="feature-icon">📍</span>
                         <div class="feature-title">Nearby Connections</div>
                         <div class="feature-desc">Meet amazing people around you</div>
                     </div>
                 </div>
                 
                 <div class="cta-section">
-                    <div class="cta-title">Ready to start your journey? 🚀</div>
+                    <div class="cta-title">Ready to start your journey?</div>
                     <div class="cta-text">Complete your profile and start connecting with amazing people today!</div>
                     <a href="#" class="cta-button">Complete Your Profile</a>
                 </div>
                 
                 <div class="tips-section">
-                    <div class="tips-title">💡 Tips for Success</div>
+                    <div class="tips-title">Tips for Success</div>
                     <div class="tip-item">
                         <div class="tip-number">1</div>
                         <div class="tip-text">Add a great profile photo that shows your personality</div>
@@ -831,7 +809,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Welcome to our community! 💜</div>
+                <div class="footer-text">Welcome to our community!</div>
                 <div class="footer-text">We're here to help you connect and belong.</div>
                 
                 <div class="footer-links">
@@ -856,15 +834,14 @@ https://circle.orincore.com
    */
   async sendSponsoredSubscriptionEmail(email: string, name: string, planType: string, expiresAt?: string): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.billing,
         to: email,
-        subject: `🎉 You've Been Gifted ${planType === 'premium' ? 'Premium' : 'Premium Plus'} Access!`,
+        subject: `You've been gifted ${planType === 'premium' ? 'Premium' : 'Premium Plus'} access`,
         html: this.getSponsoredSubscriptionTemplate(name, planType, expiresAt),
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Sponsored subscription email sent:', result.messageId)
       return true
     } catch (error) {
@@ -880,11 +857,8 @@ https://circle.orincore.com
     
 
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
-      //console.log('📧 Using from address:', defaultFrom)
-      
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.billing,
         to: email,
         subject: `Your ${planType === 'premium' ? 'Premium' : 'Premium Plus'} subscription has been cancelled`,
         html: this.getSubscriptionCancellationTemplate(name, planType, cancelledAt),
@@ -893,7 +867,7 @@ https://circle.orincore.com
       
 
       //console.log('📧 Attempting to send cancellation email via transporter...')
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Subscription cancellation email sent successfully:', result.messageId)
       return true
     } catch (error) {
@@ -916,11 +890,8 @@ https://circle.orincore.com
    
 
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
-      //console.log('📧 Using from address:', defaultFrom)
-      
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.billing,
         to: email,
         subject: `Your ${planType === 'premium' ? 'Premium' : 'Premium Plus'} subscription has expired`,
         html: this.getSubscriptionExpirationTemplate(name, planType, expiredAt),
@@ -929,7 +900,7 @@ https://circle.orincore.com
       
 
       //console.log('📧 Attempting to send expiration email via transporter...')
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Subscription expiration email sent successfully:', result.messageId)
       return true
     } catch (error) {
@@ -952,20 +923,17 @@ https://circle.orincore.com
     
 
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Team" <noreply@circle.orincore.com>'
-      //console.log('📧 Using from address:', defaultFrom)
-      
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.billing,
         to: email,
-        subject: `Welcome to ${planType === 'premium' ? 'Premium' : 'Premium Plus'}! 🚀`,
+        subject: `Welcome to ${planType === 'premium' ? 'Premium' : 'Premium Plus'}`,
         html: this.getSubscriptionConfirmationTemplate(name, planType, amount, currency, expiresAt),
       }
 
       
 
       //console.log('📧 Attempting to send email via transporter...')
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Subscription confirmation email sent successfully:', result.messageId)
       return true
     } catch (error) {
@@ -991,15 +959,14 @@ https://circle.orincore.com
     timestamp?: string
   }): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle Security" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.security,
         to: email,
-        subject: 'New Login to Your Circle Account 🔐',
+        subject: 'New Login to Your Circle Account',
         html: this.getLoginAlertTemplate(name, loginInfo),
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Login alert email sent:', result.messageId)
       return true
     } catch (error) {
@@ -1253,7 +1220,6 @@ https://circle.orincore.com
     <body>
         <div class="container">
             <div class="header">
-                <span class="security-icon">🔐</span>
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Security Alert</div>
                 <div class="alert-badge">New Login Detected</div>
@@ -1268,7 +1234,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="login-details">
-                    <h3>🔍 Login Details</h3>
+                    <h3>Login Details</h3>
                     <div class="detail-item">
                         <span class="detail-label">Time</span>
                         <span class="detail-value">${timestamp}</span>
@@ -1288,7 +1254,6 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="security-section">
-                    <div class="icon">⚠️</div>
                     <div class="title">Didn't recognize this login?</div>
                     <div class="text">
                         If this wasn't you, your account may be compromised. Take action immediately to secure your account 
@@ -1301,21 +1266,17 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="tips-section">
-                    <div class="tips-title">🛡️ Keep Your Account Safe</div>
+                    <div class="tips-title">Keep Your Account Safe</div>
                     <div class="tip-item">
-                        <span class="tip-icon">✅</span>
                         <div class="tip-text">Use a strong, unique password for your Circle account</div>
                     </div>
                     <div class="tip-item">
-                        <span class="tip-icon">✅</span>
                         <div class="tip-text">Enable two-factor authentication for extra security</div>
                     </div>
                     <div class="tip-item">
-                        <span class="tip-icon">✅</span>
                         <div class="tip-text">Never share your login credentials with anyone</div>
                     </div>
                     <div class="tip-item">
-                        <span class="tip-icon">✅</span>
                         <div class="tip-text">Log out from shared or public devices</div>
                     </div>
                 </div>
@@ -1323,7 +1284,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Keeping your account secure 🔒</div>
+                <div class="footer-text">Keeping your account secure</div>
                 <div class="footer-text">Questions? We're here to help.</div>
                 
                 <div class="footer-links">
@@ -1401,7 +1362,6 @@ https://circle.orincore.com
             </div>
             
             <div class="content">
-                <div class="icon">🔒</div>
                 <div class="title">Reset Your Password</div>
                 <div class="message">
                     Hi ${name},<br><br>
@@ -1415,7 +1375,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="warning">
-                    <div class="warning-title">⚠️ Important Security Information</div>
+                    <div class="warning-title">Important Security Information</div>
                     <div class="warning-text">
                         • This code expires in 10 minutes<br>
                         • Never share this code with anyone<br>
@@ -1427,7 +1387,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Keeping your account secure 🔒</div>
+                <div class="footer-text">Keeping your account secure</div>
                 <br>© 2024 Circle App. All rights reserved.
             </div>
         </div>
@@ -1478,7 +1438,6 @@ https://circle.orincore.com
             </div>
             
             <div class="content">
-                <div class="icon">✅</div>
                 <div class="title">Password Reset Complete!</div>
                 <div class="message">
                     Hi ${name},<br><br>
@@ -1486,28 +1445,24 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="success-box">
-                    <div class="success-title">🎉 All Set!</div>
+                    <div class="success-title">All Set!</div>
                     <div class="success-text">
                         Your account is secure and ready to use with your new password.
                     </div>
                 </div>
                 
                 <div class="tips">
-                    <div class="tips-title">🔐 Security Tips</div>
+                    <div class="tips-title">Security Tips</div>
                     <div class="tip-item">
-                        <span class="tip-icon">💡</span>
                         <div class="tip-text">Use a unique password that you don't use elsewhere</div>
                     </div>
                     <div class="tip-item">
-                        <span class="tip-icon">🔒</span>
                         <div class="tip-text">Keep your password private and secure</div>
                     </div>
                     <div class="tip-item">
-                        <span class="tip-icon">📱</span>
                         <div class="tip-text">Consider using a password manager</div>
                     </div>
                     <div class="tip-item">
-                        <span class="tip-icon">⚠️</span>
                         <div class="tip-text">Contact us immediately if you notice any suspicious activity</div>
                     </div>
                 </div>
@@ -1515,7 +1470,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Welcome back to Circle! 🎉</div>
+                <div class="footer-text">Welcome back to Circle!</div>
                 <br>© 2024 Circle App. All rights reserved.
             </div>
         </div>
@@ -1713,14 +1668,13 @@ https://circle.orincore.com
     <body>
         <div class="container">
             <div class="header">
-                <div class="gift-icon">🎁</div>
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
-                <div class="gift-badge">✨ Sponsored by Circle</div>
+                <div class="gift-badge">Sponsored by Circle</div>
             </div>
             
             <div class="content">
-                <div class="gift-title">Surprise, ${name}! 🎉</div>
+                <div class="gift-title">Surprise, ${name}!</div>
                 
                 <div class="gift-message">
                     Great news! You've been gifted <strong>${planName}</strong> access to Circle! 
@@ -1743,7 +1697,7 @@ https://circle.orincore.com
                         </tr>
                         <tr>
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
-                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">✅ Active</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">Active</td>
                         </tr>
                     </table>
                 </div>
@@ -1752,28 +1706,22 @@ https://circle.orincore.com
                     <div class="features-title">Your Premium Features</div>
                     <div class="features-grid">
                         <div class="feature-card">
-                            <span class="feature-icon">💫</span>
                             <div class="feature-text">Unlimited Matches</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">📸</span>
                             <div class="feature-text">Instagram Access</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">🚫</span>
                             <div class="feature-text">Ad-Free Experience</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">👑</span>
                             <div class="feature-text">Premium Badge</div>
                         </div>
                         ${planType === 'premium_plus' ? `
                         <div class="feature-card">
-                            <span class="feature-icon">💖</span>
                             <div class="feature-text">See Who Liked You</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">🚀</span>
                             <div class="feature-text">Profile Boost</div>
                         </div>
                         ` : ''}
@@ -1781,7 +1729,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="next-steps">
-                    <div class="next-steps-title">🎯 What's Next?</div>
+                    <div class="next-steps-title">What's Next?</div>
                     <div class="next-steps-text">
                         Open the Circle app to start using your premium features! ${expiryText} 
                         This upgrade is our gift to you - enjoy connecting with amazing people!
@@ -1791,7 +1739,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Enjoy your premium experience! 💜</div>
+                <div class="footer-text">Enjoy your premium experience!</div>
                 <div class="footer-text">This upgrade is our gift to you.</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
@@ -2023,14 +1971,13 @@ https://circle.orincore.com
     <body>
         <div class="container">
             <div class="header">
-                <div class="success-icon">🚀</div>
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
-                <div class="premium-badge">✨ ${planName} Member</div>
+                <div class="premium-badge">${planName} Member</div>
             </div>
             
             <div class="content">
-                <div class="welcome-title">Welcome to ${planName}, ${name}! 🎉</div>
+                <div class="welcome-title">Welcome to ${planName}, ${name}!</div>
                 
                 <div class="welcome-message">
                     Thank you for subscribing to <strong>${planName}</strong>! Your payment has been processed successfully, 
@@ -2053,7 +2000,7 @@ https://circle.orincore.com
                         </tr>
                         <tr>
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
-                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">✅ Active</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">Active</td>
                         </tr>
                     </table>
                 </div>
@@ -2062,28 +2009,22 @@ https://circle.orincore.com
                     <div class="features-title">Your Premium Features</div>
                     <div class="features-grid">
                         <div class="feature-card">
-                            <span class="feature-icon">💫</span>
                             <div class="feature-text">Unlimited Matches</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">📸</span>
                             <div class="feature-text">Instagram Access</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">🚫</span>
                             <div class="feature-text">Ad-Free Experience</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">👑</span>
                             <div class="feature-text">Premium Badge</div>
                         </div>
                         ${planType === 'premium_plus' ? `
                         <div class="feature-card">
-                            <span class="feature-icon">💖</span>
                             <div class="feature-text">See Who Liked You</div>
                         </div>
                         <div class="feature-card">
-                            <span class="feature-icon">🚀</span>
                             <div class="feature-text">Profile Boost</div>
                         </div>
                         ` : ''}
@@ -2091,7 +2032,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="next-steps">
-                    <div class="next-steps-title">🎯 What's Next?</div>
+                    <div class="next-steps-title">What's Next?</div>
                     <div class="next-steps-text">
                         Open the Circle app to start using your premium features! ${expiryText} 
                         You can manage your subscription anytime in your account settings.
@@ -2101,7 +2042,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Thank you for choosing ${planName}! 💜</div>
+                <div class="footer-text">Thank you for choosing ${planName}!</div>
                 <div class="footer-text">Questions? We're here to help.</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
@@ -2252,7 +2193,6 @@ https://circle.orincore.com
     <body>
         <div class="container">
             <div class="header">
-                <div class="cancel-icon">😔</div>
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
             </div>
@@ -2273,7 +2213,7 @@ https://circle.orincore.com
                         </tr>
                         <tr style="border-bottom: 2px solid #FFE1E1;">
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
-                            <td style="font-weight: 700; color: #FF6B6B; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">❌ Cancelled</td>
+                            <td style="font-weight: 700; color: #FF6B6B; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">Cancelled</td>
                         </tr>
                         <tr style="border-bottom: 2px solid #FFE1E1;">
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF5F5;">Access Until:</td>
@@ -2287,7 +2227,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="next-steps">
-                    <div class="next-steps-title">💡 What happens next?</div>
+                    <div class="next-steps-title">What happens next?</div>
                     <div class="next-steps-text">
                         Your premium features will remain active until the end of your current billing period. 
                         After that, your account will return to our free plan. You can resubscribe anytime from your account settings.
@@ -2297,7 +2237,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">We hope to see you back soon! 💜</div>
+                <div class="footer-text">We hope to see you back soon!</div>
                 <div class="footer-text">Thank you for being part of Circle.</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
@@ -2467,7 +2407,6 @@ https://circle.orincore.com
     <body>
         <div class="container">
             <div class="header">
-                <div class="expire-icon">⏰</div>
                 <div class="logo">Circle</div>
                 <div class="header-subtitle">Connect • Match • Belong</div>
             </div>
@@ -2488,7 +2427,7 @@ https://circle.orincore.com
                         </tr>
                         <tr style="border-bottom: 2px solid #FFE0B2;">
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
-                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">⏰ Expired</td>
+                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">Expired</td>
                         </tr>
                         <tr style="border-bottom: 2px solid #FFE0B2;">
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF8E1;">Current Plan:</td>
@@ -2502,14 +2441,14 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="renew-section">
-                    <div class="renew-title">Ready to Renew? 🚀</div>
+                    <div class="renew-title">Ready to Renew?</div>
                     <div class="renew-text">
                         Get back to unlimited matches, Instagram access, and all your favorite premium features!
                     </div>
                 </div>
                 
                 <div class="next-steps">
-                    <div class="next-steps-title">💡 What's next?</div>
+                    <div class="next-steps-title">What's next?</div>
                     <div class="next-steps-text">
                         Open the Circle app and go to Settings → Subscription to renew your ${planName} access. 
                         Your premium features will be restored immediately after payment.
@@ -2519,7 +2458,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">We'd love to have you back! 💜</div>
+                <div class="footer-text">We'd love to have you back!</div>
                 <div class="footer-text">Renew anytime to continue your premium journey.</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
@@ -2549,13 +2488,13 @@ https://circle.orincore.com
       const formattedAmount = `${currency.toUpperCase()} ${amount.toFixed(2)}`
 
       const mailOptions = {
-        from: `"Circle Support" <${process.env.SMTP_USER}>`,
+        from: EMAIL_SENDERS.support,
         to: email,
-        subject: '🔄 Refund Request Received - Circle',
+        subject: 'Refund Request Received - Circle',
         html: this.getRefundRequestTemplate(username, planName, formattedAmount, refundId)
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Refund request confirmation email sent:', result.messageId)
       return true
     } catch (error) {
@@ -2579,13 +2518,13 @@ https://circle.orincore.com
       const formattedAmount = `${currency.toUpperCase()} ${amount.toFixed(2)}`
 
       const mailOptions = {
-        from: `"Circle Support" <${process.env.SMTP_USER}>`,
+        from: EMAIL_SENDERS.support,
         to: email,
-        subject: '✅ Refund Approved - Circle',
+        subject: 'Refund Approved - Circle',
         html: this.getRefundApprovalTemplate(username, planName, formattedAmount)
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Refund approval email sent:', result.messageId)
       return true
     } catch (error) {
@@ -2604,9 +2543,8 @@ https://circle.orincore.com
     content: string
   ): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle AI Support" <ai-support@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.support,
         to: supportEmail,
         replyTo: userEmail,
         subject: subject,
@@ -2624,7 +2562,7 @@ https://circle.orincore.com
         `
       }
 
-      await this.transporter.sendMail(mailOptions)
+      await this.send(mailOptions)
       //console.log('✅ Support escalation email sent successfully to:', supportEmail)
       return true
     } catch (error) {
@@ -2646,13 +2584,13 @@ https://circle.orincore.com
       const planName = planType === 'premium' ? 'Premium' : 'Premium Plus'
 
       const mailOptions = {
-        from: `"Circle Support" <${process.env.SMTP_USER}>`,
+        from: EMAIL_SENDERS.support,
         to: email,
-        subject: '❌ Refund Request Update - Circle',
+        subject: 'Refund Request Update - Circle',
         html: this.getRefundRejectionTemplate(username, planName, reason)
       }
 
-      const result = await this.transporter.sendMail(mailOptions)
+      const result = await this.send(mailOptions)
       //console.log('✅ Refund rejection email sent:', result.messageId)
       return true
     } catch (error) {
@@ -2701,7 +2639,7 @@ https://circle.orincore.com
             </div>
             
             <div class="content">
-                <div class="greeting">Hi ${username}! 👋</div>
+                <div class="greeting">Hi ${username}!</div>
                 
                 <div class="message">
                     We've successfully received your refund request for your ${planName} subscription. 
@@ -2724,13 +2662,13 @@ https://circle.orincore.com
                         </tr>
                         <tr>
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F9FA;">Status:</td>
-                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F9FA;">⏳ Under Review</td>
+                            <td style="font-weight: 700; color: #FFA726; padding: 16px 20px; text-align: right; font-size: 16px; background: #F8F9FA;">Under Review</td>
                         </tr>
                     </table>
                 </div>
                 
                 <div class="next-steps">
-                    <div class="next-steps-title">📋 What happens next?</div>
+                    <div class="next-steps-title">What happens next?</div>
                     <div class="next-steps-text">
                         • Our team will review your request within 2 business days<br>
                         • You'll receive an email with the decision<br>
@@ -2742,7 +2680,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Thank you for using Circle! 💜</div>
+                <div class="footer-text">Thank you for using Circle!</div>
                 <div class="footer-text">If you have any questions, please contact support@circle.orincore.com</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
@@ -2791,12 +2729,12 @@ https://circle.orincore.com
         <div class="container">
             <div class="header">
                 <div class="logo">C</div>
-                <div class="title">Refund Approved ✅</div>
+                <div class="title">Refund Approved</div>
                 <div class="subtitle">Your refund has been processed</div>
             </div>
             
             <div class="content">
-                <div class="greeting">Hi ${username}! 👋</div>
+                <div class="greeting">Hi ${username}!</div>
                 
                 <div class="message">
                     Great news! Your refund request for your ${planName} subscription has been approved and processed. 
@@ -2815,7 +2753,7 @@ https://circle.orincore.com
                         </tr>
                         <tr style="border-bottom: 2px solid #E8F5E8;">
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFFFFF;">Status:</td>
-                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">✅ Processed</td>
+                            <td style="font-weight: 700; color: #22C55E; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFFFFF;">Processed</td>
                         </tr>
                         <tr>
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #F8F9FA;">Processing Time:</td>
@@ -2825,7 +2763,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="next-steps">
-                    <div class="next-steps-title">💳 Important Information</div>
+                    <div class="next-steps-title">Important Information</div>
                     <div class="next-steps-text">
                         • The refund will appear on your original payment method<br>
                         • Processing time depends on your bank or payment provider<br>
@@ -2837,7 +2775,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Thank you for using Circle! 💜</div>
+                <div class="footer-text">Thank you for using Circle!</div>
                 <div class="footer-text">We hope to see you back soon!</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
@@ -2894,7 +2832,7 @@ https://circle.orincore.com
             </div>
             
             <div class="content">
-                <div class="greeting">Hi ${username}! 👋</div>
+                <div class="greeting">Hi ${username}!</div>
                 
                 <div class="message">
                     Thank you for your refund request for your ${planName} subscription. 
@@ -2909,7 +2847,7 @@ https://circle.orincore.com
                         </tr>
                         <tr style="border-bottom: 2px solid #FFE0E0;">
                             <td style="font-weight: 600; color: #1F1147; padding: 16px 20px; width: 50%; font-size: 16px; background: #FFF8F8;">Status:</td>
-                            <td style="font-weight: 700; color: #EF4444; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFF8F8;">❌ Not Approved</td>
+                            <td style="font-weight: 700; color: #EF4444; padding: 16px 20px; text-align: right; font-size: 16px; background: #FFF8F8;">Not Approved</td>
                         </tr>
                         <tr>
                             <td colspan="2" style="font-weight: 600; color: #1F1147; padding: 16px 20px; font-size: 16px; background: #FFFFFF;">
@@ -2921,7 +2859,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="next-steps">
-                    <div class="next-steps-title">📞 Need Help?</div>
+                    <div class="next-steps-title">Need Help?</div>
                     <div class="next-steps-text">
                         If you have questions about this decision or believe there's been an error, 
                         please contact our support team at support@circle.orincore.com. 
@@ -2930,7 +2868,7 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="renew-section">
-                    <div class="renew-title">Continue Enjoying Premium 🚀</div>
+                    <div class="renew-title">Continue Enjoying Premium</div>
                     <div class="renew-text">
                         Your ${planName} subscription is still active! Continue enjoying unlimited matches, 
                         Instagram access, and all your favorite premium features.
@@ -2940,7 +2878,7 @@ https://circle.orincore.com
             
             <div class="footer">
                 <div class="footer-logo">Circle</div>
-                <div class="footer-text">Thank you for using Circle! 💜</div>
+                <div class="footer-text">Thank you for using Circle!</div>
                 <div class="footer-text">We appreciate your understanding.</div>
                 
                 <div style="margin-top: 24px; font-size: 12px; color: #ADB5BD;">
@@ -2959,11 +2897,10 @@ https://circle.orincore.com
    */
   async sendBlindDateReminder(email: string, name: string, matchId: string): Promise<boolean> {
     try {
-      const defaultFrom = process.env.SMTP_FROM_EMAIL || '"Circle - Dating App" <noreply@circle.orincore.com>'
       const mailOptions = {
-        from: defaultFrom,
+        from: EMAIL_SENDERS.noreply,
         to: email,
-        subject: '💬 Your Blind Date Match is Waiting!',
+        subject: 'Your blind date match is waiting',
         html: this.getBlindDateReminderTemplate(name, matchId),
         text: `Hi ${name},\n\nYou have an active blind date match waiting for you! Start chatting to reveal their identity and see if there's a connection.\n\nOpen Circle app to start chatting: https://circle.orincore.com\n\nBest regards,\nThe Circle Team`,
         headers: {
@@ -2972,7 +2909,7 @@ https://circle.orincore.com
         },
       }
 
-      await this.transporter.sendMail(mailOptions)
+      await this.send(mailOptions)
       console.log('✅ Blind date reminder email sent:', email)
       return true
     } catch (error) {
@@ -2993,9 +2930,9 @@ https://circle.orincore.com
   ): Promise<boolean> {
     try {
       const mailOptions = {
-        from: this.defaultFrom,
+        from: EMAIL_SENDERS.noreply,
         to: email,
-        subject: '🆘 Someone Needs Your Help!',
+        subject: 'Someone needs your help',
         html: this.getBeaconHelperRequestTemplate(giverName, receiverName, helpSummary, requestId),
         headers: {
           'X-Priority': '1',
@@ -3004,7 +2941,7 @@ https://circle.orincore.com
         },
       }
 
-      await this.transporter.sendMail(mailOptions)
+      await this.send(mailOptions)
       console.log('✅ Beacon helper request email sent:', email)
       return true
     } catch (error) {
@@ -3042,7 +2979,7 @@ https://circle.orincore.com
             .cta-button { display: inline-block; background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: bold; font-size: 16px; text-align: center; margin: 20px 0; }
             .features { background-color: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
             .feature-item { margin: 10px 0; padding-left: 25px; position: relative; }
-            .feature-item:before { content: "✨"; position: absolute; left: 0; }
+            .feature-item:before { content: ""; position: absolute; left: 0; }
             .footer { background-color: #f8f9fa; padding: 30px; text-align: center; color: #6c757d; font-size: 14px; }
             .urgent-badge { display: inline-block; background-color: #FF6B6B; color: white; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 15px; }
         </style>
@@ -3050,24 +2987,24 @@ https://circle.orincore.com
     <body>
         <div class="container">
             <div class="header">
-                <div class="logo">🆘 Circle</div>
+                <div class="logo">Circle</div>
                 <div class="header-text">Beacon Helper Request</div>
             </div>
             
             <div class="content">
                 <div style="text-align: center;">
-                    <span class="urgent-badge">⏰ RESPONSE NEEDED</span>
+                    <span class="urgent-badge">RESPONSE NEEDED</span>
                 </div>
                 <div class="title">Someone Needs Your Help!</div>
                 
                 <div class="message">
                     Hi ${giverName},<br><br>
-                    <strong>${receiverName}</strong> has reached out for help with something you're skilled at! 🌟<br><br>
+                    <strong>${receiverName}</strong> has reached out for help with something you're skilled at!<br><br>
                     They're counting on your expertise and would really appreciate your guidance.
                 </div>
                 
                 <div class="help-request">
-                    <div style="font-weight: bold; color: #FF6B6B; margin-bottom: 10px;">📝 Help Request:</div>
+                    <div style="font-weight: bold; color: #FF6B6B; margin-bottom: 10px;">Help Request:</div>
                     <div class="help-text">"${helpSummary}"</div>
                 </div>
                 
@@ -3083,19 +3020,19 @@ https://circle.orincore.com
                 </div>
                 
                 <div class="message" style="margin-top: 30px; font-size: 14px; color: #6c757d;">
-                    <strong>⏱️ Time Sensitive:</strong> Please respond within 1 hour if you're available to help. 
+                    <strong>Time Sensitive:</strong> Please respond within 1 hour if you're available to help.
                     If you can't help right now, we'll find another helper for them.
                 </div>
                 
                 <div class="message" style="font-size: 14px; color: #6c757d;">
-                    <strong>💡 Why You?</strong> Our AI matched you based on your skills, interests, and experience. 
+                    <strong>Why You?</strong> Our AI matched you based on your skills, interests, and experience.
                     You're the perfect person to help with this request!
                 </div>
             </div>
             
             <div class="footer">
                 <div style="font-weight: bold; margin-bottom: 10px;">Circle Beacon Helper</div>
-                <div>Connecting people who need help with those who can provide it 🤝</div>
+                <div>Connecting people who need help with those who can provide it</div>
                 <div style="margin-top: 20px; font-size: 12px;">
                     This is an automated notification. Please respond through the Circle app.
                     <br>© 2024 Circle App. All rights reserved.
@@ -3129,7 +3066,7 @@ https://circle.orincore.com
             .cta-button { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: bold; font-size: 16px; text-align: center; margin: 20px 0; }
             .features { background-color: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
             .feature-item { margin: 10px 0; padding-left: 25px; position: relative; }
-            .feature-item:before { content: "💕"; position: absolute; left: 0; }
+            .feature-item:before { content: ""; position: absolute; left: 0; }
             .footer { background-color: #f8f9fa; padding: 30px; text-align: center; color: #6c757d; font-size: 14px; }
         </style>
     </head>
@@ -3141,11 +3078,11 @@ https://circle.orincore.com
             </div>
             
             <div class="content">
-                <div class="title">💬 Don't Miss Your Match!</div>
+                <div class="title">Don't Miss Your Match!</div>
                 
                 <div class="message">
                     Hi ${name},<br><br>
-                    You have an <strong>active blind date match</strong> waiting for you! 🎭<br><br>
+                    You have an <strong>active blind date match</strong> waiting for you!<br><br>
                     Your match is excited to connect, but you haven't started chatting yet. 
                     Start the conversation now to reveal their identity and see if there's a spark!
                 </div>
@@ -3162,13 +3099,13 @@ https://circle.orincore.com
                 
                 <div class="message" style="margin-top: 30px; font-size: 14px; color: #6c757d;">
                     <strong>Tip:</strong> Blind dates are all about personality first! Ask interesting questions 
-                    and be yourself. The reveal will be worth the wait! ✨
+                    and be yourself. The reveal will be worth the wait!
                 </div>
             </div>
             
             <div class="footer">
                 <div style="font-weight: bold; margin-bottom: 10px;">Circle</div>
-                <div>Making meaningful connections, one conversation at a time 💜</div>
+                <div>Making meaningful connections, one conversation at a time</div>
                 <div style="margin-top: 20px; font-size: 12px;">
                     This is an automated reminder. Please do not reply to this email.
                     <br>© 2024 Circle App. All rights reserved.

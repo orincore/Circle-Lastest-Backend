@@ -1,9 +1,10 @@
 import { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import nodemailer from 'nodemailer';
 import { google } from 'googleapis';
 import { Redis } from 'ioredis';
 import { env } from '../config/env.js';
+import { sesTransport } from '../config/sesTransport.js';
+import { EMAIL_SENDERS } from '../config/emailSenders.js';
 
 const router = Router();
 
@@ -149,30 +150,14 @@ async function addGooglePlayTester(email: string) {
 }
 
 async function sendEmail(to: string, subject: string, html: string) {
-  // Support both naming conventions for SMTP credentials
-  const smtpPass = env.SMTP_PASS || env.SMTP_PASSWORD;
-  const smtpFrom = env.SMTP_FROM || env.SMTP_FROM_EMAIL || 'Circle <no-reply@circle.app>';
-  
-  if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_USER || !smtpPass) {
-    console.log('SMTP configuration missing:', {
-      host: !!env.SMTP_HOST,
-      port: !!env.SMTP_PORT,
-      user: !!env.SMTP_USER,
-      pass: !!smtpPass
-    });
-    return { success: true, skipped: true, reason: 'SMTP configuration missing' };
+  if (!sesTransport) {
+    console.log('AWS SES transport not configured -- missing AWS credentials/region');
+    return { success: true, skipped: true, reason: 'AWS SES not configured' };
   }
-  
+
   try {
-    const transporter = nodemailer.createTransport({
-      host: env.SMTP_HOST,
-      port: env.SMTP_PORT,
-      secure: env.SMTP_PORT === 465,
-      auth: { user: env.SMTP_USER, pass: smtpPass },
-    });
-    
     console.log(`Sending email to ${to} with subject: ${subject}`);
-    await transporter.sendMail({ from: smtpFrom, to, subject, html });
+    await sesTransport.sendMail({ from: EMAIL_SENDERS.careers, to, subject, html });
     console.log(`Email sent successfully to ${to}`);
     return { success: true };
   } catch (error) {

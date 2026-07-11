@@ -9,6 +9,7 @@ import { ContentFilterService, type PersonalInfoAnalysis } from './ai/content-fi
 import { emitToUser } from '../sockets/optimized-socket.js'
 import { NotificationService } from './notificationService.js'
 import { PushNotificationService } from './pushNotificationService.js'
+import { EMAIL_SENDERS } from '../config/emailSenders.js'
 import { randomUUID } from 'crypto'
 import { hashPassword } from '../utils/password.js'
 import { Redis } from 'ioredis'
@@ -728,8 +729,13 @@ export class BlindDatingService {
       
       logger.info({ matchId: match.id, userId, otherUserId }, 'Sent blind date match push notifications')
 
-      // Send anonymized email notifications to both users if emails are available
-      const { default: EmailService }: any = await import('./emailService.js')
+      // Send anonymized email notifications to both users if emails are available.
+      // This must be the generic emailService (src/services/emailService.ts),
+      // which exposes sendEmail() -- the main EmailService class at
+      // ./emailService.js only exposes specific named template methods and
+      // has no sendEmail(), so this previously resolved to a nonexistent
+      // method and silently failed inside the catch block below.
+      const { default: EmailService }: any = await import('../../services/emailService.js')
       const emailProfileRows = await db.select({ id: profiles.id, email: profiles.email, firstName: profiles.firstName })
         .from(profiles).where(inArray(profiles.id, [userId, otherUserId]))
 
@@ -758,8 +764,9 @@ export class BlindDatingService {
         `.trim()
 
         await EmailService.sendEmail({
+          from: EMAIL_SENDERS.noreply,
           to: userEmailInfo.email,
-          subject: 'New Blind Date match on Circle 🎭',
+          subject: 'New blind date match on Circle',
           html,
         })
       }
@@ -779,8 +786,9 @@ export class BlindDatingService {
         `.trim()
 
         await EmailService.sendEmail({
+          from: EMAIL_SENDERS.noreply,
           to: otherEmailInfo.email,
-          subject: 'New Blind Date match on Circle 🎭',
+          subject: 'New blind date match on Circle',
           html,
         })
       }
@@ -1063,10 +1071,62 @@ export class BlindDatingService {
           otherUserId: match.user_a,
           bothRevealed: true,
           friendshipCreated,
-          message: friendshipCreated 
+          message: friendshipCreated
             ? 'Identity revealed! You are now friends and can see each other\'s full profile.'
             : 'Identity revealed! You can now see each other\'s full profile.'
         })
+
+        // getAnonymizedProfile can return null (e.g. the profile row was
+        // deleted between match creation and reveal) -- fall back to a
+        // generic label rather than letting a missing profile break the
+        // notification text or the (string-typed) push helper below.
+        const user2Name = profile2?.first_name || 'Your match'
+        const user1Name = profile1?.first_name || 'Your match'
+
+        // Create in-app notifications. push: false -- the dedicated
+        // sendBlindDateRevealNotification calls below already deliver the
+        // push with the payload the app expects (same pattern as the
+        // blind_date_match notifications above), so the default push here
+        // would notify each user twice.
+        await Promise.all([
+          NotificationService.createNotification({
+            recipient_id: match.user_a,
+            type: 'blind_date_reveal',
+            title: '🎉 Identity Revealed!',
+            message: `${user2Name} has revealed their identity to you!`,
+            data: { matchId, chatId: match.chat_id },
+            push: false
+          }),
+          NotificationService.createNotification({
+            recipient_id: match.user_b,
+            type: 'blind_date_reveal',
+            title: '🎉 Identity Revealed!',
+            message: `${user1Name} has revealed their identity to you!`,
+            data: { matchId, chatId: match.chat_id },
+            push: false
+          })
+        ])
+
+        // Send push notifications to both users -- this is what makes a
+        // backgrounded/killed app learn about the reveal and lets tapping
+        // the notification open the chat (see AndroidNotificationService's
+        // 'blind_date_reveal' case on the mobile side).
+        await Promise.all([
+          PushNotificationService.sendBlindDateRevealNotification(
+            match.user_a,
+            user2Name,
+            matchId,
+            match.chat_id || ''
+          ),
+          PushNotificationService.sendBlindDateRevealNotification(
+            match.user_b,
+            user1Name,
+            matchId,
+            match.chat_id || ''
+          )
+        ])
+
+        logger.info({ matchId, userA: match.user_a, userB: match.user_b }, 'Sent blind date reveal push notifications')
       } else {
         // First user revealed - notify other user
         const revealingUserProfile = await this.getAnonymizedProfile(requestingUserId, false)
