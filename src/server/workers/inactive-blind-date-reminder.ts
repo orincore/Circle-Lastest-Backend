@@ -85,8 +85,8 @@ async function sendReminders(match: BlindDateMatch) {
     for (const user of users) {
       // Send push notification
       await PushNotificationService.sendPushNotification(user.id, {
-        title: '💬 Your Blind Date is Waiting!',
-        body: 'You have an active blind date match. Start chatting to reveal their identity!',
+        title: '💬 Your Blind Connect is Waiting!',
+        body: 'You have an active Blind Connect match. Start chatting to reveal their identity!',
         data: {
           type: 'blind_date_reminder',
           matchId: match.id,

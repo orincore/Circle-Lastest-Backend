@@ -27,7 +27,7 @@ export function describeMessageForNotification(msg: {
   if (msg.isViewOnce) {
     return msg.mediaType === 'video' ? '🔒 View once video' : '🔒 View once photo';
   }
-  if (msg.sharedMemeId) return '😂 Shared a meme';
+  if (msg.sharedMemeId) return '😂 Shared a nudge';
   if (msg.mediaType === 'video') return '🎥 Video';
   if (msg.mediaType === 'image') return '📷 Photo';
   return msg.text || 'New message';
@@ -475,7 +475,7 @@ export class PushNotificationService {
   ): Promise<boolean> {
     try {
       return await this.sendPushNotification(recipientId, {
-        title: '🎭 New Blind Date Found!',
+        title: '🎭 New Blind Connect Found!',
         body: 'You have a new anonymous match! Start chatting to discover who they are.',
         data: {
           type: 'blind_date_match',

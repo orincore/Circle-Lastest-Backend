@@ -397,14 +397,14 @@ router.post('/enable-for-all', requireAuth, requireAdmin, async (req: AdminReque
     
     res.json({
       success: true,
-      message: `Enabled blind dating for ${enabled} users`,
+      message: `Enabled Blind Connect for ${enabled} users`,
       enabled,
       errors,
       totalUsers: (allUsers || []).length
     })
   } catch (error) {
     logger.error({ error }, 'Error enabling blind dating for all')
-    res.status(500).json({ error: 'Failed to enable blind dating for all users' })
+    res.status(500).json({ error: 'Failed to enable Blind Connect for all users' })
   }
 })
 
@@ -511,12 +511,12 @@ router.post('/create-match', requireAuth, requireAdmin, async (req: AdminRequest
     
     res.json({
       success: true,
-      message: 'Blind date match created successfully',
+      message: 'Blind Connect match created successfully',
       match: result.match
     })
   } catch (error) {
     logger.error({ error }, 'Error creating specific blind date match')
-    res.status(500).json({ error: 'Failed to create blind date match' })
+    res.status(500).json({ error: 'Failed to create Blind Connect match' })
   }
 })
 
@@ -867,7 +867,7 @@ router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRe
 
     const result = {
       success: true,
-      message: 'All blind date data has been completely reset including chats',
+      message: 'All Blind Connect data has been completely reset including chats',
       deletedCounts: {
         matches: totalMatches,
         blindDateMessages: totalMessages,
@@ -886,7 +886,7 @@ router.post('/reset-all-matches', requireAuth, requireAdmin, async (req: AdminRe
     res.json(result)
   } catch (error) {
     logger.error({ error, adminId: req.user!.id }, 'Error resetting blind date matches')
-    res.status(500).json({ error: 'Failed to reset blind date matches' })
+    res.status(500).json({ error: 'Failed to reset Blind Connect matches' })
   }
 })
 

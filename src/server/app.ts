@@ -25,6 +25,7 @@ import matchmakingRouter from './routes/matchmaking.routes.js'
 import { performanceMiddleware } from './services/monitoring.js'
 import chatRouter from './routes/chat.routes.js'
 import jamRouter from './routes/jam.routes.js'
+import watchPartyRouter from './routes/watch-party.routes.js'
 import friendsRouter from './routes/friends.routes.js'
 import monitoringRouter from './routes/monitoring.routes.js'
 import exploreRouter from './routes/explore.routes.js'
@@ -67,6 +68,7 @@ import adminBlindDatingRouter from './routes/admin-blind-dating.routes.js'
 import adminMemesRouter from './routes/admin-memes.routes.js'
 import feedMemesRouter from './routes/feed-memes.routes.js'
 import memeConnectRouter from './routes/meme-connect.routes.js'
+import userMemesRouter from './routes/user-memes.routes.js'
 import dockerMonitoringRouter from './routes/docker-monitoring.routes.js'
 import appVersionRouter from './routes/app-version.routes.js'
 import promptMatchingRouter from './routes/prompt-matching.routes.js'
@@ -179,9 +181,16 @@ app.use(preventParameterPollution)
 // Body parsers with size limits (skip for file upload routes)
 app.use((req, res, next) => {
   // Skip body parsing for file upload routes - they use multer
-  if (req.path.includes('/verification/submit') || 
+  if (req.path.includes('/verification/submit') ||
       req.path.includes('/upload') ||
-      req.path.includes('/user-photos')) {
+      req.path.includes('/user-photos') ||
+      // Exact match only -- meme upload (POST) and the feed list (GET) both
+      // live at exactly this path with no body-parsing needs (multipart via
+      // multer, or no body at all). A broader substring match here would
+      // also catch /api/feed/memes/:id/comments, /share, /view-duration
+      // etc., which DO need express.json() for their JSON bodies -- an
+      // earlier version of this check did that and silently broke them.
+      req.path === '/api/feed/memes') {
     return next();
   }
   
@@ -196,9 +205,16 @@ app.use((req, res, next) => {
 
 app.use((req, res, next) => {
   // Skip body parsing for file upload routes
-  if (req.path.includes('/verification/submit') || 
+  if (req.path.includes('/verification/submit') ||
       req.path.includes('/upload') ||
-      req.path.includes('/user-photos')) {
+      req.path.includes('/user-photos') ||
+      // Exact match only -- meme upload (POST) and the feed list (GET) both
+      // live at exactly this path with no body-parsing needs (multipart via
+      // multer, or no body at all). A broader substring match here would
+      // also catch /api/feed/memes/:id/comments, /share, /view-duration
+      // etc., which DO need express.json() for their JSON bodies -- an
+      // earlier version of this check did that and silently broke them.
+      req.path === '/api/feed/memes') {
     return next();
   }
   
@@ -211,9 +227,16 @@ app.use((req, res, next) => {
 
 // Input sanitization - MUST be after body parsers (skip for file uploads)
 app.use((req, res, next) => {
-  if (req.path.includes('/verification/submit') || 
+  if (req.path.includes('/verification/submit') ||
       req.path.includes('/upload') ||
-      req.path.includes('/user-photos')) {
+      req.path.includes('/user-photos') ||
+      // Exact match only -- meme upload (POST) and the feed list (GET) both
+      // live at exactly this path with no body-parsing needs (multipart via
+      // multer, or no body at all). A broader substring match here would
+      // also catch /api/feed/memes/:id/comments, /share, /view-duration
+      // etc., which DO need express.json() for their JSON bodies -- an
+      // earlier version of this check did that and silently broke them.
+      req.path === '/api/feed/memes') {
     return next();
   }
   sanitizeInput(req, res, next);
@@ -221,9 +244,16 @@ app.use((req, res, next) => {
 
 // Request size validation (skip for file upload routes)
 app.use((req, res, next) => {
-  if (req.path.includes('/verification/submit') || 
+  if (req.path.includes('/verification/submit') ||
       req.path.includes('/upload') ||
-      req.path.includes('/user-photos')) {
+      req.path.includes('/user-photos') ||
+      // Exact match only -- meme upload (POST) and the feed list (GET) both
+      // live at exactly this path with no body-parsing needs (multipart via
+      // multer, or no body at all). A broader substring match here would
+      // also catch /api/feed/memes/:id/comments, /share, /view-duration
+      // etc., which DO need express.json() for their JSON bodies -- an
+      // earlier version of this check did that and silently broke them.
+      req.path === '/api/feed/memes') {
     return next();
   }
   validateRequestSize(2 * 1024 * 1024)(req, res, next); // 2MB limit
@@ -281,6 +311,7 @@ app.use('/api/storage', storageRouter)
 app.use('/matchmaking', matchmakingRouter)
 app.use('/chat', chatRouter)
 app.use('/api/jam', jamRouter)
+app.use('/api/watch-party', watchPartyRouter)
 app.use('/api/friends', friendsRouter)
 app.use('/api/monitoring', monitoringRouter)
 app.use('/api/explore', exploreRouter)
@@ -320,6 +351,7 @@ app.use('/api/admin/docker', dockerMonitoringRouter)
 app.use('/api/admin/memes', adminMemesRouter)
 app.use('/api/feed', feedMemesRouter)
 app.use('/api/feed', memeConnectRouter)
+app.use('/api/feed', userMemesRouter)
 app.use('/api/app-version', appVersionRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/match', promptMatchingRouter)

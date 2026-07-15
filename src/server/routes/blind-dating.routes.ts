@@ -81,12 +81,12 @@ router.post('/enable', requireAuth, async (req: AuthRequest, res) => {
     const settings = await BlindDatingService.enableBlindDating(userId)
     res.json({ 
       success: true, 
-      message: 'Blind dating enabled! We\'ll find you a match.',
+      message: 'Blind Connect enabled! We\'ll find you a match.',
       settings 
     })
   } catch (error) {
     logger.error({ error, userId: req.user!.id }, 'Error enabling blind dating')
-    res.status(500).json({ error: 'Failed to enable blind dating' })
+    res.status(500).json({ error: 'Failed to enable Blind Connect' })
   }
 })
 
@@ -100,12 +100,12 @@ router.post('/disable', requireAuth, async (req: AuthRequest, res) => {
     const settings = await BlindDatingService.disableBlindDating(userId)
     res.json({ 
       success: true, 
-      message: 'Blind dating disabled.',
+      message: 'Blind Connect disabled.',
       settings 
     })
   } catch (error) {
     logger.error({ error, userId: req.user!.id }, 'Error disabling blind dating')
-    res.status(500).json({ error: 'Failed to disable blind dating' })
+    res.status(500).json({ error: 'Failed to disable Blind Connect' })
   }
 })
 
@@ -199,14 +199,14 @@ router.post('/find-match', requireAuth, async (req: AuthRequest, res) => {
     // Check settings
     const settings = await BlindDatingService.getSettings(userId)
     if (!settings?.is_enabled) {
-      return res.status(400).json({ error: 'Enable blind dating first in your settings' })
+      return res.status(400).json({ error: 'Enable Blind Connect first in your settings' })
     }
     
     // Check active matches
     const activeMatches = await BlindDatingService.getActiveMatches(userId)
     if (activeMatches.length >= settings.max_active_matches) {
       return res.status(400).json({ 
-        error: 'You have reached your maximum active blind dates',
+        error: 'You have reached your maximum active Blind Connects',
         activeMatches: activeMatches.length,
         maxMatches: settings.max_active_matches
       })
@@ -227,7 +227,7 @@ router.post('/find-match', requireAuth, async (req: AuthRequest, res) => {
     
     res.json({
       success: true,
-      message: 'New blind date match found!',
+      message: 'New Blind Connect match found!',
       match: {
         ...match,
         otherUser: otherUserProfile,
@@ -311,10 +311,10 @@ router.post('/end/:matchId', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Failed to end match' })
     }
     
-    res.json({ success: true, message: 'Blind date ended' })
+    res.json({ success: true, message: 'Blind Connect ended' })
   } catch (error) {
     logger.error({ error, userId: req.user!.id, matchId: req.params.matchId }, 'Error ending blind date')
-    res.status(500).json({ error: 'Failed to end blind date' })
+    res.status(500).json({ error: 'Failed to end Blind Connect' })
   }
 })
 
@@ -630,7 +630,7 @@ function getRecommendations(diagnostics: any): string[] {
   const recommendations: string[] = []
   
   if (diagnostics.usersWithBlindDatingEnabled === 0) {
-    recommendations.push('❌ No users have blind dating enabled. Users need to enable it in settings.')
+    recommendations.push('❌ No users have Blind Connect enabled. Users need to enable it in settings.')
   } else if (diagnostics.usersWithBlindDatingEnabled < 2) {
     recommendations.push('⚠️ Only 1 user has blind dating enabled. Need at least 2 users for matching.')
   }
@@ -670,7 +670,7 @@ router.post('/test/create-test-match', requireAuth, async (req: AuthRequest, res
       } catch (error) {
         logger.error({ error, userId }, 'Failed to enable blind dating')
         return res.status(500).json({ 
-          error: 'Failed to enable blind dating',
+          error: 'Failed to enable Blind Connect',
           details: error instanceof Error ? error.message : 'Unknown error'
         })
       }
@@ -932,14 +932,14 @@ router.post('/test/enable-for-all', async (req, res) => {
 
     res.json({
       success: true,
-      message: `Enabled blind dating for ${enabled} users`,
+      message: `Enabled Blind Connect for ${enabled} users`,
       enabled,
       errors,
       totalUsers: allUsers.length
     })
   } catch (error) {
     logger.error({ error }, 'Error enabling blind dating for all')
-    res.status(500).json({ error: 'Failed to enable blind dating for all users' })
+    res.status(500).json({ error: 'Failed to enable Blind Connect for all users' })
   }
 })
 
@@ -962,10 +962,10 @@ function getNextSteps(info: { isEnabled?: boolean; eligibleCount: number; active
   const steps: string[] = []
   
   if (!info.isEnabled) {
-    steps.push('1. Enable blind dating in your settings')
+    steps.push('1. Enable Blind Connect in your settings')
     steps.push('2. Wait for matches or tap "Find Match"')
   } else if (info.activeMatchesCount >= info.maxActive) {
-    steps.push('1. End some of your current blind dates to get new matches')
+    steps.push('1. End some of your current Blind Connects to get new matches')
     steps.push('2. Or increase your max active matches in settings')
   } else if (info.eligibleCount === 0) {
     steps.push('1. Try "Create Test Match" to test with AI bot')

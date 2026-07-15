@@ -86,12 +86,17 @@ export interface Chat {
   id: string
   created_at: string
   last_message_at: string | null
+  is_group: boolean
+  group_name: string | null
+  group_avatar_url: string | null
+  created_by: string | null
 }
 
 export interface ChatMember {
   chat_id: string
   user_id: string
   joined_at: string
+  role: string
 }
 
 export interface ChatMessage {
@@ -121,6 +126,10 @@ export function rowToChat(row: ChatRow): Chat {
     id: row.id,
     created_at: row.createdAt,
     last_message_at: row.lastMessageAt,
+    is_group: row.isGroup,
+    group_name: row.groupName,
+    group_avatar_url: row.groupAvatarUrl,
+    created_by: row.createdBy,
   }
 }
 
@@ -175,20 +184,36 @@ export interface ChatDeletion {
   created_at: string
 }
 
-export async function ensureChatForUsers(a: string, b: string): Promise<Chat> {
-  // Find an existing 1:1 chat for these two users
+/** Read-only: the existing 1:1 chat for these two users, or null if they've never had one created. */
+async function findChatForUsers(a: string, b: string): Promise<Chat | null> {
   const existing = await db.select({ chatId: chatMembers.chatId }).from(chatMembers).where(inArray(chatMembers.userId, [a, b]))
+  if (!existing.length) return null
 
-  if (existing.length) {
-    // Count members per chat_id
-    const counts: Record<string, number> = {}
-    for (const row of existing) counts[row.chatId] = (counts[row.chatId] || 0) + 1
-    const chatId = Object.entries(counts).find(([, c]) => c >= 2)?.[0]
-    if (chatId) {
-      const rows = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1)
-      if (rows[0]) return rowToChat(rows[0])
-    }
-  }
+  // Count members per chat_id
+  const counts: Record<string, number> = {}
+  for (const row of existing) counts[row.chatId] = (counts[row.chatId] || 0) + 1
+  const chatId = Object.entries(counts).find(([, c]) => c >= 2)?.[0]
+  if (!chatId) return null
+
+  const rows = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1)
+  return rows[0] ? rowToChat(rows[0]) : null
+}
+
+/**
+ * Looks up an existing 1:1 chat between two users WITHOUT creating one.
+ * For features (e.g. birthday/weather engagement pushes) that just want to
+ * deep-link into a chat if one already exists -- creating a chat here would
+ * plant an empty conversation in the recipient's inbox for someone they've
+ * never actually messaged. Use ensureChatForUsers instead when the feature's
+ * whole point is starting a real conversation (matches, blind dates, etc.).
+ */
+export async function findExistingChatForUsers(a: string, b: string): Promise<Chat | null> {
+  return findChatForUsers(a, b)
+}
+
+export async function ensureChatForUsers(a: string, b: string): Promise<Chat> {
+  const existing = await findChatForUsers(a, b)
+  if (existing) return existing
 
   // Create a new chat and add members - set last_message_at to now so it appears at top of list
   const chatRows = await db.insert(chats).values({ lastMessageAt: new Date().toISOString() }).returning()
@@ -198,6 +223,58 @@ export async function ensureChatForUsers(a: string, b: string): Promise<Chat> {
     { chatId: chat.id, userId: b },
   ])
   return chat
+}
+
+/** Creates a new named group chat. `creatorId` becomes the owner; `memberIds` (must not include creatorId) join as plain members. */
+export async function createGroupChat(creatorId: string, memberIds: string[], groupName: string): Promise<Chat> {
+  const chatRows = await db.insert(chats).values({
+    lastMessageAt: new Date().toISOString(),
+    isGroup: true,
+    groupName,
+    createdBy: creatorId,
+  }).returning()
+  const chat = rowToChat(chatRows[0])
+  const uniqueMemberIds = Array.from(new Set(memberIds.filter((id) => id !== creatorId)))
+  await db.insert(chatMembers).values([
+    { chatId: chat.id, userId: creatorId, role: 'owner' },
+    ...uniqueMemberIds.map((userId) => ({ chatId: chat.id, userId, role: 'member' })),
+  ])
+  return chat
+}
+
+export async function getChatById(chatId: string): Promise<Chat | null> {
+  const rows = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1)
+  return rows[0] ? rowToChat(rows[0]) : null
+}
+
+export async function getChatMembersWithRoles(chatId: string): Promise<ChatMember[]> {
+  const rows = await db.select().from(chatMembers).where(eq(chatMembers.chatId, chatId))
+  return rows.map((r) => ({ chat_id: r.chatId, user_id: r.userId, joined_at: r.joinedAt, role: r.role }))
+}
+
+export async function isGroupOwner(chatId: string, userId: string): Promise<boolean> {
+  const [row] = await db.select({ role: chatMembers.role }).from(chatMembers)
+    .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId))).limit(1)
+  return row?.role === 'owner'
+}
+
+export async function renameGroupChat(chatId: string, groupName: string): Promise<void> {
+  await db.update(chats).set({ groupName }).where(eq(chats.id, chatId))
+}
+
+export async function addGroupMembers(chatId: string, userIds: string[]): Promise<void> {
+  if (!userIds.length) return
+  const existing = await db.select({ userId: chatMembers.userId }).from(chatMembers).where(eq(chatMembers.chatId, chatId))
+  const existingIds = new Set(existing.map((m) => m.userId))
+  const toAdd = Array.from(new Set(userIds)).filter((id) => !existingIds.has(id))
+  if (!toAdd.length) return
+  await db.insert(chatMembers).values(toAdd.map((userId) => ({ chatId, userId, role: 'member' })))
+}
+
+/** Removes a member from a group. Returns false if they weren't a member. */
+export async function removeGroupMember(chatId: string, userId: string): Promise<boolean> {
+  const result = await db.delete(chatMembers).where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId))).returning()
+  return result.length > 0
 }
 
 export async function getUserInbox(userId: string) {
@@ -227,7 +304,7 @@ async function computeUserInbox(userId: string) {
   const userChats = chatRows.map(rowToChat)
 
   // For each chat, find the other participant to display name
-  const results = [] as Array<{ chat: Chat; lastMessage: ChatMessage | null; unreadCount: number; otherId?: string; otherName?: string; otherProfilePhoto?: string }>
+  const results = [] as Array<{ chat: Chat; lastMessage: ChatMessage | null; unreadCount: number; otherId?: string; otherName?: string; otherProfilePhoto?: string; isGroup?: boolean; groupName?: string | null; groupAvatarUrl?: string | null; memberCount?: number }>
   // Preload members for all chats
   const memberRows = await db.select({ chatId: chatMembers.chatId, userId: chatMembers.userId }).from(chatMembers).where(inArray(chatMembers.chatId, chatIds))
   const otherIdsSet = new Set<string>()
@@ -313,6 +390,18 @@ async function computeUserInbox(userId: string) {
 
   for (const { chat, lastMessage } of visible) {
     const mems = memberRows.filter((m) => m.chatId === chat.id)
+    if (chat.is_group) {
+      results.push({
+        chat,
+        lastMessage,
+        unreadCount: unreadByChat.get(chat.id) || 0,
+        isGroup: true,
+        groupName: chat.group_name,
+        groupAvatarUrl: chat.group_avatar_url,
+        memberCount: mems.length,
+      })
+      continue
+    }
     const otherId = mems.map((m) => m.userId).find((id) => id !== userId)
     if (otherId) otherIdsSet.add(otherId)
     results.push({ chat, lastMessage, unreadCount: unreadByChat.get(chat.id) || 0, otherId })

@@ -283,6 +283,10 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
               ? (memeConnectInfo?.avatar || '')
               : item.otherProfilePhoto,
         } : null,
+        isGroup: !!item.isGroup,
+        groupName: item.groupName ?? null,
+        groupAvatarUrl: item.groupAvatarUrl ?? null,
+        memberCount: item.memberCount ?? null,
         archived: s.archived,
         pinned: s.pinned,
         messageCount: count,

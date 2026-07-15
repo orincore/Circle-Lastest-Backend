@@ -4,6 +4,7 @@ import { findRecommendation } from '../services/youtube.service.js'
 import { isUserPresentInJam as isUserPresentInJamRedis, markJamPresence } from '../services/presence.service.js'
 import {
   addToQueue,
+  claimQueueItemPlayed,
   computeLivePositionMs,
   getChatMemberIds,
   getExcludedVideoIds,
@@ -49,11 +50,19 @@ function room(chatId: string) {
   return `chat:${chatId}`
 }
 
-async function computeBothPresent(session: JamSession): Promise<boolean> {
+/**
+ * Whether enough listeners are present to keep playing. For a 1:1 chat this
+ * is "both present" (the only way to reach 2). For a group chat, requiring
+ * *every* member present would mean playback pauses whenever any one member
+ * of a large group steps away -- instead this only requires 2+ concurrently
+ * present, matching "at least one person is still listening with you".
+ */
+async function computeEnoughPresent(session: JamSession): Promise<boolean> {
   const memberIds = await getChatMemberIds(session.chat_id)
   if (memberIds.length < 2) return false
   const presentFlags = await Promise.all(memberIds.map((id) => isUserPresentInJamRedis(session.id, id)))
-  return presentFlags.every(Boolean)
+  const presentCount = presentFlags.filter(Boolean).length
+  return presentCount >= 2
 }
 
 async function handlePresenceChange(
@@ -79,7 +88,7 @@ async function handlePresenceChange(
   }
   socket.data = data
 
-  // Must be awaited, not fire-and-forget: computeBothPresent() below (and the
+  // Must be awaited, not fire-and-forget: computeEnoughPresent() below (and the
   // caller's own immediate re-check in jam:playback:play) reads this exact
   // Redis state right after handlePresenceChange returns -- firing this
   // without waiting would race the read against the write and could still
@@ -101,8 +110,8 @@ async function handlePresenceChange(
   const r = room(session.chat_id)
   io.to(r).emit('jam:presence', { sessionId, userId, isPresent })
 
-  const bothPresent = await computeBothPresent(session)
-  if (!bothPresent && session.is_playing) {
+  const enoughPresent = await computeEnoughPresent(session)
+  if (!enoughPresent && session.is_playing) {
     const finalPositionMs = typeof positionMs === 'number' ? positionMs : computeLivePositionMs(session)
     await setPlaybackState(sessionId, { isPlaying: false, positionMs: finalPositionMs, pausedForPresence: true })
     io.to(r).emit('jam:playback:paused', { sessionId, reason: 'presence', positionMs: finalPositionMs })
@@ -118,7 +127,15 @@ async function advanceToNext(io: IOServer, session: JamSession) {
   if (session.current_queue_item_id) {
     finishedItem = await getQueueItem(session.current_queue_item_id)
     afterPosition = finishedItem?.position ?? null
-    await markQueueItemStatus(session.current_queue_item_id, 'played')
+    // Atomic playing→played claim: when a track ends, BOTH clients' players
+    // report jam:track:ended (and simultaneous "next" taps can collide the
+    // same way). The caller's `current_queue_item_id === queueItemId` check
+    // is read-then-act, so two such events could interleave here and advance
+    // twice, skipping a track. Whichever attempt loses this compare-and-set
+    // simply drops out -- the winner has already done (or is doing) the
+    // advance and its broadcast.
+    const claimed = await claimQueueItemPlayed(session.current_queue_item_id)
+    if (!claimed) return
   }
 
   let next = await getNextQueueItem(session.id, afterPosition)
@@ -191,9 +208,9 @@ export function setupJamHandlers(io: IOServer, socket: Socket, userId: string) {
       // jam:presence when the flag actually flips, correcting any stale display on their end.)
       await handlePresenceChange(io, socket, userId, sessionId, true)
 
-      const bothPresent = await computeBothPresent(session)
-      if (!bothPresent) {
-        socket.emit('jam:error', { sessionId, code: 'not_both_present', message: 'Both listeners must be present to play' })
+      const enoughPresent = await computeEnoughPresent(session)
+      if (!enoughPresent) {
+        socket.emit('jam:error', { sessionId, code: 'not_enough_present', message: 'At least 2 listeners must be present to play' })
         return
       }
 

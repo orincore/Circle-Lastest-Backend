@@ -85,7 +85,7 @@ async function createConnectRequest(
     await notifyMemeConnect(
       targetId,
       '🎭 Someone wants to connect!',
-      'Someone liked your comment on a meme and wants to connect with you.',
+      'Someone liked your comment on a nudge and wants to connect with you.',
       { requestId: row.id }
     )
 
@@ -164,7 +164,7 @@ export async function respondToConnectRequest(
   await notifyMemeConnect(
     request.requesterId,
     '🎉 Connect request accepted!',
-    'Your meme connect request was accepted. Start chatting anonymously!',
+    'Your nudge connect request was accepted. Start chatting anonymously!',
     { requestId: updated.id, chatId: chat.id }
   )
 
@@ -226,7 +226,7 @@ export async function requestReveal(requestId: string, userId: string): Promise<
     await notifyMemeConnect(
       otherUserId,
       '🎭 Reveal request',
-      'Your meme connection wants to reveal identities. Reveal yours too to see who they are!',
+      'Your nudge connection wants to reveal identities. Reveal yours too to see who they are!',
       { requestId: updated.id, chatId: updated.chatId }
     )
 

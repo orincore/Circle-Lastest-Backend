@@ -2995,9 +2995,9 @@ https://circle.orincore.com
       const mailOptions = {
         from: EMAIL_SENDERS.noreply,
         to: email,
-        subject: 'Your blind date match is waiting',
+        subject: 'Your Blind Connect match is waiting',
         html: this.getBlindDateReminderTemplate(name, matchId),
-        text: `Hi ${name},\n\nYou have an active blind date match waiting for you! Start chatting to reveal their identity and see if there's a connection.\n\nOpen Circle app to start chatting: https://circle.orincore.com\n\nBest regards,\nThe Circle Team`,
+        text: `Hi ${name},\n\nYou have an active Blind Connect match waiting for you! Start chatting to reveal their identity and see if there's a connection.\n\nOpen Circle app to start chatting: https://circle.orincore.com\n\nBest regards,\nThe Circle Team`,
         headers: {
           'X-Priority': '3',
           'X-Mailer': 'Circle Dating App',
@@ -3183,7 +3183,7 @@ https://circle.orincore.com
                 <div class="gmail-blend-screen">
                 <div class="gmail-blend-difference">
                 <div class="logo">Circle</div>
-                <div class="header-text">Your Blind Date is Waiting!</div>
+                <div class="header-text">Your Blind Connect is Waiting!</div>
                 </div>
                 </div>
             </div>
@@ -3193,7 +3193,7 @@ https://circle.orincore.com
                 
                 <div class="message">
                     Hi ${name},<br><br>
-                    You have an <strong>active blind date match</strong> waiting for you!<br><br>
+                    You have an <strong>active Blind Connect match</strong> waiting for you!<br><br>
                     Your match is excited to connect, but you haven't started chatting yet. 
                     Start the conversation now to reveal their identity and see if there's a spark!
                 </div>

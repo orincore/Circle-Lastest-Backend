@@ -75,8 +75,8 @@ async function notifyNewMatches(matchedUsers: Array<{ userId: string; matchId?: 
   for (const match of matchesWithIds) {
     try {
       await PushNotificationService.sendPushNotification(match.userId, {
-        title: '💕 New Blind Date Match!',
-        body: 'You have a new blind date match! Start chatting to reveal their identity.',
+        title: '💕 New Blind Connect Match!',
+        body: 'You have a new Blind Connect match! Start chatting to reveal their identity.',
         data: {
           type: 'blind_date_match',
           matchId: match.matchId,

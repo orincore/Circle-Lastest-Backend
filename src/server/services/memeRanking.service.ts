@@ -136,6 +136,32 @@ async function bumpAffinity(userId: string, sourceId: string, delta: number): Pr
   `)
 }
 
+// --- Per-user genre affinity ---------------------------------------------
+// Same shape as source affinity above, keyed on genre instead of source --
+// lets the feed learn what genres a user responds to regardless of which
+// meme (scraped or user-uploaded) it came from. A meme can carry multiple
+// genres (see meme_genres), so every event bumps all of them.
+
+async function getMemeGenres(memeId: string): Promise<string[]> {
+  const rows = await db.execute(sql`SELECT genre FROM meme_genres WHERE meme_id = ${memeId}`)
+  return (rows.rows as any[]).map((r) => r.genre as string)
+}
+
+async function bumpGenreAffinity(userId: string, genre: string, delta: number): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO user_genre_affinity (user_id, genre, affinity_score, updated_at)
+    VALUES (${userId}, ${genre}, ${delta}, now())
+    ON CONFLICT (user_id, genre) DO UPDATE
+      SET affinity_score = LEAST(GREATEST(user_genre_affinity.affinity_score + ${delta}, ${AFFINITY_MIN}), ${AFFINITY_MAX}),
+          updated_at = now()
+  `)
+}
+
+async function bumpGenreAffinityForMeme(memeId: string, userId: string, delta: number): Promise<void> {
+  const genres = await getMemeGenres(memeId)
+  await Promise.all(genres.map((genre) => bumpGenreAffinity(userId, genre, delta)))
+}
+
 // --- Public event hooks --------------------------------------------------
 // One function per engagement event. Each is a couple of cheap, indexed
 // UPSERTs (O(1) per event, no scans over other memes/users) -- call these
@@ -147,24 +173,28 @@ export async function onMemeLiked(memeId: string, userId: string): Promise<void>
   await bumpStat(memeId, 'like_count', 1)
   const sourceId = await getMemeSourceId(memeId)
   if (sourceId) await bumpAffinity(userId, sourceId, AFFINITY_WEIGHTS.like)
+  await bumpGenreAffinityForMeme(memeId, userId, AFFINITY_WEIGHTS.like)
 }
 
 export async function onMemeUnliked(memeId: string, userId: string): Promise<void> {
   await bumpStat(memeId, 'like_count', -1)
   const sourceId = await getMemeSourceId(memeId)
   if (sourceId) await bumpAffinity(userId, sourceId, AFFINITY_WEIGHTS.unlike)
+  await bumpGenreAffinityForMeme(memeId, userId, AFFINITY_WEIGHTS.unlike)
 }
 
 export async function onMemeCommented(memeId: string, userId: string): Promise<void> {
   await bumpStat(memeId, 'comment_count', 1)
   const sourceId = await getMemeSourceId(memeId)
   if (sourceId) await bumpAffinity(userId, sourceId, AFFINITY_WEIGHTS.comment)
+  await bumpGenreAffinityForMeme(memeId, userId, AFFINITY_WEIGHTS.comment)
 }
 
 export async function onMemeShared(memeId: string, userId: string): Promise<void> {
   await bumpStat(memeId, 'share_count', 1)
   const sourceId = await getMemeSourceId(memeId)
   if (sourceId) await bumpAffinity(userId, sourceId, AFFINITY_WEIGHTS.share)
+  await bumpGenreAffinityForMeme(memeId, userId, AFFINITY_WEIGHTS.share)
 }
 
 // A bare view is a weak signal on its own (auto-recorded for every card that
@@ -178,9 +208,10 @@ export async function onMemeDwell(memeId: string, userId: string, durationMs: nu
   if (!Number.isFinite(durationMs) || durationMs <= 0) return
   await bumpDwell(memeId, durationMs)
 
+  const cappedSeconds = Math.min(durationMs / 1000, AFFINITY_WEIGHTS.dwellCapSeconds)
   const sourceId = await getMemeSourceId(memeId)
   if (sourceId) {
-    const cappedSeconds = Math.min(durationMs / 1000, AFFINITY_WEIGHTS.dwellCapSeconds)
     await bumpAffinity(userId, sourceId, cappedSeconds * AFFINITY_WEIGHTS.dwellPerSecond)
   }
+  await bumpGenreAffinityForMeme(memeId, userId, cappedSeconds * AFFINITY_WEIGHTS.dwellPerSecond)
 }

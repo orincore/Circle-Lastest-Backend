@@ -698,7 +698,7 @@ export class BlindDatingService {
       await NotificationService.createNotification({
         recipient_id: userId,
         type: 'blind_date_match',
-        title: '🎭 New Blind Date!',
+        title: '🎭 New Blind Connect!',
         message: 'You have a new anonymous match! Start chatting to discover who they are.',
         data: { matchId: match.id, chatId: match.chat_id },
         push: false
@@ -707,7 +707,7 @@ export class BlindDatingService {
       await NotificationService.createNotification({
         recipient_id: otherUserId,
         type: 'blind_date_match',
-        title: '🎭 New Blind Date!',
+        title: '🎭 New Blind Connect!',
         message: 'You have a new anonymous match! Start chatting to discover who they are.',
         data: { matchId: match.id, chatId: match.chat_id },
         push: false
@@ -753,7 +753,7 @@ export class BlindDatingService {
       if (userEmailInfo && anonymizedForUser) {
         const html = `
           <p>Hi ${userEmailInfo.first_name || 'there'},</p>
-          <p>We just found you a new blind date match on Circle.</p>
+          <p>We just found you a new Blind Connect match on Circle.</p>
           <p>For now, their identity is anonymous, but here are a few hints:</p>
           <ul>
             <li>Name: ${anonymizedForUser.first_name} ${anonymizedForUser.last_name}</li>
@@ -766,7 +766,7 @@ export class BlindDatingService {
         await EmailService.sendEmail({
           from: EMAIL_SENDERS.noreply,
           to: userEmailInfo.email,
-          subject: 'New blind date match on Circle',
+          subject: 'New Blind Connect match on Circle',
           html,
         })
       }
@@ -775,7 +775,7 @@ export class BlindDatingService {
       if (otherEmailInfo && anonymizedForOther) {
         const html = `
           <p>Hi ${otherEmailInfo.first_name || 'there'},</p>
-          <p>We just found you a new blind date match on Circle.</p>
+          <p>We just found you a new Blind Connect match on Circle.</p>
           <p>For now, their identity is anonymous, but here are a few hints:</p>
           <ul>
             <li>Name: ${anonymizedForOther.first_name} ${anonymizedForOther.last_name}</li>
@@ -788,7 +788,7 @@ export class BlindDatingService {
         await EmailService.sendEmail({
           from: EMAIL_SENDERS.noreply,
           to: otherEmailInfo.email,
-          subject: 'New blind date match on Circle',
+          subject: 'New Blind Connect match on Circle',
           html,
         })
       }
@@ -1349,7 +1349,7 @@ export class BlindDatingService {
       emitToUser(otherUserId, 'blind_date:ended', {
         matchId,
         chatId: match.chat_id,
-        message: 'The blind date has ended.'
+        message: 'The Blind Connect has ended.'
       })
 
       logger.info({ matchId, userId, reason }, 'Blind date match ended')
@@ -1413,7 +1413,7 @@ export class BlindDatingService {
             emitToUser(userId, 'blind_date:expired', {
               matchId: row.id,
               chatId: row.chatId,
-              message: 'Your blind date match went quiet, so we freed it up for a fresh one.',
+              message: 'Your Blind Connect match went quiet, so we freed it up for a fresh one.',
             })
           } catch (notifyError) {
             logger.error({ error: notifyError, matchId: row.id, userId }, 'Failed to notify user of auto-expired match')
@@ -2499,7 +2499,7 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
       const areFriends = await this.areUsersFriends(userAId, userBId)
       logger.info({ userAId, userBId, areFriends }, 'Admin match: Checked friendship status')
       if (areFriends) {
-        return { success: false, error: 'Users are already friends. Cannot create blind date match between friends.' }
+        return { success: false, error: 'Users are already friends. Cannot create Blind Connect match between friends.' }
       }
       
       // Check if they already have an active blind date match with each other
@@ -2514,7 +2514,7 @@ Example: "OMG that's amazing!! 🎉 I LOVE that too! What else? Tell me everythi
         .limit(1)
 
       if (existingMatch) {
-        return { success: false, error: 'These users already have an active blind date match with each other.' }
+        return { success: false, error: 'These users already have an active Blind Connect match with each other.' }
       }
       
       // Create chat for the users

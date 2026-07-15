@@ -4,7 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter'
 import { logger } from '../config/logger.js'
 import { verifyJwt } from '../utils/jwt.js'
 import { setTyping, getTyping } from '../services/chat.js'
-import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction, invalidateChatCaches, consumeViewOnceMessage, getChatUnreadCount } from '../repos/chat.repo.js'
+import { getChatMessages, insertMessage, insertReceipt, deleteMessage, editMessage, addReaction, toggleReaction, removeReaction, invalidateChatCaches, consumeViewOnceMessage, getChatUnreadCount, getChatById } from '../repos/chat.repo.js'
 import { and, desc, eq, gt, inArray, ne, notInArray, or, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import {
@@ -1501,6 +1501,34 @@ export async function initOptimizedSocket(server: Server) {
     // cost, ran the member lookup twice, and double-broadcast every typing
     // keystroke, for the single highest-frequency event in the system.)
 
+    // Watch party (Scroll Together): a lightweight room join/leave, unlike
+    // jam sessions there's no Redis-backed presence to reconcile on
+    // disconnect -- socket.io already drops the socket from every room it
+    // was in, so membership here needs no explicit cleanup. Lifecycle
+    // (start/join/leave/advance/react) all goes through the REST routes in
+    // watch-party.routes.ts, which broadcast into this same room via
+    // emitToRoom -- these two handlers just get a socket into (and out of)
+    // that room so it actually receives those broadcasts.
+    socket.on('watch-party:join_room', ({ sessionId }: { sessionId: string }) => {
+      resetTimeout()
+      if (!sessionId) return
+      try {
+        socket.join(`watch-party:${sessionId}`)
+      } catch (error) {
+        logger.error({ error, sessionId }, 'Failed to join watch party room')
+      }
+    })
+
+    socket.on('watch-party:leave_room', ({ sessionId }: { sessionId: string }) => {
+      resetTimeout()
+      if (!sessionId) return
+      try {
+        socket.leave(`watch-party:${sessionId}`)
+      } catch (error) {
+        logger.error({ error, sessionId }, 'Failed to leave watch party room')
+      }
+    })
+
     // Chat: send message with enhanced rate limiting and validation
     socket.on('chat:message', async ({
       chatId,
@@ -1552,9 +1580,17 @@ export async function initOptimizedSocket(server: Server) {
         // Get chat members using cache for faster lookup
         const memberIds = await getCachedChatMembers(chatId)
 
-        if (!memberIds || memberIds.length !== 2) {
+        if (!memberIds || memberIds.length < 2) {
           socket.emit('chat:message:error', { error: 'This conversation is unavailable.', reason: 'invalid_chat' })
-          return // Only handle 1:1 chats for now
+          return
+        }
+
+        const chat = await getChatById(chatId)
+        const isGroup = !!chat?.is_group
+
+        if (!isGroup && memberIds.length !== 2) {
+          socket.emit('chat:message:error', { error: 'This conversation is unavailable.', reason: 'invalid_chat' })
+          return
         }
 
         const otherUserId = memberIds.find(id => id !== userId)
@@ -1562,52 +1598,57 @@ export async function initOptimizedSocket(server: Server) {
           socket.emit('chat:message:error', { error: 'This conversation is unavailable.', reason: 'invalid_chat' })
           return
         }
-        
-        // Check if either user has blocked the other (cached)
-        const blocked = await isBlocked(userId, otherUserId)
-        
-        if (blocked) {
-          // Block detected - don't send the message
-          socket.emit('chat:message:blocked', { 
-            error: 'Message blocked',
-            reason: 'blocked'
-          })
-          return
-        }
 
-        // Check if this is a blind date chat (bypass friendship requirement)
-        const { BlindDatingService } = await import('../services/blind-dating.service.js')
-        const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
+        // Groups are explicit, named, always-known-person chats -- they skip
+        // the block check, friendship gate, and blind-date filter entirely
+        // (mirrors chat.routes.ts's POST /:chatId/messages).
+        let isBlindDate = false
+        if (!isGroup) {
+          // Check if either user has blocked the other (cached)
+          const blocked = await isBlocked(userId, otherUserId)
 
-        // An accepted meme-connect chat has no friendship yet -- that's only
-        // created once both sides reveal (see memeConnect.service.ts) -- so it
-        // needs the same friendship bypass blind date gets, or every message
-        // in an anonymous connect chat gets rejected as 'not_friends' the
-        // instant it's accepted.
-        const { isMemeConnectChat } = await import('../services/memeConnect.service.js')
-        const isMemeConnect = isBlindDate ? false : await isMemeConnectChat(chatId)
-
-        // Only check friendship if it's neither a blind date nor a meme-connect chat
-        if (!isBlindDate && !isMemeConnect) {
-          const friends = await areFriends(userId, otherUserId)
-
-          if (!friends) {
-            // No friendship found - don't allow messaging
+          if (blocked) {
+            // Block detected - don't send the message
             socket.emit('chat:message:blocked', {
-              error: 'Messaging not allowed',
-              reason: 'not_friends'
+              error: 'Message blocked',
+              reason: 'blocked'
             })
             return
           }
-        }
-        
-        // For blind date chats ONLY, filter messages for personal information
-        // Regular chats and revealed blind dates bypass all filtering
-        if (isBlindDate && text && text.trim()) {
+
+          // Check if this is a blind date chat (bypass friendship requirement)
+          const { BlindDatingService } = await import('../services/blind-dating.service.js')
+          isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
+
+          // An accepted meme-connect chat has no friendship yet -- that's only
+          // created once both sides reveal (see memeConnect.service.ts) -- so it
+          // needs the same friendship bypass blind date gets, or every message
+          // in an anonymous connect chat gets rejected as 'not_friends' the
+          // instant it's accepted.
+          const { isMemeConnectChat } = await import('../services/memeConnect.service.js')
+          const isMemeConnect = isBlindDate ? false : await isMemeConnectChat(chatId)
+
+          // Only check friendship if it's neither a blind date nor a meme-connect chat
+          if (!isBlindDate && !isMemeConnect) {
+            const friends = await areFriends(userId, otherUserId)
+
+            if (!friends) {
+              // No friendship found - don't allow messaging
+              socket.emit('chat:message:blocked', {
+                error: 'Messaging not allowed',
+                reason: 'not_friends'
+              })
+              return
+            }
+          }
+
+          // For blind date chats ONLY, filter messages for personal information
+          // Regular chats and revealed blind dates bypass all filtering
+          if (isBlindDate && text && text.trim()) {
           try {
             // Get the match for this chat using the service method
             const match = await BlindDatingService.getMatchByChatId(chatId)
-            
+
             // Only filter if match exists AND identities are NOT revealed yet
             // Once revealed (status === 'revealed'), no filtering - users can share anything
             if (match && match.status !== 'revealed') {
@@ -1617,14 +1658,14 @@ export async function initOptimizedSocket(server: Server) {
                 match.id,
                 userId
               )
-              
+
               // Set a timeout for filtering (max 2 seconds to keep it real-time)
               const timeoutPromise = new Promise<{ allowed: false }>((resolve) => {
                 setTimeout(() => resolve({ allowed: false }), 2000)
               })
-              
+
               const filterResult = await Promise.race([filterPromise, timeoutPromise])
-              
+
               if (!filterResult.allowed) {
                 // Message contains personal information - block it
                 socket.emit('chat:message:blocked', {
@@ -1641,9 +1682,10 @@ export async function initOptimizedSocket(server: Server) {
             logger.error({ error: filterError, chatId, userId }, 'Error filtering blind date message')
             // On error, allow the message but log it (fail open for real-time performance)
           }
+          }
         }
-        // Regular chats (not blind date) bypass all filtering - proceed directly
-        
+        // Regular chats (not blind date) and groups bypass all filtering - proceed directly
+
         const row = await insertMessage(
           chatId,
           userId,
@@ -1740,7 +1782,8 @@ export async function initOptimizedSocket(server: Server) {
                       ...msg,
                       senderName,
                       senderAvatar,
-                      isBlindDateChat
+                      isBlindDateChat,
+                      ...(isGroup ? { isGroup: true, groupName: chat?.group_name } : {}),
                     }
                   })
 
@@ -1777,7 +1820,7 @@ export async function initOptimizedSocket(server: Server) {
                     import('../services/pushNotificationService.js').then(({ PushNotificationService, describeMessageForNotification }) => {
                       PushNotificationService.sendMessageNotification(
                         memberId,
-                        senderName, // Already masked for blind date
+                        isGroup && chat?.group_name ? `${senderName} in ${chat.group_name}` : senderName, // Already masked for blind date
                         describeMessageForNotification(msg),
                         chatId,
                         msg.id,

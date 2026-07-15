@@ -24,12 +24,20 @@ import {
   removeReaction,
   getMessageReactions,
   invalidateChatCaches,
+  invalidateInbox,
   getChatMuteSetting,
   setChatMuteSetting,
   isChatMuted,
   ensureChatForUsers,
   searchChatMessages,
-  getChatMessagesAround
+  getChatMessagesAround,
+  createGroupChat,
+  getChatById,
+  getChatMembersWithRoles,
+  isGroupOwner,
+  renameGroupChat,
+  addGroupMembers,
+  removeGroupMember,
 } from '../repos/chat.repo.js'
 
 const router = Router()
@@ -143,6 +151,171 @@ router.post('/with-user/:userId', requireAuth, async (req: AuthRequest, res) => 
   }
 })
 
+// Create a new named group chat with 2+ other members (all must be friends of the creator).
+router.post('/group', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const creatorId = req.user!.id
+    const name = String(req.body?.name || '').trim()
+    const memberIds: string[] = Array.isArray(req.body?.memberIds)
+      ? Array.from(new Set(req.body.memberIds.filter((id: unknown) => typeof id === 'string' && id !== creatorId)))
+      : []
+
+    if (!name) return res.status(400).json({ error: 'Group name is required' })
+    if (name.length > 80) return res.status(400).json({ error: 'Group name is too long' })
+    if (memberIds.length < 2) return res.status(400).json({ error: 'Pick at least 2 friends to start a group' })
+
+    const friendChecks = await Promise.all(memberIds.map((id) => areFriends(creatorId, id)))
+    if (friendChecks.some((ok) => !ok)) {
+      return res.status(403).json({
+        error: 'Cannot create group',
+        reason: 'not_friends',
+        message: 'You can only add friends to a group.',
+      })
+    }
+
+    const chat = await createGroupChat(creatorId, memberIds, name)
+    await invalidateChatCaches(chat.id, [creatorId, ...memberIds])
+
+    const memberProfiles = await db
+      .select({ id: profiles.id, firstName: profiles.firstName, lastName: profiles.lastName, profilePhotoUrl: profiles.profilePhotoUrl })
+      .from(profiles)
+      .where(inArray(profiles.id, [creatorId, ...memberIds]))
+
+    for (const memberId of memberIds) {
+      emitToUser(memberId, 'chat:group_created', { chat })
+    }
+
+    res.json({ chat, members: memberProfiles })
+  } catch (error) {
+    console.error('Create group chat error:', error)
+    res.status(500).json({ error: 'Failed to create group' })
+  }
+})
+
+// Rename a group chat / change its avatar (owner only)
+router.put('/:chatId/group', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId } = req.params
+    const userId = req.user!.id
+    const chat = await getChatById(chatId)
+    if (!chat || !chat.is_group) return res.status(404).json({ error: 'Group not found' })
+    if (!(await isGroupOwner(chatId, userId))) {
+      return res.status(403).json({ error: 'Only the group owner can rename this group' })
+    }
+
+    const name = String(req.body?.name || '').trim()
+    if (!name) return res.status(400).json({ error: 'Group name is required' })
+    if (name.length > 80) return res.status(400).json({ error: 'Group name is too long' })
+
+    await renameGroupChat(chatId, name)
+    await invalidateChatCaches(chatId)
+
+    const members = await getChatMembersWithRoles(chatId)
+    for (const m of members) emitToUser(m.user_id, 'chat:group_updated', { chatId, groupName: name })
+
+    res.json({ success: true, groupName: name })
+  } catch (error) {
+    console.error('Rename group chat error:', error)
+    res.status(500).json({ error: 'Failed to rename group' })
+  }
+})
+
+// Add members to a group (owner only, must be friends of the owner)
+router.post('/:chatId/group/members', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId } = req.params
+    const userId = req.user!.id
+    const chat = await getChatById(chatId)
+    if (!chat || !chat.is_group) return res.status(404).json({ error: 'Group not found' })
+    if (!(await isGroupOwner(chatId, userId))) {
+      return res.status(403).json({ error: 'Only the group owner can add members' })
+    }
+
+    const memberIds: string[] = Array.isArray(req.body?.memberIds)
+      ? Array.from(new Set(req.body.memberIds.filter((id: unknown) => typeof id === 'string' && id !== userId)))
+      : []
+    if (!memberIds.length) return res.status(400).json({ error: 'No members to add' })
+
+    const friendChecks = await Promise.all(memberIds.map((id) => areFriends(userId, id)))
+    if (friendChecks.some((ok) => !ok)) {
+      return res.status(403).json({ error: 'Cannot add member', reason: 'not_friends', message: 'You can only add friends to a group.' })
+    }
+
+    await addGroupMembers(chatId, memberIds)
+    const members = await getChatMembersWithRoles(chatId)
+    await invalidateChatCaches(chatId, members.map((m) => m.user_id))
+
+    for (const m of members) emitToUser(m.user_id, 'chat:group_updated', { chatId, membersAdded: memberIds })
+
+    res.json({ success: true, members })
+  } catch (error) {
+    console.error('Add group members error:', error)
+    res.status(500).json({ error: 'Failed to add members' })
+  }
+})
+
+// Remove a member from a group (owner only)
+router.delete('/:chatId/group/members/:userId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId, userId: targetUserId } = req.params
+    const requesterId = req.user!.id
+    const chat = await getChatById(chatId)
+    if (!chat || !chat.is_group) return res.status(404).json({ error: 'Group not found' })
+    if (!(await isGroupOwner(chatId, requesterId))) {
+      return res.status(403).json({ error: 'Only the group owner can remove members' })
+    }
+    if (targetUserId === requesterId) {
+      return res.status(400).json({ error: 'Use the leave endpoint to remove yourself' })
+    }
+
+    const removed = await removeGroupMember(chatId, targetUserId)
+    if (!removed) return res.status(404).json({ error: 'User is not a member of this group' })
+
+    await invalidateInbox(targetUserId)
+    const remainingMembers = await getChatMembersWithRoles(chatId)
+    await invalidateChatCaches(chatId, remainingMembers.map((m) => m.user_id))
+
+    emitToUser(targetUserId, 'chat:group_removed', { chatId })
+    for (const m of remainingMembers) emitToUser(m.user_id, 'chat:group_updated', { chatId, memberRemoved: targetUserId })
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Remove group member error:', error)
+    res.status(500).json({ error: 'Failed to remove member' })
+  }
+})
+
+// Leave a group chat. If the owner leaves, ownership passes to the
+// longest-standing remaining member so the group always has an owner.
+router.post('/:chatId/leave', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId } = req.params
+    const userId = req.user!.id
+    const chat = await getChatById(chatId)
+    if (!chat || !chat.is_group) return res.status(404).json({ error: 'Group not found' })
+
+    const wasOwner = await isGroupOwner(chatId, userId)
+    const removed = await removeGroupMember(chatId, userId)
+    if (!removed) return res.status(404).json({ error: 'You are not a member of this group' })
+
+    await invalidateInbox(userId)
+    const remainingMembers = await getChatMembersWithRoles(chatId)
+
+    if (wasOwner && remainingMembers.length) {
+      const nextOwner = remainingMembers.reduce((oldest, m) => (m.joined_at < oldest.joined_at ? m : oldest))
+      await db.update(chatMembers).set({ role: 'owner' }).where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, nextOwner.user_id)))
+    }
+
+    await invalidateChatCaches(chatId, remainingMembers.map((m) => m.user_id))
+    for (const m of remainingMembers) emitToUser(m.user_id, 'chat:group_updated', { chatId, memberLeft: userId })
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Leave group chat error:', error)
+    res.status(500).json({ error: 'Failed to leave group' })
+  }
+})
+
 router.get('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
   const chatId = req.params.chatId
   const userId = req.user!.id
@@ -235,80 +408,95 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
       .from(chatMembers)
       .where(eq(chatMembers.chatId, chatId))
 
-    if (members.length !== 2) {
+    if (members.length < 2) {
       return res.status(400).json({ error: 'Invalid chat' })
     }
-    const otherUserId = members.find((m) => m.userId !== userId)?.userId
-    if (!otherUserId) {
+    const chat = await getChatById(chatId)
+    const isGroup = !!chat?.is_group
+    const recipientIds = members.map((m) => m.userId).filter((id) => id !== userId)
+    if (!recipientIds.length) {
       return res.status(400).json({ error: 'Invalid chat members' })
     }
-    
-    // Check if this is a blind date chat (bypass friendship requirement)
-    const { BlindDatingService } = await import('../services/blind-dating.service.js')
-    const isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
-
-    // An accepted meme-connect chat has no friendship yet -- that's only
-    // created once both sides reveal (see memeConnect.service.ts) -- so it
-    // needs the same friendship bypass blind date gets.
-    const { isMemeConnectChat } = await import('../services/memeConnect.service.js')
-    const isMemeConnect = isBlindDate ? false : await isMemeConnectChat(chatId)
-
-    // Only check friendship if it's neither a blind date nor a meme-connect chat
-    if (!isBlindDate && !isMemeConnect) {
-      if (!(await areFriends(userId, otherUserId))) {
-        return res.status(403).json({
-          error: 'Messaging not allowed',
-          reason: 'not_friends',
-          message: 'You can only send messages to friends. Send a friend request first.'
-        })
-      }
+    // A 1:1 chat must have exactly the sender + one other member; groups can have any size >= 2 others.
+    if (!isGroup && members.length !== 2) {
+      return res.status(400).json({ error: 'Invalid chat' })
     }
-    
-    // For blind date chats ONLY, filter messages for personal information
-    // Regular chats and revealed blind dates bypass all filtering
-    if (isBlindDate && text && text.trim()) {
-      try {
-        // Get the match for this chat
-        const match = await BlindDatingService.getMatchByChatId(chatId)
-        
-        // Only filter if match exists AND identities are NOT revealed yet
-        // Once revealed (status === 'revealed'), no filtering - users can share anything
-        if (match && match.status !== 'revealed') {
-          // Fast filtering with timeout to ensure real-time performance
-          const filterPromise = BlindDatingService.filterMessage(
-            text.trim(),
-            match.id,
-            userId
-          )
-          
-          // Set a timeout for filtering (max 2 seconds to keep it real-time)
-          const timeoutPromise = new Promise<{ allowed: false }>((resolve) => {
-            setTimeout(() => resolve({ allowed: false }), 2000)
+    const otherUserId = recipientIds[0]
+
+    let isBlindDate = false
+    let isMemeConnect = false
+
+    // Groups are explicit, named, always-known-person chats -- they skip the
+    // friendship gate and the blind-date personal-info filter entirely,
+    // neither of which makes sense once 3+ people are in a conversation.
+    if (!isGroup) {
+      // Check if this is a blind date chat (bypass friendship requirement)
+      const { BlindDatingService } = await import('../services/blind-dating.service.js')
+      isBlindDate = await BlindDatingService.isBlindDateChat(chatId)
+
+      // An accepted meme-connect chat has no friendship yet -- that's only
+      // created once both sides reveal (see memeConnect.service.ts) -- so it
+      // needs the same friendship bypass blind date gets.
+      const { isMemeConnectChat } = await import('../services/memeConnect.service.js')
+      isMemeConnect = isBlindDate ? false : await isMemeConnectChat(chatId)
+
+      // Only check friendship if it's neither a blind date nor a meme-connect chat
+      if (!isBlindDate && !isMemeConnect) {
+        if (!(await areFriends(userId, otherUserId))) {
+          return res.status(403).json({
+            error: 'Messaging not allowed',
+            reason: 'not_friends',
+            message: 'You can only send messages to friends. Send a friend request first.'
           })
-          
-          const filterResult = await Promise.race([filterPromise, timeoutPromise])
-          
-          if (!filterResult.allowed) {
-            // Message contains personal information - block it
-            return res.status(403).json({
-              error: 'Message blocked',
-              reason: 'personal_info_detected',
-              message: 'Focus on conversation! Once your vibe matches, we will allow you to share personal information.',
-              blockedReason: (filterResult as any).blockedReason || 'Personal information detected'
-            })
-          }
         }
-        // If match is revealed or doesn't exist, proceed without filtering
-      } catch (filterError) {
-        console.error('Error filtering blind date message:', filterError)
-        // On error, allow the message but log it (fail open for real-time performance)
       }
+
+      // For blind date chats ONLY, filter messages for personal information
+      // Regular chats and revealed blind dates bypass all filtering
+      if (isBlindDate && text && text.trim()) {
+        try {
+          // Get the match for this chat
+          const match = await BlindDatingService.getMatchByChatId(chatId)
+
+          // Only filter if match exists AND identities are NOT revealed yet
+          // Once revealed (status === 'revealed'), no filtering - users can share anything
+          if (match && match.status !== 'revealed') {
+            // Fast filtering with timeout to ensure real-time performance
+            const filterPromise = BlindDatingService.filterMessage(
+              text.trim(),
+              match.id,
+              userId
+            )
+
+            // Set a timeout for filtering (max 2 seconds to keep it real-time)
+            const timeoutPromise = new Promise<{ allowed: false }>((resolve) => {
+              setTimeout(() => resolve({ allowed: false }), 2000)
+            })
+
+            const filterResult = await Promise.race([filterPromise, timeoutPromise])
+
+            if (!filterResult.allowed) {
+              // Message contains personal information - block it
+              return res.status(403).json({
+                error: 'Message blocked',
+                reason: 'personal_info_detected',
+                message: 'Focus on conversation! Once your vibe matches, we will allow you to share personal information.',
+                blockedReason: (filterResult as any).blockedReason || 'Personal information detected'
+              })
+            }
+          }
+          // If match is revealed or doesn't exist, proceed without filtering
+        } catch (filterError) {
+          console.error('Error filtering blind date message:', filterError)
+          // On error, allow the message but log it (fail open for real-time performance)
+        }
+      }
+      // Regular chats (not blind date) bypass all filtering - proceed directly
     }
-    // Regular chats (not blind date) bypass all filtering - proceed directly
-    
+
     const msg = await insertMessage(chatId, userId, text, mediaUrl, mediaType, thumbnail, undefined, isViewOnce)
-    
-    // Emit real-time message to other user for chat list updates
+
+    // Emit real-time message to other member(s) for chat list updates
     try {
       // Get sender info for notifications
       const [senderInfo] = await db
@@ -323,15 +511,17 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         .where(eq(profiles.id, userId))
         .limit(1)
 
-      // Check if this is a blind date chat (active, not revealed)
-      const [blindMatch] = await db
-        .select({ id: blindDateMatches.id })
-        .from(blindDateMatches)
-        .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
-        .limit(1)
+      // Check if this is a blind date chat (active, not revealed) -- groups are never blind-date chats.
+      let isBlindDateChat = false
+      if (!isGroup) {
+        const [blindMatch] = await db
+          .select({ id: blindDateMatches.id })
+          .from(blindDateMatches)
+          .where(and(eq(blindDateMatches.chatId, chatId), eq(blindDateMatches.status, 'active')))
+          .limit(1)
+        isBlindDateChat = !!blindMatch
+      }
 
-      const isBlindDateChat = !!blindMatch
-      
       // Helper function to mask name for blind date
       const maskName = (firstName: string | null, lastName: string | null): string => {
         const maskWord = (word: string) => {
@@ -339,13 +529,13 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
           if (word.length === 1) return word[0] + '*'
           return word[0] + '*'.repeat(word.length - 1)
         }
-        
+
         if (!firstName) return 'Anonymous'
         const maskedFirst = maskWord(firstName.trim())
         const maskedLast = lastName?.trim() ? maskWord(lastName.trim()) : ''
         return maskedLast ? `${maskedFirst} ${maskedLast}` : maskedFirst
       }
-      
+
       const realName = senderInfo
         ? (senderInfo.firstName && senderInfo.lastName
             ? `${senderInfo.firstName} ${senderInfo.lastName}`.trim()
@@ -358,7 +548,7 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         : realName
 
       const senderAvatar = senderInfo?.profilePhotoUrl || null
-      
+
       const messagePayload = {
         id: msg.id,
         chatId: msg.chat_id,
@@ -372,31 +562,36 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
         status: 'sent',
         senderName,
         senderAvatar,
-        isBlindDateChat
+        isBlindDateChat,
+        ...(isGroup ? { isGroup: true, groupName: chat?.group_name } : {}),
       }
-      
-      // Emit to receiver - both chat:message and chat:message:background for chat list
-      emitToUser(otherUserId, 'chat:message', { message: messagePayload })
-      emitToUser(otherUserId, 'chat:message:background', { message: messagePayload })
-      
+
+      // Emit to every other member - both chat:message and chat:message:background for chat list
+      for (const recipientId of recipientIds) {
+        emitToUser(recipientId, 'chat:message', { message: messagePayload })
+        emitToUser(recipientId, 'chat:message:background', { message: messagePayload })
+      }
+
       // Also emit to sender for confirmation
       emitToUser(userId, 'chat:message', { message: messagePayload })
-      
-      // Emit unread count update to the receiver
-      await emitUnreadCountUpdate(chatId, otherUserId)
-      
-      // Send push notification to the receiver with masked name for blind date
+
+      // Emit unread count update to every other member
+      await Promise.all(recipientIds.map((recipientId) => emitUnreadCountUpdate(chatId, recipientId)))
+
+      // Send push notifications to every other member (masked name for blind date)
       try {
         const { PushNotificationService, describeMessageForNotification } = await import('../services/pushNotificationService.js')
-        await PushNotificationService.sendMessageNotification(
-          otherUserId,
-          senderName, // Already masked for blind date
-          describeMessageForNotification({
-            text: msg.text,
-            mediaType: msg.media_type,
-            isViewOnce: (msg as any).is_view_once,
-            sharedMemeId: msg.shared_meme_id,
-          }),
+        const pushTitle = isGroup && chat?.group_name ? `${senderName} in ${chat.group_name}` : senderName
+        const pushBody = describeMessageForNotification({
+          text: msg.text,
+          mediaType: msg.media_type,
+          isViewOnce: (msg as any).is_view_once,
+          sharedMemeId: msg.shared_meme_id,
+        })
+        await Promise.all(recipientIds.map((recipientId) => PushNotificationService.sendMessageNotification(
+          recipientId,
+          pushTitle, // Already masked for blind date
+          pushBody,
           chatId,
           msg.id,
           // Don't reveal identity via the notification for still-anonymous
@@ -404,15 +599,15 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
           // must be withheld the same way, not just the display name.
           isBlindDateChat ? undefined : userId,
           isBlindDateChat ? null : senderAvatar
-        )
+        )))
       } catch (pushError) {
         console.error('Failed to send push notification:', pushError)
       }
-      
+
     } catch (error) {
       console.error('Failed to emit message via socket:', error)
     }
-    
+
     // Award Circle points for sending message
     try {
       await Promise.all([
@@ -423,18 +618,18 @@ router.post('/:chatId/messages', requireAuth, async (req: AuthRequest, res) => {
           related_user_id: otherUserId,
           metadata: { chat_id: chatId, message_id: msg.id }
         }),
-        CirclePointsService.recordActivity({
-          user_id: otherUserId,
+        ...recipientIds.map((recipientId) => CirclePointsService.recordActivity({
+          user_id: recipientId,
           activity_type: 'message_received',
           points_change: 1,
           related_user_id: userId,
           metadata: { chat_id: chatId, message_id: msg.id }
-        })
+        }))
       ])
     } catch (error) {
       console.error('Failed to award Circle points for message:', error)
     }
-    
+
     res.json({ message: msg })
   } catch (error) {
     console.error('Send message error:', error)
@@ -614,6 +809,25 @@ router.post('/:chatId/mute', requireAuth, async (req: AuthRequest, res) => {
 })
 
 // Get chat members - useful for determining who the other user is in a 1:1 chat
+// Basic chat metadata (group name/avatar/owner) -- used to hydrate a screen
+// (e.g. group info deep-linked without the name already in route params).
+router.get('/:chatId', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { chatId } = req.params
+    const userId = req.user!.id
+    const [membership] = await db.select({ userId: chatMembers.userId }).from(chatMembers)
+      .where(and(eq(chatMembers.chatId, chatId), eq(chatMembers.userId, userId))).limit(1)
+    if (!membership) return res.status(403).json({ error: 'You are not a member of this chat' })
+
+    const chat = await getChatById(chatId)
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+    res.json({ chat })
+  } catch (error) {
+    console.error('Get chat error:', error)
+    res.status(500).json({ error: 'Failed to load chat' })
+  }
+})
+
 router.get('/:chatId/members', requireAuth, async (req: AuthRequest, res) => {
   try {
     const { chatId } = req.params
@@ -635,6 +849,7 @@ router.get('/:chatId/members', requireAuth, async (req: AuthRequest, res) => {
       .select({
         userId: chatMembers.userId,
         joinedAt: chatMembers.joinedAt,
+        role: chatMembers.role,
         firstName: profiles.firstName,
         lastName: profiles.lastName,
         profilePhotoUrl: profiles.profilePhotoUrl,
@@ -648,6 +863,7 @@ router.get('/:chatId/members', requireAuth, async (req: AuthRequest, res) => {
     const formattedMembers = members.map((member) => ({
       user_id: member.userId,
       joined_at: member.joinedAt,
+      role: member.role,
       first_name: member.firstName ?? undefined,
       last_name: member.lastName ?? undefined,
       profile_photo_url: member.profilePhotoUrl ?? undefined,

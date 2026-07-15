@@ -2,14 +2,15 @@ import { Router } from 'express'
 import { requireAuth, AuthRequest } from '../middleware/auth.js'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
-import { memes, memeAssets, memeLikes, memeComments, memeShares, chatMembers, friendships, profiles } from '../db/schema.js'
+import { memes, memeAssets, memeGenres, memeLikes, memeComments, memeShares, chatMembers, friendships, profiles } from '../db/schema.js'
 import { getOrCreateAlias } from '../services/memeAlias.service.js'
 import { getBlurredAvatarDataUri } from '../services/anonAvatar.service.js'
-import { insertMessage } from '../repos/chat.repo.js'
+import { insertMessage, getChatById } from '../repos/chat.repo.js'
 import { isMemeConnectChat } from '../services/memeConnect.service.js'
 import { cache, cacheKeys, MEME_CONTENT_TTL, MEME_COMMENTS_TTL } from '../services/cache.js'
 import { onMemeLiked, onMemeUnliked, onMemeCommented, onMemeShared, onMemeViewed, onMemeDwell } from '../services/memeRanking.service.js'
 import { emitToUser } from '../sockets/optimized-socket.js'
+import { MEME_GENRE_VALUES } from '../constants/memeGenres.js'
 
 const router = Router()
 
@@ -51,6 +52,15 @@ type MemeContent = {
   caption: string | null
   posted_at: string | null
   poster_alias: string
+  uploader_user_id: string | null
+  genres: string[]
+  music: {
+    youtube_video_id: string
+    title: string | null
+    channel_title: string | null
+    start_seconds: number
+    trim_seconds: number
+  } | null
   assets: ReturnType<typeof assetToJson>[]
 }
 
@@ -79,6 +89,7 @@ async function getMemeContentBatch(memeIds: string[]): Promise<Map<string, MemeC
     // and served again on the next miss.
     const memeRows = await db.select().from(memes).where(and(inArray(memes.id, missing), eq(memes.status, 'active')))
     const assetRows = await db.select().from(memeAssets).where(inArray(memeAssets.memeId, missing))
+    const genreRows = await db.select().from(memeGenres).where(inArray(memeGenres.memeId, missing))
 
     const assetsByMeme = new Map<string, ReturnType<typeof assetToJson>[]>()
     for (const a of assetRows) {
@@ -87,14 +98,38 @@ async function getMemeContentBatch(memeIds: string[]): Promise<Map<string, MemeC
       assetsByMeme.set(a.memeId, list)
     }
 
+    const genresByMeme = new Map<string, string[]>()
+    for (const g of genreRows) {
+      const list = genresByMeme.get(g.memeId) || []
+      list.push(g.genre)
+      genresByMeme.set(g.memeId, list)
+    }
+
     await Promise.all(memeRows.map(async (m) => {
+      // User-uploaded memes have no source_id to derive a poster identity
+      // from -- they use the uploader's own persistent anonymous alias
+      // instead (same alias already shown on their comments), keeping the
+      // feed's "anonymous poster" model consistent for both content types.
+      const posterAlias = m.origin === 'user_upload' && m.uploaderUserId
+        ? await getOrCreateAlias(m.uploaderUserId)
+        : derivePosterAlias(m.sourceId!)
+
       const content: MemeContent = {
         id: m.id,
         instagram_shortcode: m.instagramShortcode,
         post_type: m.postType,
         caption: m.caption,
         posted_at: m.postedAt,
-        poster_alias: derivePosterAlias(m.sourceId),
+        poster_alias: posterAlias,
+        uploader_user_id: m.uploaderUserId,
+        genres: genresByMeme.get(m.id) || [],
+        music: m.musicYoutubeVideoId ? {
+          youtube_video_id: m.musicYoutubeVideoId,
+          title: m.musicTitle,
+          channel_title: m.musicChannelTitle,
+          start_seconds: m.musicStartSeconds,
+          trim_seconds: m.musicTrimSeconds,
+        } : null,
         assets: (assetsByMeme.get(m.id) || []).sort((a, b) => a.position - b.position),
       }
       result.set(m.id, content)
@@ -118,32 +153,65 @@ async function getMemeContentBatch(memeIds: string[]): Promise<Map<string, MemeC
 // order. This is a single ORDER BY over already-aggregated columns -- no
 // per-request aggregation over the raw likes/comments/shares tables -- so it
 // stays cheap regardless of how much engagement history exists.
+//
+// Real user-uploaded nudges (origin = 'user_upload') always rank ABOVE seeded
+// (scraped) content: `ORDER BY (m.origin = 'user_upload') DESC` is the primary
+// key in both queries below, so a page fills with user uploads first (ranked
+// among themselves by the score below) and only falls back to seeded content
+// once the user uploads for this viewer run out. It's a boolean sort key
+// (TRUE sorts first under DESC) -- no extra join or per-row cost.
 const FEED_AFFINITY_MIN = -0.3
 const FEED_AFFINITY_MAX = 0.6
 const FEED_AFFINITY_SCALE = 0.01
+const FEED_GENRE_AFFINITY_MIN = -0.3
+const FEED_GENRE_AFFINITY_MAX = 0.6
+const FEED_GENRE_AFFINITY_SCALE = 0.01
 const FEED_JITTER_BASE = 0.85
 const FEED_JITTER_RANGE = 0.3
+// `g.score` comes from the LATERAL join below -- the strongest of this
+// viewer's affinities across whichever genres a meme carries (a meme can
+// have 1-3 genres; MAX picks the one that best predicts their interest).
 const FEED_RANK_EXPR = sql`
   (COALESCE(ms.trending_score, 2) *
     (1 + LEAST(GREATEST(COALESCE(a.affinity_score, 0) * ${FEED_AFFINITY_SCALE}, ${FEED_AFFINITY_MIN}), ${FEED_AFFINITY_MAX})) *
+    (1 + LEAST(GREATEST(COALESCE(g.score, 0) * ${FEED_GENRE_AFFINITY_SCALE}, ${FEED_GENRE_AFFINITY_MIN}), ${FEED_GENRE_AFFINITY_MAX})) *
     (${FEED_JITTER_BASE} + random() * ${FEED_JITTER_RANGE})
   )
+`
+// Joined into both feed queries below alongside the existing source-affinity
+// join -- same LEFT JOIN LATERAL for every row, cheap since it's indexed on
+// (meme_genres.meme_id) and (user_genre_affinity.user_id, genre). A function
+// (not a constant) because it interpolates the per-request userId, same as
+// the existing user_source_affinity joins below.
+const genreAffinityJoin = (userId: string) => sql`
+  LEFT JOIN LATERAL (
+    SELECT MAX(ga.affinity_score) AS score
+    FROM meme_genres mg
+    JOIN user_genre_affinity ga ON ga.user_id = ${userId} AND ga.genre = mg.genre
+    WHERE mg.meme_id = m.id
+  ) g ON true
 `
 
 router.get('/memes', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id
     const limit = Math.min(parseInt((req.query.limit as string) || '20') || 20, 50)
+    const genreFilter = typeof req.query.genre === 'string' && MEME_GENRE_VALUES.has(req.query.genre) ? req.query.genre : null
+    const genreFilterClause = genreFilter
+      ? sql`AND EXISTS (SELECT 1 FROM meme_genres mg2 WHERE mg2.meme_id = m.id AND mg2.genre = ${genreFilter})`
+      : sql``
 
     const unseenRows = await db.execute(sql`
       SELECT m.id FROM memes m
       LEFT JOIN meme_stats ms ON ms.meme_id = m.id
       LEFT JOIN user_source_affinity a ON a.user_id = ${userId} AND a.source_id = m.source_id
+      ${genreAffinityJoin(userId)}
       WHERE m.status = 'active'
         AND NOT EXISTS (
           SELECT 1 FROM meme_feed_views v WHERE v.meme_id = m.id AND v.user_id = ${userId}
         )
-      ORDER BY ${FEED_RANK_EXPR} DESC
+        ${genreFilterClause}
+      ORDER BY (m.origin = 'user_upload') DESC, ${FEED_RANK_EXPR} DESC
       LIMIT ${limit}
     `)
 
@@ -155,9 +223,11 @@ router.get('/memes', requireAuth, async (req: AuthRequest, res) => {
         LEFT JOIN meme_feed_views v ON v.meme_id = m.id AND v.user_id = ${userId}
         LEFT JOIN meme_stats ms ON ms.meme_id = m.id
         LEFT JOIN user_source_affinity a ON a.user_id = ${userId} AND a.source_id = m.source_id
+        ${genreAffinityJoin(userId)}
         WHERE m.status = 'active'
           ${memeIds.length > 0 ? sql`AND m.id NOT IN (${sql.join(memeIds, sql`, `)})` : sql``}
-        ORDER BY v.viewed_at ASC NULLS FIRST, ${FEED_RANK_EXPR} DESC
+          ${genreFilterClause}
+        ORDER BY (m.origin = 'user_upload') DESC, v.viewed_at ASC NULLS FIRST, ${FEED_RANK_EXPR} DESC
         LIMIT ${limit - memeIds.length}
       `)
       memeIds = memeIds.concat(backfillRows.rows.map((r: any) => r.id as string))
@@ -193,6 +263,7 @@ router.get('/memes', requireAuth, async (req: AuthRequest, res) => {
             like_count: likeCountByMeme.get(id) || 0,
             comment_count: commentCountByMeme.get(id) || 0,
             liked_by_me: likedByMe.has(id),
+            is_own: content.uploader_user_id === userId,
           }
         })
         .filter((m): m is NonNullable<typeof m> => !!m),
@@ -232,6 +303,7 @@ router.get('/memes/:id', requireAuth, async (req: AuthRequest, res) => {
         like_count: likeCount,
         comment_count: commentCount,
         liked_by_me: !!likedRow,
+        is_own: content.uploader_user_id === userId,
       },
     })
   } catch (e) {
@@ -543,20 +615,30 @@ router.post('/memes/:id/share', requireAuth, async (req: AuthRequest, res) => {
     }
 
     const members = await db.select({ userId: chatMembers.userId }).from(chatMembers).where(eq(chatMembers.chatId, chat_id))
-    if (members.length !== 2 || !members.some(m => m.userId === userId)) {
+    if (members.length < 2 || !members.some(m => m.userId === userId)) {
       return res.status(403).json({ error: 'Not a member of this chat' })
     }
-    const otherUserId = members.find(m => m.userId !== userId)!.userId
+    const chat = await getChatById(chat_id)
+    const isGroup = !!chat?.is_group
+    if (!isGroup && members.length !== 2) {
+      return res.status(403).json({ error: 'Not a member of this chat' })
+    }
+    const recipientIds = members.map(m => m.userId).filter(id => id !== userId)
+    const otherUserId = recipientIds[0]
 
-    const isConnectChat = await isMemeConnectChat(chat_id)
-    if (!isConnectChat) {
-      const smallerId = userId < otherUserId ? userId : otherUserId
-      const largerId = userId < otherUserId ? otherUserId : userId
-      const [friendship] = await db.select({ status: friendships.status }).from(friendships)
-        .where(and(eq(friendships.user1Id, smallerId), eq(friendships.user2Id, largerId)))
-        .limit(1)
-      if (!friendship || (friendship.status !== 'active' && friendship.status !== 'accepted')) {
-        return res.status(403).json({ error: 'Can only share to a friend or an active connect chat' })
+    // Groups are explicit, named, always-known-person chats -- skip the
+    // friendship/connect-chat gate entirely (mirrors chat.routes.ts).
+    if (!isGroup) {
+      const isConnectChat = await isMemeConnectChat(chat_id)
+      if (!isConnectChat) {
+        const smallerId = userId < otherUserId ? userId : otherUserId
+        const largerId = userId < otherUserId ? otherUserId : userId
+        const [friendship] = await db.select({ status: friendships.status }).from(friendships)
+          .where(and(eq(friendships.user1Id, smallerId), eq(friendships.user2Id, largerId)))
+          .limit(1)
+        if (!friendship || (friendship.status !== 'active' && friendship.status !== 'accepted')) {
+          return res.status(403).json({ error: 'Can only share to a friend or an active connect chat' })
+        }
       }
     }
 
@@ -599,25 +681,30 @@ router.post('/memes/:id/share', requireAuth, async (req: AuthRequest, res) => {
         senderName,
         senderAvatar: senderInfo?.profilePhotoUrl || null,
         isBlindDateChat: false,
+        ...(isGroup ? { isGroup: true, groupName: chat?.group_name } : {}),
       }
 
-      emitToUser(otherUserId, 'chat:message', { message: messagePayload })
-      emitToUser(otherUserId, 'chat:message:background', { message: messagePayload })
+      for (const recipientId of recipientIds) {
+        emitToUser(recipientId, 'chat:message', { message: messagePayload })
+        emitToUser(recipientId, 'chat:message:background', { message: messagePayload })
+      }
       emitToUser(userId, 'chat:message', { message: messagePayload })
 
-      const [{ c: unreadCount }] = (await db.execute(sql`
-        SELECT count(*)::int as c FROM messages m
-        WHERE m.chat_id = ${chat_id}
-          AND m.is_deleted = false
-          AND m.sender_id != ${otherUserId}
-          AND NOT EXISTS (
-            SELECT 1 FROM message_receipts r
-            WHERE r.message_id = m.id AND r.user_id = ${otherUserId} AND r.status = 'read'
-          )
-      `)).rows as any
-      emitToUser(otherUserId, 'chat:unread_count', { chatId: chat_id, unreadCount })
+      for (const recipientId of recipientIds) {
+        const [{ c: unreadCount }] = (await db.execute(sql`
+          SELECT count(*)::int as c FROM messages m
+          WHERE m.chat_id = ${chat_id}
+            AND m.is_deleted = false
+            AND m.sender_id != ${recipientId}
+            AND NOT EXISTS (
+              SELECT 1 FROM message_receipts r
+              WHERE r.message_id = m.id AND r.user_id = ${recipientId} AND r.status = 'read'
+            )
+        `)).rows as any
+        emitToUser(recipientId, 'chat:unread_count', { chatId: chat_id, unreadCount })
+      }
 
-      // Push notification to the receiver -- this endpoint only ever emitted
+      // Push notification to the receiver(s) -- this endpoint only ever emitted
       // live socket events above, which reach nothing if the recipient's app
       // isn't open (no active socket connection). Every other message-send
       // path (POST /:chatId/messages in chat.routes.ts, and the socket
@@ -626,15 +713,16 @@ router.post('/memes/:id/share', requireAuth, async (req: AuthRequest, res) => {
       // offline/backgrounded/closed-app recipient.
       try {
         const { PushNotificationService, describeMessageForNotification } = await import('../services/pushNotificationService.js')
-        await PushNotificationService.sendMessageNotification(
-          otherUserId,
-          senderName,
+        const pushTitle = isGroup && chat?.group_name ? `${senderName} in ${chat.group_name}` : senderName
+        await Promise.all(recipientIds.map((recipientId) => PushNotificationService.sendMessageNotification(
+          recipientId,
+          pushTitle,
           describeMessageForNotification({ sharedMemeId: message.shared_meme_id }),
           chat_id,
           message.id,
           userId,
           senderInfo?.profilePhotoUrl || null
-        )
+        )))
       } catch (pushError) {
         console.error('feed share push notification error:', pushError)
       }

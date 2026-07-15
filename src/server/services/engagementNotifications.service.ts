@@ -3,7 +3,7 @@ import { db } from '../config/db.js'
 import { authSessions, engagementNotifications, memeLikes, memes, memeStats, profiles, userMarketingPreferences } from '../db/schema.js'
 import { logger } from '../config/logger.js'
 import { buildFriendshipMap } from '../repos/friends.repo.js'
-import { ensureChatForUsers } from '../repos/chat.repo.js'
+import { findExistingChatForUsers } from '../repos/chat.repo.js'
 import { PushNotificationService } from './pushNotificationService.js'
 import { NotificationService, type NotificationType } from './notificationService.js'
 import { fetchWeather, type WeatherCondition } from './weatherService.js'
@@ -204,7 +204,7 @@ export async function sendFriendLikedMemeNotifications(): Promise<{ processed: n
           const sent = await sendEngagementNotification(
             recipientId,
             'meme_liked_by_friend',
-            `${friendName} liked this meme 😂`,
+            `${friendName} liked this nudge 😂`,
             `See if you'll like it too!`,
             { type: 'meme_liked_by_friend', memeId, friendName },
           )
@@ -310,12 +310,12 @@ export async function sendMemeDiscoveryNotifications(slotIndex: number): Promise
         const caption = (meme.caption || '').trim()
         const body = caption.length > 0
           ? (caption.length > 100 ? `${caption.slice(0, 97)}...` : caption)
-          : 'Check out this meme everyone is talking about!'
+          : 'Check out this nudge everyone is talking about!'
 
         const sent = await sendEngagementNotification(
           user.id,
           'meme_discovery',
-          '😂 Meme of the moment',
+          'Nudge of the moment 😂',
           body,
           { type: 'meme_discovery', memeId: meme.id },
         )
@@ -386,13 +386,16 @@ export async function sendBirthdayNotifications(): Promise<{ selfSent: number; f
           const claimed = await claimSlot(friendId, 'friend_birthday', `${user.id}:${year}`, user.id)
           if (!claimed) continue
 
-          const chat = await ensureChatForUsers(friendId, user.id)
+          // Look up (don't create) a chat -- creating one here would plant an
+          // empty conversation in the friend's inbox even if they've never
+          // actually messaged this person. See findExistingChatForUsers.
+          const chat = await findExistingChatForUsers(friendId, user.id)
           const sent = await sendEngagementNotification(
             friendId,
             'friend_birthday',
             `🎂 It's ${name}'s Birthday!`,
             `Today is ${name}'s birthday — send them a wish!`,
-            { type: 'friend_birthday', chatId: chat.id, birthdayUserId: user.id, birthdayUserName: name },
+            { type: 'friend_birthday', chatId: chat?.id, birthdayUserId: user.id, birthdayUserName: name },
           )
           if (sent) stats.friendSent++
         } catch (error) {
@@ -572,13 +575,14 @@ export async function sendWeatherCheckinNotifications(): Promise<{ groupsChecked
               const claimed = await claimSlot(friendId, 'weather_checkin', `${user.id}:${today}`, user.id)
               if (!claimed) continue
 
-              const chat = await ensureChatForUsers(friendId, user.id)
+              // Look up (don't create) a chat -- see findExistingChatForUsers.
+              const chat = await findExistingChatForUsers(friendId, user.id)
               const sent = await sendEngagementNotification(
                 friendId,
                 'weather_checkin',
                 fillWeatherTemplate(copy.title, name, areaLabel),
                 fillWeatherTemplate(copy.body, name, areaLabel),
-                { type: 'weather_checkin', chatId: chat.id, targetUserId: user.id, targetUserName: name, condition: weather.condition },
+                { type: 'weather_checkin', chatId: chat?.id, targetUserId: user.id, targetUserName: name, condition: weather.condition },
               )
               if (sent) stats.sent++
             } catch (error) {

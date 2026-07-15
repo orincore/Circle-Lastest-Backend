@@ -214,6 +214,27 @@ export async function markQueueItemStatus(queueItemId: string, status: 'queued' 
   await db.update(jamSessionQueue).set({ status }).where(eq(jamSessionQueue.id, queueItemId))
 }
 
+/**
+ * Atomically flips a queue item playing→played, returning whether THIS call
+ * did the flip. Every advance attempt for a finished/skipped track funnels
+ * through this compare-and-set: when a track ends, BOTH clients' players
+ * report jam:track:ended (and two "next" taps can land together), and the
+ * handler's plain read-then-check couldn't stop two of those from
+ * interleaving and advancing twice -- skipping a track. Doing the check and
+ * the write in one UPDATE makes the database arbitrate, so exactly one
+ * attempt wins regardless of event timing or which server pod handled it.
+ */
+export async function claimQueueItemPlayed(queueItemId: string): Promise<boolean> {
+  // 'queued' is accepted alongside 'playing' (a current item is briefly
+  // 'queued' mid-jam:previous, and pre-existing rows may carry it) -- what
+  // matters for the race is that the losing attempt always sees 'played'.
+  const rows = await db.update(jamSessionQueue)
+    .set({ status: 'played' })
+    .where(and(eq(jamSessionQueue.id, queueItemId), inArray(jamSessionQueue.status, ['playing', 'queued'])))
+    .returning({ id: jamSessionQueue.id })
+  return rows.length > 0
+}
+
 /** Advances the session to the given queue item (or clears it if null), resetting playback position. */
 export async function setCurrentTrack(sessionId: string, queueItemId: string | null): Promise<void> {
   await db.update(jamSessions).set({
